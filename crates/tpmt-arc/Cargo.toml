@@ -1,0 +1,11 @@
+[package]
+name = "tpmt-arc"
+description = "RARC archive containers."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

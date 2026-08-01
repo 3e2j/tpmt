@@ -1,0 +1,11 @@
+[package]
+name = "tpmt-bytes"
+description = "Bounds-checked big-endian byte cursors."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

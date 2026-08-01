@@ -1,0 +1,13 @@
+[package]
+name = "tpmt"
+description = "Modding toolkit for The Legend of Zelda: Twilight Princess."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+tpmt-compress.workspace = true
+tpmt-disc.workspace = true
+
+[lints]
+workspace = true

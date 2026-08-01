@@ -1,0 +1,11 @@
+[package]
+name = "tpmt-bmg"
+description = "BMG binary message files."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

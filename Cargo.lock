@@ -5,3 +5,31 @@ version = 4
 [[package]]
 name = "tpmt"
 version = "0.1.0"
+dependencies = [
+ "tpmt-compress",
+ "tpmt-disc",
+]
+
+[[package]]
+name = "tpmt-arc"
+version = "0.1.0"
+
+[[package]]
+name = "tpmt-bmg"
+version = "0.1.0"
+
+[[package]]
+name = "tpmt-bytes"
+version = "0.1.0"
+
+[[package]]
+name = "tpmt-compress"
+version = "0.1.0"
+
+[[package]]
+name = "tpmt-disc"
+version = "0.1.0"
+
+[[package]]
+name = "tpmt-pipeline"
+version = "0.1.0"

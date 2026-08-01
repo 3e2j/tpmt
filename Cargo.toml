@@ -1,6 +1,32 @@
-[package]
-name = "tpmt"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/3e2j/tpmt"
 
-[dependencies]
+[workspace.dependencies]
+tpmt-arc = { path = "crates/tpmt-arc", version = "0.1.0" }
+tpmt-bmg = { path = "crates/tpmt-bmg", version = "0.1.0" }
+tpmt-bytes = { path = "crates/tpmt-bytes", version = "0.1.0" }
+tpmt-compress = { path = "crates/tpmt-compress", version = "0.1.0" }
+tpmt-disc = { path = "crates/tpmt-disc", version = "0.1.0" }
+tpmt-pipeline = { path = "crates/tpmt-pipeline", version = "0.1.0" }
+
+[workspace.lints.clippy]
+# Byte-order mistakes are silent data corruption, not a style nit.
+disallowed_methods = "deny"
+
+# Nothing here is worth running unoptimized. This profile only really exists
+# for `cargo test`, which is where the round-trip tests chew through real
+# game files.
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Offset arithmetic should trap rather than wrap into a bogus seek.
+overflow-checks = true

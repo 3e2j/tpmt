@@ -1,0 +1,11 @@
+[package]
+name = "tpmt-disc"
+description = "Reading and writing GameCube disc images."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

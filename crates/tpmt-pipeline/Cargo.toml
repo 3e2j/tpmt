@@ -1,0 +1,11 @@
+[package]
+name = "tpmt-pipeline"
+description = "Unpacking a disc to a mod folder and building it back."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
