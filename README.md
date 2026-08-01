@@ -13,11 +13,11 @@ This project attempts to provide an updated and complete toolkit, capturing all 
 
 ## How it works
 1. **Provide** an ISO copy of the game.
-2. **Unpack** it with the toolkit. You get a full copy of the game's files to work with.
+2. **Unpack** it with the toolkit. You get a project folder holding the game's files, decoded into formats you can actually edit.
 3. **Edit** anything you want, in place. Use the toolkit's tools, or your own.
-4. **Build.** The toolkit works out which files you changed and packs them back into a playable ISO.
+4. **Build.** The toolkit works out which files you changed and packs them back into a ready-to-patch mod, or a playable ISO.
 
-Your original ISO is never modified, the toolkit keeps a clean copy of the game to compare against. Run `tpmt status` at any point to see the list of what your mod changed.
+Your original ISO is never modified. The toolkit remembers what files you've modified, and can be checked with `tpmt status` to tell what files have changed. Building only compiles the files you've edited, unedited files are copied verbatim from the original source.
 
 > [!IMPORTANT]
 > You must provide your own game copy. This repository does *not* contain game assets.
