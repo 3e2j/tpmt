@@ -1,0 +1,5 @@
+/target
+
+# Local game ISO files used for tests.
+assets/*
+!assets/ASSETS.md

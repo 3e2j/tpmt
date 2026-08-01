@@ -1,0 +1,27 @@
+avoid-breaking-exported-api = false
+
+disallowed-methods = [
+    # The GameCube is big-endian. Native-endian conversions silently do the
+    # right thing on a BE host and the wrong thing everywhere else, so all
+    # format code must state its byte order explicitly.
+    { path = "u16::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "u16::from_be_bytes" },
+    { path = "u32::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "u32::from_be_bytes" },
+    { path = "u64::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "u64::from_be_bytes" },
+    { path = "i16::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "i16::from_be_bytes" },
+    { path = "i32::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "i32::from_be_bytes" },
+    { path = "i64::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "i64::from_be_bytes" },
+    { path = "f32::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "f32::from_be_bytes" },
+    { path = "f64::from_ne_bytes", reason = "GameCube data is big-endian", replacement = "f64::from_be_bytes" },
+    { path = "u16::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "u16::to_be_bytes" },
+    { path = "u32::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "u32::to_be_bytes" },
+    { path = "u64::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "u64::to_be_bytes" },
+    { path = "i16::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "i16::to_be_bytes" },
+    { path = "i32::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "i32::to_be_bytes" },
+    { path = "i64::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "i64::to_be_bytes" },
+    { path = "f32::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "f32::to_be_bytes" },
+    { path = "f64::to_ne_bytes", reason = "GameCube data is big-endian", replacement = "f64::to_be_bytes" },
+
+    # An ISO is ~1.4 GB. Reading one into memory whole is never intended.
+    { path = "std::fs::read", reason = "Game images are far too large to buffer whole", replacement = "std::io::BufReader over std::fs::File" },
+    { path = "std::fs::read_to_string", reason = "Game images are far too large to buffer whole", replacement = "std::io::BufReader over std::fs::File" },
+]
