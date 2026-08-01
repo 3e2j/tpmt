@@ -6,6 +6,9 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
+tpmt-bytes.workspace = true
+thiserror.workspace = true
+encoding_rs.workspace = true # entry names in the string pool are Shift-JIS
 
 [lints]
 workspace = true

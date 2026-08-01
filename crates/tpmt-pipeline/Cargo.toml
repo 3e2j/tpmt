@@ -6,6 +6,15 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Every format the toolkit understands. Dispatch is a match on extension here.
+tpmt-arc.workspace = true
+tpmt-bmg.workspace = true
+tpmt-compress.workspace = true
+tpmt-disc.workspace = true
+
+thiserror.workspace = true
+rayon.workspace = true
+sha1.workspace = true # change detection against the vanilla digests
 
 [lints]
 workspace = true

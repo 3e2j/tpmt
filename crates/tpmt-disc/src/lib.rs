@@ -12,3 +12,9 @@
 //!
 //! Hands out byte ranges. Decoding the file contents is the job of the format
 //! crates.
+//!
+//! Reads are positional and take `&self`, so threads can pull disjoint regions
+//! from one handle at once. Unpack is parallel and depends on that.
+
+// TODO: compressed and scrubbed containers (CISO, NKit). The format details
+// come from wiimms-iso-tools and NKit.

@@ -15,6 +15,16 @@ tpmt-compress = { path = "crates/tpmt-compress", version = "0.1.0" }
 tpmt-disc = { path = "crates/tpmt-disc", version = "0.1.0" }
 tpmt-pipeline = { path = "crates/tpmt-pipeline", version = "0.1.0" }
 
+thiserror = "2"
+rayon = "1"
+encoding_rs = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Not 0.11. That release changed the output type and dropped its LowerHex impl,
+# and every digest here is written out as hex.
+sha1 = "0.10"
+
 [workspace.lints.clippy]
 # Byte-order mistakes are silent data corruption, not a style nit.
 disallowed_methods = "deny"

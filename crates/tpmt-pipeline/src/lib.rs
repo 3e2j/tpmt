@@ -19,6 +19,14 @@
 //! The only crate allowed to know how formats stack. That a `.arc` on the disc
 //! is usually Yaz0 wrapped around RARC is a fact about this pipeline, not about
 //! either format.
+//!
+//! Format crates convert their own file type to an editable form and back.
+//! Which form that is belongs to the crate rather than here, so this one only
+//! asks whether a conversion exists and takes back what it produces, extension
+//! included. Their typed models are public as well, reachable by an editor
+//! without a file in between.
+//!
+//! Unpack fans out one flat layer over FST entries, each self-contained.
 
 // Project, one directory, edited in place:
 //   tpmt.toml   schema version, disc id + revision + sha1
@@ -34,3 +42,7 @@
 
 // TODO: decide whether to keep our own copy of the ISO rather than remembering
 // its originating path. Either way, tell the user before taking their disk space.
+
+// TODO: routing tables (disc path to project path) are still hardcoded nowhere.
+// Scope is Twilight Princess only, but GZ2E, GZ2P and GZ2J do not share paths,
+// so whatever holds them is keyed by region.
