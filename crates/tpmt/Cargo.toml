@@ -10,5 +10,8 @@ repository.workspace = true
 # pipeline, not here.
 tpmt-pipeline.workspace = true
 
+thiserror.workspace = true
+clap.workspace = true
+
 [lints]
 workspace = true

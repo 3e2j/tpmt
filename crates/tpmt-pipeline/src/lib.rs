@@ -46,3 +46,28 @@
 // TODO: routing tables (disc path to project path) are still hardcoded nowhere.
 // Scope is Twilight Princess only, but GZ2E, GZ2P and GZ2J do not share paths,
 // so whatever holds them is keyed by region.
+
+// TODO: scratch space. Half-written output is never left where a person can
+// mistake it for a finished one, so anything generated is staged and then
+// renamed into place. Staging goes inside the store rather than the platform
+// temp directory: a rename is only atomic within one filesystem, and on Windows
+// it fails outright across volumes, which is exactly where a temp directory
+// tends to sit relative to a project.
+
+use std::path::Path;
+
+/// Unpacks a disc image into a new project directory.
+///
+/// The directory is created here and is expected not to exist yet. Reusing one
+/// would mean reconciling whatever edits are already sitting in it, which is
+/// what `build` is for.
+pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
+    let _ = (iso, project);
+    Err(Error::Unimplemented)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("unpacking is not implemented yet")]
+    Unimplemented,
+}
