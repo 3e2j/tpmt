@@ -20,23 +20,7 @@
 //! header, including the file data offset, which sits in the top header
 //! itself.
 
-// TODO: building an archive back up, once anything needs to. What extraction
-// ignores and building has to get right, as measured across every archive of
-// all three retail discs:
-//
-// - Authored state with no derivation: per-file ids (index order in most
-//   archives, historical orders with gaps in the rest), the id sync flag at
-//   data header 0x1A, the next-free-id at 0x18, and the MRAM against ARAM
-//   preload bits (0x10/0x20 of the type byte; only RELS.arc members use ARAM).
-//   All of it has to be copied from the original archive, not derived.
-// - Conventions that do derive: sections 0x20 aligned and zero padded; the
-//   string pool packed in reference order, `.` then `..` then the root name
-//   first, repeated names stored again rather than shared; node fourcc is the
-//   directory name uppercased, truncated to four, space padded, `ROOT` for the
-//   root; hashes as `name_hash`; type bits 0x04|0x80 exactly when the member
-//   bytes are Yaz0; the header MRAM/ARAM sizes are the summed padded sizes of
-//   the members flagged for each.
-
+use std::collections::HashMap;
 use tpmt_bytes::Reader;
 
 #[derive(Debug, thiserror::Error)]
@@ -53,6 +37,19 @@ pub enum Error {
     // out of the directory it is being written into is refused by name.
     #[error("`{0}` is not usable as a file name")]
     UnusableName(String),
+
+    // `build` swaps member data in by path, so the set handed to it has to
+    // match the archive's own list exactly. Anything else is refused rather
+    // than guessed around.
+    #[error("the archive has no member `{0}`")]
+    UnknownMember(String),
+    #[error("no data was given for `{0}`")]
+    MissingMember(String),
+    #[error("`{0}` was given twice")]
+    DuplicateMember(String),
+
+    #[error("the rebuilt archive would not fit its 32 bit size fields")]
+    Oversized,
 
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
@@ -76,6 +73,11 @@ const DATA_HEADER_OFFSET: usize = 0x08;
 // retail archive pins the data header at 0x20, where nothing distinguishes
 // the two.
 const FILE_DATA_OFFSET: usize = 0x0C;
+const TOTAL_DATA_SIZE: usize = 0x10;
+// How much of the file data the game preloads into main against audio RAM,
+// as marked per member by the preload type bits.
+const MRAM_SIZE: usize = 0x14;
+const ARAM_SIZE: usize = 0x18;
 
 // Data header.
 const NODE_COUNT: usize = 0x00;
@@ -98,13 +100,130 @@ const ENTRY_DATA_SIZE: usize = 0x0C;
 const ENTRY_TYPE_SHIFT: u32 = 24;
 const ENTRY_NAME_MASK: u32 = 0x00FF_FFFF;
 const ENTRY_TYPE_DIRECTORY: u32 = 0x02;
+const ENTRY_TYPE_COMPRESSED: u32 = 0x04;
+const ENTRY_TYPE_MRAM: u32 = 0x10;
+const ENTRY_TYPE_ARAM: u32 = 0x20;
+const ENTRY_TYPE_YAZ0: u32 = 0x80;
 
 /// Lists every file in an archive, directories flattened into the paths.
 ///
 /// The data is borrowed, so a member's bytes cost nothing until somebody keeps
 /// them.
 pub fn files(data: &[u8]) -> Result<Vec<File<'_>>> {
-    Archive::open(data)?.files()
+    let members = Archive::open(data)?.members()?;
+    Ok(members.into_iter().map(|(_, file)| file).collect())
+}
+
+// TODO: adding and removing members, once mods need it. That ends the prefix
+// copy below: the node records, entry table and string pool would have to be
+// re-emitted from the parsed tree. The conventions re-emission needs held on
+// every archive of all three retail prints:
+//
+// - The pool is packed in reference order, `.` then `..` then the root name
+//   first, repeated names stored again rather than shared, the whole thing
+//   zero padded to 0x20. Node fourcc is the directory name ASCII-uppercased,
+//   truncated to four, space padded, `ROOT` for the root. Hashes are
+//   `name_hash` on every node and entry. Sections stay in order, each
+//   starting 0x20 aligned.
+// - Surviving members keep their copied ids and preload flags. A new member
+//   takes the next free id, and the sync flag at data header 0x1A clears
+//   when ids stop matching entry indices; retail ships 106 unsynced archives
+//   per print, so the game handles that path. Preload defaults to MRAM
+//   (0x10); ARAM (0x20) is only ever RELS.arc members.
+// - Node indices are assigned depth-first, children in entry order. Probed
+//   across all three prints: only three archives per print are deep enough
+//   to tell depth from breadth first, and every one reads depth-first, with
+//   the rest consistent with both.
+//
+// The regression harness already exists: handed an unchanged member set, a
+// re-emitter must still rebuild every retail archive byte for byte, which
+// also catches any misreading of the conventions above.
+
+/// Builds the archive back up, each member's bytes swapped for its copy in
+/// `members`. Swapping every member back in unchanged rebuilds the original
+/// byte for byte.
+///
+/// This is a rebuild, not creation from scratch: everything above the file
+/// data keeps its original bytes, which carries the authored state nothing
+/// could derive (per-file ids, the id bookkeeping in the data header, the
+/// preload flags) along untouched. Only the fields that describe member bytes
+/// are rewritten: offsets, sizes, the compression bits, and the header
+/// totals.
+///
+/// `members` must hold exactly the paths that [`files`] lists for the
+/// original archive.
+pub fn build(original: &[u8], members: &[File]) -> Result<Vec<u8>> {
+    let archive = Archive::open(original)?;
+
+    let mut fresh = HashMap::with_capacity(members.len());
+    for member in members {
+        if fresh.insert(member.path.as_str(), member.data).is_some() {
+            return Err(Error::DuplicateMember(member.path.clone()));
+        }
+    }
+    // Replacement data keyed by entry index, since the entry table is about
+    // to be walked flat rather than as a tree.
+    let mut swaps = HashMap::with_capacity(fresh.len());
+    for (index, file) in archive.members()? {
+        let Some(data) = fresh.remove(file.path.as_str()) else {
+            return Err(Error::MissingMember(file.path));
+        };
+        swaps.insert(index, data);
+    }
+    if let Some(path) = fresh.into_keys().next() {
+        return Err(Error::UnknownMember(path.to_owned()));
+    }
+
+    let mut out = archive.reader.slice_at(0, archive.file_data)?.to_vec();
+    let mut mram = 0;
+    let mut aram = 0;
+
+    for index in 0..archive.entry_count {
+        let record = archive.entries + index * ENTRY_SIZE;
+        let type_and_name = archive.reader.u32_at(record + ENTRY_TYPE_AND_NAME)?;
+        let flags = type_and_name >> ENTRY_TYPE_SHIFT;
+        if flags & ENTRY_TYPE_DIRECTORY != 0 {
+            continue;
+        }
+        let Some(&data) = swaps.get(&index) else {
+            return Err(Error::Corrupt("a file entry is outside every directory"));
+        };
+
+        // The compression bits restate what the member's bytes already are.
+        let compressed = ENTRY_TYPE_COMPRESSED | ENTRY_TYPE_YAZ0;
+        let flags = match data.starts_with(b"Yaz0") {
+            true => flags | compressed,
+            false => flags & !compressed,
+        };
+
+        let offset = out.len() - archive.file_data;
+        put32(&mut out, record + ENTRY_TYPE_AND_NAME, {
+            flags << ENTRY_TYPE_SHIFT | type_and_name & ENTRY_NAME_MASK
+        });
+        put32(&mut out, record + ENTRY_DATA_OR_NODE, offset as u32);
+        put32(&mut out, record + ENTRY_DATA_SIZE, data.len() as u32);
+
+        let padded = data.len().next_multiple_of(0x20);
+        if flags & ENTRY_TYPE_MRAM != 0 {
+            mram += padded;
+        }
+        if flags & ENTRY_TYPE_ARAM != 0 {
+            aram += padded;
+        }
+        out.extend_from_slice(data);
+        out.resize(archive.file_data + offset + padded, 0);
+    }
+
+    let size = u32::try_from(out.len()).map_err(|_| Error::Oversized)?;
+    put32(&mut out, FILE_SIZE, size);
+    put32(&mut out, TOTAL_DATA_SIZE, size - archive.file_data as u32);
+    put32(&mut out, MRAM_SIZE, mram as u32);
+    put32(&mut out, ARAM_SIZE, aram as u32);
+    Ok(out)
+}
+
+fn put32(data: &mut [u8], at: usize, value: u32) {
+    data[at..at + 4].copy_from_slice(&value.to_be_bytes());
 }
 
 struct Archive<'a> {
@@ -170,8 +289,10 @@ impl<'a> Archive<'a> {
     }
 
     /// Walks the directory tree from the root node, which is always node 0.
-    fn files(&self) -> Result<Vec<File<'a>>> {
-        let mut files = Vec::with_capacity(self.entry_count);
+    /// Each file is paired with the index of its entry record, which is what
+    /// `build` keys replacement data on.
+    fn members(&self) -> Result<Vec<(usize, File<'a>)>> {
+        let mut members = Vec::with_capacity(self.entry_count);
         let mut visited = vec![false; self.node_count];
         // Each frame is a directory mid-walk: the entries it still owes, and
         // the path prefix its members go under.
@@ -208,14 +329,15 @@ impl<'a> Archive<'a> {
                 stack.push((range, path));
             } else {
                 let size = self.reader.u32_at(record + ENTRY_DATA_SIZE)? as usize;
-                files.push(File {
+                let file = File {
                     path,
                     data: self.reader.slice_at(self.file_data + target, size)?,
-                });
+                };
+                members.push((index, file));
             }
         }
 
-        Ok(files)
+        Ok(members)
     }
 
     /// Marks a node visited and hands back the run of entries it owns.
@@ -240,7 +362,9 @@ impl<'a> Archive<'a> {
             .checked_add(count)
             .filter(|&end| end <= self.entry_count)
             .map(|end| first..end)
-            .ok_or(Error::Corrupt("a directory claims entries that do not exist"))
+            .ok_or(Error::Corrupt(
+                "a directory claims entries that do not exist",
+            ))
     }
 
     /// Reads a name out of the string pool. The pool is Shift-JIS: these are
@@ -294,10 +418,6 @@ mod tests {
 
     fn put16(data: &mut [u8], at: usize, value: u16) {
         data[at..at + 2].copy_from_slice(&value.to_be_bytes());
-    }
-
-    fn put32(data: &mut [u8], at: usize, value: u32) {
-        data[at..at + 4].copy_from_slice(&value.to_be_bytes());
     }
 
     /// Writes an entry, hashing whatever name the pool holds at `name`, so the
@@ -360,9 +480,15 @@ mod tests {
         put_entry(&mut data, 3, REGULAR, NAME_A, 0, 5);
         put_entry(&mut data, 4, DIRECTORY, NAME_SELF, 1, 0x10);
         put_entry(&mut data, 5, DIRECTORY, NAME_PARENT, 0, 0x10);
-        put_entry(&mut data, 6, REGULAR, NAME_B, 8, 3);
+        put_entry(&mut data, 6, REGULAR, NAME_B, 0x20, 3);
 
-        data.extend_from_slice(b"AAAAA\0\0\0BBB");
+        // Members in entry order, each padded out to 0x20, the layout `build`
+        // reproduces.
+        data.resize(FILE_DATA + 0x40, 0);
+        data[FILE_DATA..FILE_DATA + 5].copy_from_slice(b"AAAAA");
+        data[FILE_DATA + 0x20..FILE_DATA + 0x23].copy_from_slice(b"BBB");
+        put32(&mut data, TOTAL_DATA_SIZE, 0x40);
+        put32(&mut data, MRAM_SIZE, 0x40);
         let size = data.len() as u32;
         put32(&mut data, FILE_SIZE, size);
         data
@@ -372,7 +498,7 @@ mod tests {
     /// test can feed decode particular name bytes.
     fn rename_b(data: &mut [u8], byte: u8) {
         data[STRINGS + NAME_B as usize] = byte;
-        put_entry(data, 6, REGULAR, NAME_B, 8, 3);
+        put_entry(data, 6, REGULAR, NAME_B, 0x20, 3);
     }
 
     #[test]
@@ -473,5 +599,85 @@ mod tests {
             0xBEEF,
         );
         assert!(matches!(files(&data), Err(Error::Corrupt(_))));
+    }
+
+    /// The fidelity contract: handing every member back unchanged reproduces
+    /// the original bytes.
+    #[test]
+    fn rebuilds_the_original_byte_for_byte() {
+        let data = archive(1);
+        let rebuilt = build(&data, &files(&data).unwrap()).unwrap();
+        assert_eq!(rebuilt, data);
+    }
+
+    /// Growing a member pushes everything after it, and the result still
+    /// decodes to the swapped contents.
+    #[test]
+    fn rebuilds_around_replaced_data() {
+        let data = archive(1);
+        let mut members = files(&data).unwrap();
+        // a.bin, which sits before b.bin in the data section.
+        members[1].data = &[0xAB; 0x21];
+        let rebuilt = build(&data, &members).unwrap();
+
+        let listed = files(&rebuilt).unwrap();
+        assert_eq!(listed[0].path, "sub/b.bin");
+        assert_eq!(listed[0].data, b"BBB");
+        assert_eq!(listed[1].path, "a.bin");
+        assert_eq!(listed[1].data, [0xAB; 0x21].as_slice());
+    }
+
+    /// The compression bits follow the bytes, so swapping Yaz0 data into a
+    /// plain member marks it compressed.
+    #[test]
+    fn compression_bits_follow_the_member_bytes() {
+        let data = archive(1);
+        let mut members = files(&data).unwrap();
+        members[0].data = b"Yaz0 in shape only";
+        let rebuilt = build(&data, &members).unwrap();
+
+        let flags = rebuilt[ENTRIES + 6 * ENTRY_SIZE + ENTRY_TYPE_AND_NAME];
+        assert_eq!(
+            flags as u32,
+            REGULAR | ENTRY_TYPE_COMPRESSED | ENTRY_TYPE_YAZ0
+        );
+    }
+
+    #[test]
+    fn refuses_a_missing_member() {
+        let data = archive(1);
+        let members = files(&data).unwrap();
+        assert!(matches!(
+            build(&data, &members[..1]),
+            Err(Error::MissingMember(_))
+        ));
+    }
+
+    #[test]
+    fn refuses_a_member_the_archive_does_not_have() {
+        let data = archive(1);
+        let mut members = files(&data).unwrap();
+        members.push(File {
+            path: "c.bin".into(),
+            data: b"",
+        });
+        assert!(matches!(
+            build(&data, &members),
+            Err(Error::UnknownMember(_))
+        ));
+    }
+
+    #[test]
+    fn refuses_a_member_given_twice() {
+        let data = archive(1);
+        let mut members = files(&data).unwrap();
+        members.push(File {
+            path: "a.bin".into(),
+            data: b"rival copy",
+        });
+        assert!(matches!(
+            build(&data, &members),
+            Err(Error::DuplicateMember(_))
+        ));
     }
 }
