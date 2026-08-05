@@ -5,7 +5,7 @@
 //! downstream, and if a message about one needs printing, it travels up as an
 //! error rather than as a call back into this crate.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -38,9 +38,21 @@ enum Command {
         path: PathBuf,
     },
     /// Pack the changes into a ready to install mod
-    Build,
+    Build {
+        /// Project to pack, defaults to the current directory
+        dir: Option<PathBuf>,
+        /// Where to write the mod, defaults to out/ inside the project
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Pack the changes into a playable disc image
-    Image,
+    Image {
+        /// Project to pack, defaults to the current directory
+        dir: Option<PathBuf>,
+        /// Where to write the image, defaults to out/ inside the project
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -75,8 +87,27 @@ fn run(command: Command) -> Result<(), Error> {
             let _ = path;
             Err(Error::Unimplemented("revert"))
         }
-        Command::Build => Err(Error::Unimplemented("build")),
-        Command::Image => Err(Error::Unimplemented("image")),
+        // Both default to the project around us, the way every other tool that
+        // works on a checkout does, and take one somewhere else if named.
+        Command::Build { dir, output } => {
+            let out = tpmt_pipeline::build(project(&dir), output.as_deref())?;
+            println!("built {}", out.display());
+            Ok(())
+        }
+        Command::Image { dir, output } => {
+            let out = tpmt_pipeline::image(project(&dir), output.as_deref())?;
+            println!("wrote {}", out.display());
+            Ok(())
+        }
+    }
+}
+
+/// The project a command works on, which is the current directory unless one
+/// was named.
+fn project(dir: &Option<PathBuf>) -> &Path {
+    match dir {
+        Some(dir) => dir,
+        None => Path::new("."),
     }
 }
 
