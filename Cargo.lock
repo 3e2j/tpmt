@@ -405,6 +405,7 @@ dependencies = [
 name = "tpmt-disc"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
  "sha1",
  "thiserror",
  "tpmt-bytes",

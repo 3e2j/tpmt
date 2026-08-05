@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 tpmt-bytes.workspace = true
 thiserror.workspace = true
+encoding_rs.workspace = true # file table names
 sha1.workspace = true # disc identity
 
 [lints]
