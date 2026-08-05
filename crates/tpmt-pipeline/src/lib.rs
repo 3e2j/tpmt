@@ -4,6 +4,12 @@
 //! files to whichever format crate claims them, and writes the result out as a single
 //! folder a person edits in place. Building runs the same route backwards.
 //!
+//! Building has two endings. A build works out what changed, re-encodes it, and
+//! gathers the finished game files into a mod somebody else can install. An
+//! image carries on from there and lays those files out as a disc, which is the
+//! only step of the two that has to know where anything goes. Everything before
+//! that split is one path, and neither ending is built by way of the other.
+//!
 //! Edits are never tracked as they happen. Which files a person touched is
 //! worked out at build time, by hashing them against the vanilla hashes taken
 //! at unpack, and only those get re-encoded. Everything else is copied out of
@@ -38,32 +44,34 @@
 // Store, everything we generate:
 //   discs/GZ2E-rev0/source.toml   where the ISO was last seen, plus its sha1
 //   discs/GZ2E-rev0/hashes        vanilla hashes, for change detection
-//   out/                          built images
+//   out/                          built mods and images
 //
 // Paths mirror the disc, decoded files chain extensions (zel_00.bmg.json).
 
-// TODO: build. Nothing puts a disc back together yet, this crate only unpacks.
-// Everything above about change detection, selective re-encoding and repacking
-// archives is where that is going rather than what is here. Repacking with an
-// unchanged member set is what `tpmt_arc::build` already does; adding or
+// TODO: build and image. Nothing goes back the other way yet, this crate only
+// unpacks. Everything above about change detection, selective re-encoding and
+// repacking archives is where that is going rather than what is here. Repacking
+// with an unchanged member set is what `tpmt_arc::build` already does; adding or
 // removing members waits on the re-emitter marked TODO in tpmt-arc.
 
 // TODO: the golden roundtrip. The end to end fidelity test: unpack a retail
-// ISO, build it straight back with nothing edited, and require every entry the
+// ISO, image it straight back with nothing edited, and require every entry the
 // disc reports to come back byte for byte. It lives at this level because only
 // the pipeline sees the whole path (disc, compression, archives, formats); the
 // format crates each proved their own fidelity with throwaway probes, and this
 // is the committed test that keeps all of it true at once. Needs an ISO on hand,
 // so it runs as an ignored integration test under tests/ pointed at assets/.
-// Blocked on build existing at all.
+// Blocked on build and image existing at all. It goes through image, since that
+// is the one that produces something a disc reader can be pointed back at, and
+// getting there means every step build owns was already right.
 //
-// It compares entries, not whole files: a build drops the mastering fill (see
+// It compares entries, not whole files: an image drops the mastering fill (see
 // tpmt-disc) and so is smaller than its source. assets/NA.iso is already
 // scrubbed, so it is the one print where comparing the files would pass anyway.
 // Do not calibrate on it.
 //
 // The file table is the exception worth checking whole. It is never unpacked,
-// so a build derives it from the project tree, and the source disc still has
+// so an image derives it from the project tree, and the source disc still has
 // the original to hold that against. Only the offsets are allowed to differ.
 
 // TODO: the layout above is the target, not what unpack writes. Today it makes

@@ -37,10 +37,10 @@ enum Command {
         /// File in the project to put back
         path: PathBuf,
     },
-    /// Pack the project into a playable image
+    /// Pack the changes into a ready to install mod
     Build,
-    /// Collect changed files for sharing
-    Export,
+    /// Pack the changes into a playable disc image
+    Image,
 }
 
 fn main() -> ExitCode {
@@ -76,7 +76,7 @@ fn run(command: Command) -> Result<(), Error> {
             Err(Error::Unimplemented("revert"))
         }
         Command::Build => Err(Error::Unimplemented("build")),
-        Command::Export => Err(Error::Unimplemented("export")),
+        Command::Image => Err(Error::Unimplemented("image")),
     }
 }
 
