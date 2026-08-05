@@ -23,6 +23,10 @@ const NAME_POOL: &[u8] = b"\0a.bin\0sub\0b.bin\0empty\0c.bin\0";
 
 const ENTRY_COUNT: u32 = 6;
 
+/// The preamble, which comes back ahead of the file table. The file table
+/// itself is not one of them, so the game's own files start here.
+const SYS_ENTRIES: usize = 4;
+
 fn put32(data: &mut [u8], at: u64, value: u32) {
     let at = at as usize;
     data[at..at + 4].copy_from_slice(&value.to_be_bytes());
@@ -136,7 +140,7 @@ fn paths(disc: &Disc) -> Vec<String> {
 fn walks_the_file_table_depth_first() {
     let disc = open(&disc()).unwrap();
     assert_eq!(
-        paths(&disc)[5..],
+        paths(&disc)[SYS_ENTRIES..],
         [
             "files/a.bin",
             "files/sub",
@@ -147,9 +151,9 @@ fn walks_the_file_table_depth_first() {
     );
 
     let entries = disc.entries().unwrap();
-    assert!(matches!(entries[6], Entry::Directory { .. }));
+    assert!(matches!(entries[SYS_ENTRIES + 1], Entry::Directory { .. }));
     assert!(matches!(
-        entries[7],
+        entries[SYS_ENTRIES + 2],
         Entry::File {
             offset: 0x2810,
             size: 5,
@@ -165,7 +169,7 @@ fn preamble_lengths_come_out_of_their_own_headers() {
     let disc = open(&disc()).unwrap();
     let entries = disc.entries().unwrap();
 
-    let sizes: Vec<(&str, u64)> = entries[..5]
+    let sizes: Vec<(&str, u64)> = entries[..SYS_ENTRIES]
         .iter()
         .map(|entry| match entry {
             Entry::File { path, size, .. } => (path.as_str(), *size),
@@ -183,7 +187,6 @@ fn preamble_lengths_come_out_of_their_own_headers() {
             // The furthest section reaches 0x200 + 0x30, not the 0x100 + 0x40 of
             // the one declared last.
             ("sys/main.dol", DOL_LEN),
-            ("sys/fst.bin", 0x65),
         ]
     );
 }
@@ -245,7 +248,7 @@ fn a_name_is_read_before_it_is_judged() {
     data[(FST_OFFSET + 72 + NAME_A as u64) as usize..][..5].copy_from_slice(b"\x83\x5Cin\0");
 
     let disc = open(&data).unwrap();
-    assert_eq!(paths(&disc)[5], "files/ソin");
+    assert_eq!(paths(&disc)[SYS_ENTRIES], "files/ソin");
 }
 
 /// A file's length is an unchecked u32 from the table and the buffer is sized
@@ -257,7 +260,7 @@ fn refuses_to_read_past_the_end_of_the_image() {
     let disc = open(&data).unwrap();
 
     let entries = disc.entries().expect("the table itself is still fine");
-    let Entry::File { offset, size, .. } = entries[5] else {
+    let Entry::File { offset, size, .. } = entries[SYS_ENTRIES] else {
         unreachable!("a.bin is a file")
     };
     assert!(matches!(disc.read(offset, size), Err(Error::Read { .. })));

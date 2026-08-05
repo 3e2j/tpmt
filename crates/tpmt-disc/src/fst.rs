@@ -3,6 +3,20 @@
 //! A flat array in depth-first order. A directory holds the index its own
 //! subtree ends at, so nesting is a matter of index ranges rather than pointers.
 //! Names live in a pool after the array.
+//!
+//! Nothing about the table is kept when a disc is unpacked, because nothing in
+//! it has to be. It is the directory tree written down, and the offsets it
+//! carries are the one part a build works out for itself.
+
+// TODO: writing, which is the whole reason the table is not unpacked. Entries
+// go depth first, each directory's children ordered by their uppercased name,
+// and the name pool follows in that same order, back to back and NUL
+// terminated, with the root's own offset left at 0. Rebuilding the three prints
+// that way reproduces their `fst.bin` byte for byte, length included. Ordering
+// on the raw bytes instead misplaces 7 directories and a case-insensitive
+// compare misplaces 4, and no two siblings share an uppercased name, so the
+// order is total. The flag byte for a directory is 1, not the whole 0xFF the
+// mask here would also accept.
 
 use tpmt_bytes::Reader;
 

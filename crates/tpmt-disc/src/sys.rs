@@ -85,12 +85,15 @@ pub(crate) fn fst_range(boot: &[u8]) -> Result<(u64, u64)> {
     ))
 }
 
-/// The five preamble pieces. Only the boot header says where any of them are,
-/// and two have to have their lengths worked out from their own contents.
+/// The four preamble pieces a project keeps. Only the boot header says where
+/// any of them are, and two have to have their lengths worked out from their
+/// own contents.
+///
+/// The file table is not one of them. `fst` derives it.
 pub(crate) fn entries(disc: &Disc) -> Result<Vec<Entry>> {
     let boot = disc.read(0, BOOT_LEN)?;
     let dol_offset = Reader::new(&boot).u32_at(DOL_OFFSET_FIELD)? as u64;
-    let (fst_offset, fst_size) = fst_range(&boot)?;
+    let (fst_offset, _) = fst_range(&boot)?;
 
     // A game disc with nowhere to boot from is a header that did not survive
     // whatever produced it.
@@ -122,7 +125,6 @@ pub(crate) fn entries(disc: &Disc) -> Result<Vec<Entry>> {
             apploader_len(disc, APPLOADER_OFFSET)?,
         ),
         entry("main.dol", dol_offset, dol_len),
-        entry("fst.bin", fst_offset, fst_size),
     ])
 }
 
