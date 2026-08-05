@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 
 use crate::image::{Handle, read_at};
 
-pub use crate::sys::Header;
+pub use crate::sys::{Bi2, Boot, Metadata};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -77,6 +77,20 @@ pub enum Error {
 
     #[error("the disc's file table is corrupt: {0}")]
     CorruptFileTable(&'static str),
+
+    #[error(
+        "{region} holds data at {offset:#x}, outside its known fields, which a build would lose"
+    )]
+    UnknownPreambleData { region: &'static str, offset: u64 },
+
+    #[error(
+        "{what} is {found:#x} where a build would put {want:#x}, so rebuilding would change it"
+    )]
+    DerivedValueDiffers {
+        what: &'static str,
+        found: u32,
+        want: u32,
+    },
 
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
@@ -113,7 +127,7 @@ impl Entry {
 /// An open disc image.
 pub struct Disc {
     handle: Handle,
-    header: Header,
+    metadata: Metadata,
 }
 
 impl Disc {
@@ -127,12 +141,23 @@ impl Disc {
         let len = file.metadata().map_err(open)?.len();
 
         let handle = Handle::open(file, len)?;
-        let header = sys::header(&read_at(&handle, 0, sys::BOOT_LEN)?)?;
-        Ok(Self { handle, header })
+        let boot = read_at(&handle, 0, sys::BOOT_LEN)?;
+        sys::identify(&boot)?;
+
+        // The apploader's length is one of the values the header is checked
+        // against, so it has to be in hand before the header can be read.
+        let apploader = read_at(&handle, sys::APPLOADER_OFFSET, sys::APPLOADER_HEADER_LEN)?;
+        let bi2 = read_at(&handle, sys::BI2_OFFSET, sys::BI2_LEN)?;
+        let metadata = Metadata {
+            boot: sys::boot(&boot, sys::apploader_len(&apploader)?)?,
+            bi2: sys::bi2(&bi2)?,
+        };
+        Ok(Self { handle, metadata })
     }
 
-    pub fn header(&self) -> &Header {
-        &self.header
+    /// What the preamble records that a build cannot work out again.
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     /// The length of the image, which is not the length of the file it came out

@@ -10,6 +10,9 @@ tpmt-bytes.workspace = true
 thiserror.workspace = true
 encoding_rs.workspace = true # file table names
 sha1.workspace = true # disc identity
+# The preamble values a project keeps instead of boot.bin and bi2.bin. Which
+# file they end up in is the pipeline's business, not this crate's.
+serde.workspace = true
 
 [lints]
 workspace = true

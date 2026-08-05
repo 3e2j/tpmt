@@ -21,6 +21,7 @@ clap = { version = "4", features = ["derive"] }
 encoding_rs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1"
 
 # Not 0.11. That release changed the output type and dropped its LowerHex impl,
 # and every digest here is written out as hex.

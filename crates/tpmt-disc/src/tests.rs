@@ -22,10 +22,20 @@ const NAME_C: u32 = 23;
 const NAME_POOL: &[u8] = b"\0a.bin\0sub\0b.bin\0empty\0c.bin\0";
 
 const ENTRY_COUNT: u32 = 6;
+const FST_LEN: u32 = 0x65;
 
-/// The preamble, which comes back ahead of the file table. The file table
-/// itself is not one of them, so the game's own files start here.
-const SYS_ENTRIES: usize = 4;
+// What the reader works out for itself rather than keeping, spelled out here so
+// a wrong rule fails rather than agreeing with itself. The file table is loaded
+// as high as it fits under 0x80400000 on a 32 byte boundary; user data starts on
+// the first 0x8000 past the end of the table at 0x2765, and runs to 0x57058000.
+const FST_ADDRESS: u32 = 0x803F_FF80;
+const USER_POSITION: u32 = 0x8000;
+const USER_LENGTH: u32 = 0x5705_0000;
+
+/// The preamble entries, which come back ahead of the file table. Only the
+/// apploader and the executable are among them, so the game's own files start
+/// here.
+const SYS_ENTRIES: usize = 2;
 
 fn put32(data: &mut [u8], at: u64, value: u32) {
     let at = at as usize;
@@ -55,15 +65,48 @@ fn put_fst(data: &mut [u8], index: u32, dir: bool, name: u32, target: u32, end_o
 fn disc() -> Vec<u8> {
     let mut data = vec![0u8; IMAGE_LEN as usize];
 
+    // Every kept field gets a value of its own, so a reader constant pointing
+    // at the wrong place reads some other field, or the zero fill, and fails.
     data[..6].copy_from_slice(b"GZ2E01");
+    data[sys::DISC_NUMBER_OFFSET] = 3;
     data[sys::REVISION_OFFSET] = 2;
+    data[sys::AUDIO_STREAMING_OFFSET] = 1;
+    data[sys::STREAM_BUFFER_SIZE_OFFSET] = 10;
     data[sys::TITLE_OFFSET..sys::TITLE_OFFSET + 5].copy_from_slice(b"title");
     put32(&mut data, sys::MAGIC_OFFSET as u64, sys::MAGIC);
+
+    let bi2 = |field: usize| sys::BI2_OFFSET + field as u64;
+    put32(&mut data, bi2(sys::BI2_SIMULATED_MEMORY_SIZE), 0x0180_0000);
+    put32(&mut data, bi2(sys::BI2_DEBUG_FLAG), 2);
+    put32(&mut data, bi2(sys::BI2_COUNTRY), 1);
+    put32(&mut data, bi2(sys::BI2_UNKNOWN_1C), 4);
+    put32(&mut data, bi2(sys::BI2_UNKNOWN_20), 5);
+    put32(&mut data, bi2(sys::BI2_PAD_SPEC), 6);
 
     put32(&mut data, sys::DOL_OFFSET_FIELD as u64, DOL_OFFSET as u32);
     put32(&mut data, sys::FST_OFFSET_FIELD as u64, FST_OFFSET as u32);
     let fst_len = ENTRY_COUNT as usize * fst::ENTRY_LEN + NAME_POOL.len();
-    put32(&mut data, sys::FST_SIZE_FIELD as u64, fst_len as u32);
+    assert_eq!(
+        fst_len as u32, FST_LEN,
+        "the derived values below assume this"
+    );
+    put32(&mut data, sys::FST_SIZE_FIELD as u64, FST_LEN);
+    put32(&mut data, sys::FST_MAX_SIZE_FIELD as u64, FST_LEN);
+
+    // The layout values, which the reader checks rather than keeps.
+    put32(
+        &mut data,
+        sys::DEBUG_MONITOR_FIELD as u64,
+        APPLOADER_LEN as u32,
+    );
+    put32(
+        &mut data,
+        sys::DEBUG_MONITOR_ADDRESS_FIELD as u64,
+        sys::DEBUG_MONITOR_ADDRESS,
+    );
+    put32(&mut data, sys::FST_ADDRESS_FIELD as u64, FST_ADDRESS);
+    put32(&mut data, sys::USER_POSITION_FIELD as u64, USER_POSITION);
+    put32(&mut data, sys::USER_LENGTH_FIELD as u64, USER_LENGTH);
 
     // 0x20 of header, then the two halves the apploader reports.
     put32(
@@ -180,8 +223,6 @@ fn preamble_lengths_come_out_of_their_own_headers() {
     assert_eq!(
         sizes,
         [
-            ("sys/boot.bin", sys::BOOT_LEN),
-            ("sys/bi2.bin", sys::BI2_LEN),
             // 0x20 of header the two reported halves do not count.
             ("sys/apploader.img", APPLOADER_LEN),
             // The furthest section reaches 0x200 + 0x30, not the 0x100 + 0x40 of
@@ -266,16 +307,27 @@ fn refuses_to_read_past_the_end_of_the_image() {
     assert!(matches!(disc.read(offset, size), Err(Error::Read { .. })));
 }
 
-/// A title long enough to fill its field leaves no terminator, so a read that
-/// keeps going finds the next zero somewhere in the rest of the header.
+/// A title long enough to fill its field leaves no terminator, so the read has
+/// to stop at the end of the field rather than at the next zero. Nothing past
+/// the field could stand in for one anyway: it is reserved, and a disc with
+/// bytes in there is refused outright.
 #[test]
 fn the_title_stops_at_the_end_of_its_field() {
     let mut data = disc();
     data[sys::TITLE_OFFSET..sys::TITLE_OFFSET + sys::TITLE_LEN].fill(b'A');
-    data[sys::TITLE_OFFSET + sys::TITLE_LEN] = b'B';
 
     let disc = open(&data).unwrap();
-    assert_eq!(disc.header().title, "A".repeat(sys::TITLE_LEN));
+    assert_eq!(disc.metadata().boot.title, "A".repeat(sys::TITLE_LEN));
+}
+
+/// A lead byte with nothing after it, the same corruption the file table test
+/// uses, but through the header's own decoder.
+#[test]
+fn refuses_a_title_that_is_not_text() {
+    let mut data = disc();
+    data[sys::TITLE_OFFSET + 4] = 0x93;
+
+    assert!(matches!(open(&data), Err(Error::CorruptHeader(_))));
 }
 
 /// The game has a Wii print, so saying which disc this is beats refusing it as
@@ -283,9 +335,20 @@ fn the_title_stops_at_the_end_of_its_field() {
 #[test]
 fn says_what_it_is_looking_at() {
     let disc = open(&disc()).unwrap();
-    assert_eq!(disc.header().id, "GZ2E");
-    assert_eq!(disc.header().revision, 2);
-    assert_eq!(disc.header().title, "title");
+    let meta = disc.metadata();
+    assert_eq!(meta.boot.id, "GZ2E");
+    assert_eq!(meta.boot.maker, "01");
+    assert_eq!(meta.boot.disc_number, 3);
+    assert_eq!(meta.boot.revision, 2);
+    assert_eq!(meta.boot.audio_streaming, 1);
+    assert_eq!(meta.boot.stream_buffer_size, 10);
+    assert_eq!(meta.boot.title, "title");
+    assert_eq!(meta.bi2.simulated_memory_size, 0x0180_0000);
+    assert_eq!(meta.bi2.debug_flag, 2);
+    assert_eq!(meta.bi2.country, 1);
+    assert_eq!(meta.bi2.unknown_1c, 4);
+    assert_eq!(meta.bi2.unknown_20, 5);
+    assert_eq!(meta.bi2.pad_spec, 6);
     assert_eq!(disc.len(), IMAGE_LEN);
 
     let mut wii = disc_without_magic();
@@ -293,6 +356,78 @@ fn says_what_it_is_looking_at() {
     assert!(matches!(open(&wii), Err(Error::WiiDisc)));
 
     assert!(matches!(open(&disc_without_magic()), Err(Error::NotADisc)));
+}
+
+/// Keeping the boot header and the disc metadata as a handful of values only
+/// works while the rest of those two files is empty. One that put something
+/// elsewhere is refused, rather than unpacked into a project that has quietly
+/// dropped it.
+///
+/// The ranges are spelled out again here, first and last byte of each, so the
+/// tables in `sys` are checked rather than agreed with. Positions on the disc,
+/// which is what the error reports.
+#[test]
+fn refuses_a_preamble_it_would_not_keep_whole() {
+    const BOOT_RESERVED: [(usize, usize); 4] =
+        [(0x0A, 0x1C), (0x60, 0x400), (0x408, 0x420), (0x43C, 0x440)];
+    const BI2_RESERVED: [(usize, usize); 4] = [
+        (0x440, 0x444),
+        (0x448, 0x44C),
+        (0x450, 0x458),
+        (0x468, 0x2440),
+    ];
+
+    let refused = |at: usize, region: &str| {
+        let mut data = disc();
+        data[at] = 1;
+        match open(&data).err() {
+            Some(Error::UnknownPreambleData {
+                region: got,
+                offset,
+            }) if got == region && offset == at as u64 => {}
+            other => panic!("{at:#x} came back as {other:?}"),
+        }
+    };
+
+    for (ranges, region) in [
+        (BOOT_RESERVED, "the boot header"),
+        (BI2_RESERVED, "the disc metadata"),
+    ] {
+        for (from, to) in ranges {
+            refused(from, region);
+            refused(to - 1, region);
+        }
+    }
+}
+
+/// The addresses and offsets are worked out again rather than stored, so a disc
+/// holding something else in one of them is a disc whose rule is not the one
+/// here. Rebuilding it would silently move things, so it is refused instead.
+#[test]
+fn refuses_a_layout_it_would_not_reproduce() {
+    let fields = [
+        sys::DEBUG_MONITOR_FIELD,
+        sys::DEBUG_MONITOR_ADDRESS_FIELD,
+        sys::FST_MAX_SIZE_FIELD,
+        sys::FST_ADDRESS_FIELD,
+        sys::USER_POSITION_FIELD,
+        sys::USER_LENGTH_FIELD,
+    ];
+
+    for at in fields {
+        let mut data = disc();
+        put32(&mut data, at as u64, 0xDEAD_BEEF);
+        assert!(
+            matches!(
+                open(&data).err(),
+                Some(Error::DerivedValueDiffers {
+                    found: 0xDEAD_BEEF,
+                    ..
+                })
+            ),
+            "{at:#x} was accepted"
+        );
+    }
 }
 
 /// Wraps an image in a CISO, leaving out every block that is all zeros, which is
