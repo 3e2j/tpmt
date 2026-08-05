@@ -40,19 +40,13 @@
 //   tpmt.toml   schema version, the preamble values a build cannot derive
 //   sys/        apploader.img, main.dol
 //   files/      game content, archives as directories
+//   out/        built mods and images
 //
-// Store, everything we generate:
-//   discs/GZ2E-rev0/source.toml   where the ISO was last seen, plus its sha1
-//   discs/GZ2E-rev0/hashes        vanilla hashes, for change detection
-//   out/                          built mods and images
+// Store, everything we generate about it rather than for it:
+//   .tpmt/source.toml   where the ISO was last seen, plus its sha1
+//   .tpmt/hashes        vanilla hashes, for change detection
 //
 // Paths mirror the disc, decoded files chain extensions (zel_00.bmg.json).
-
-// TODO: build and image. Nothing goes back the other way yet, this crate only
-// unpacks. Everything above about change detection, selective re-encoding and
-// repacking archives is where that is going rather than what is here. Repacking
-// with an unchanged member set is what `tpmt_arc::build` already does; adding or
-// removing members waits on the re-emitter marked TODO in tpmt-arc.
 
 // TODO: the golden roundtrip. The end to end fidelity test: unpack a retail
 // ISO, image it straight back with nothing edited, and require every entry the
@@ -60,10 +54,10 @@
 // the pipeline sees the whole path (disc, compression, archives, formats); the
 // format crates each proved their own fidelity with throwaway probes, and this
 // is the committed test that keeps all of it true at once. Needs an ISO on hand,
-// so it runs as an ignored integration test under tests/ pointed at assets/.
-// Blocked on build and image existing at all. It goes through image, since that
-// is the one that produces something a disc reader can be pointed back at, and
-// getting there means every step build owns was already right.
+// so it runs as an ignored integration test under tests/ pointed at assets/. It
+// goes through image, since that is the one that produces something a disc
+// reader can be pointed back at, and getting there means every step build owns
+// was already right.
 //
 // It compares entries, not whole files: an image drops the mastering fill (see
 // tpmt-disc) and so is smaller than its source. assets/NA.iso is already
@@ -74,58 +68,46 @@
 // so an image derives it from the project tree, and the source disc still has
 // the original to hold that against. Only the offsets are allowed to differ.
 
-// TODO: the layout above is the target, not what unpack writes. Today it makes
-// tpmt.toml, sys/ and files/ and stops: no store, no out/. The project file is
-// missing the disc's sha1, which waits on something computing one.
-
-// TODO: decide whether to keep our own copy of the ISO rather than remembering
-// its originating path. Either way, tell the user before taking their disk space.
-
 // TODO: routing tables (disc path to project path) are still hardcoded nowhere.
 // Scope is Twilight Princess only, but GZ2E, GZ2P and GZ2J do not share paths,
 // so whatever holds them is keyed by region.
 
-// TODO: scratch space. Half-written output is never left where a person can
-// mistake it for a finished one, so anything generated is staged and then
-// renamed into place. Staging goes inside the store rather than the platform
-// temp directory: a rename is only atomic within one filesystem, and on Windows
-// it fails outright across volumes, which is exactly where a temp directory
-// tends to sit relative to a project.
-
-// TODO: the vanilla hashes, and the tpmt.toml that points at them. Build needs
-// both to tell an edited file from an untouched one, and nothing builds yet.
-
 // TODO: hand files to the format crates. Every file currently lands as the
 // bytes the disc holds, so a `.bmg` is still a `.bmg` rather than the JSON a
-// person would edit.
+// person would edit. Nothing else has to move for that: an unpacked file is
+// hashed as it was written, and a build already asks for the bytes that go on
+// the disc rather than the bytes on the filesystem.
+
+// TODO: adding or removing an archive member. Both are refused by name, since
+// rebuilding the tables it would take is the re-emitter marked TODO in
+// tpmt-arc. Adding or removing a file on the disc itself already works.
+
+// TODO: decide whether to keep our own copy of the ISO rather than remembering
+// its originating path. Either way, tell the user before taking their disk space.
+
+// TODO: a mod does not say a file was deleted, only which ones it replaces or
+// adds. An image handles a deletion fine, since it lays out whatever the tree
+// holds.
+
+mod plan;
+mod project;
+mod store;
 
 use std::borrow::Cow;
-use std::fs;
-use std::io;
+use std::fs::File;
+use std::io::{self, BufWriter};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
-use tpmt_disc::{Bi2, Boot, Disc, Entry};
+use tpmt_disc::{BI2_PATH, BOOT_PATH, Disc, Entry, Layout, Metadata};
+
+use crate::plan::Output;
+use crate::project::{FILES, OUT, Project, SYS, Staged};
+use crate::store::{Source, Store};
 
 /// The three Twilight Princess prints. Any other disc would unpack fine and
 /// then mean nothing to the rest of the toolkit, so it is turned away here.
 const SUPPORTED_IDS: [&str; 3] = ["GZ2E", "GZ2P", "GZ2J"];
-
-/// Bumped whenever a field here moves or changes meaning, so an old project is
-/// told so rather than misread.
-const SCHEMA: u32 = 1;
-
-/// The project file: what a build needs that is not a file in the project.
-///
-/// The disc's boot header and metadata are nine kilobytes of mostly nothing, so
-/// they are kept as their values instead, which also puts the title and the
-/// region somewhere a person can edit them.
-#[derive(serde::Serialize)]
-struct Project<'a> {
-    schema: u32,
-    boot: &'a Boot,
-    bi2: &'a Bi2,
-}
 
 /// Unpacks a disc image into a new project directory.
 ///
@@ -143,42 +125,200 @@ pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
     if project.exists() {
         return Err(Error::ProjectExists(project.to_path_buf()));
     }
-    create_dir(project)?;
-
-    let file = Project {
-        schema: SCHEMA,
-        boot: &metadata.boot,
-        bi2: &metadata.bi2,
-    };
-    write(
-        &project.join("tpmt.toml"),
-        toml::to_string_pretty(&file)?.as_bytes(),
-    )?;
+    // Nothing to allow: the check above already refused a directory that exists
+    // at all, so this one never replaces anything.
+    let staged = Staged::directory(project, &[])?;
+    let at = staged.path();
+    Project::new(metadata).write(at)?;
 
     // One flat layer of work. Every entry reads its own bytes off the shared
     // disc and writes its own outputs, so there is nothing to hand between
     // threads and nothing to order them by.
-    disc.entries()?
+    let hashes: Vec<(String, String)> = disc
+        .entries()?
         .par_iter()
-        .try_for_each(|entry| unpack_entry(&disc, entry, project))
+        .map(|entry| unpack_entry(&disc, entry, at))
+        .collect::<Result<Vec<_>, Error>>()?
+        .concat();
+
+    // Where the disc was, taken now rather than at build time: a project is
+    // often built from somewhere else entirely.
+    let found = iso.canonicalize().map_err(|source| Error::Read {
+        path: iso.to_path_buf(),
+        source,
+    })?;
+    let store = Store::new(at);
+    store.write_source(&Source {
+        path: found,
+        sha1: disc.sha1()?,
+    })?;
+    store.write_hashes(&hashes)?;
+
+    staged.finish()?;
+    Ok(())
+}
+
+/// Packs the changes into a mod somebody else can install.
+///
+/// Nothing but game files, at the paths they go back to. Anything else in here
+/// would be handed to whatever applies this as though it were a file the disc
+/// holds, so a mod says what it has to say by what it contains and where.
+pub fn build(project: &Path, out: Option<&Path>) -> Result<PathBuf, Error> {
+    let (metadata, disc, vanilla) = open(project)?;
+    let plan = plan::plan(project, &disc, &vanilla)?;
+
+    let target = target(project, out, format!("{}-mod", print(&metadata)));
+    let staged = Staged::directory(&target, &[SYS, FILES])?;
+
+    for output in plan.outputs.iter().filter(|output| output.is_changed()) {
+        project::write(&staged.path().join(&output.path), &output.bytes(&disc)?)?;
+    }
+    preamble(&metadata, &disc, staged.path())?;
+
+    staged.finish()
+}
+
+/// Writes out the two preamble pieces, and only if they came out different.
+///
+/// Neither is a file the project holds: they are kept as their values, so a
+/// build is the first place their bytes exist to be compared. Both are built
+/// over what the source disc had rather than from nothing, which leaves the
+/// difference between them exactly the values somebody edited.
+///
+/// The boot header also records where the executable and the file table sit,
+/// and those move on their own when either grows. They are not put in here:
+/// they describe the disc this would have imaged, and a mod is installed into a
+/// disc laid out by whatever installs it, which works them out again for the
+/// image it is writing.
+fn preamble(metadata: &Metadata, disc: &Disc, at: &std::path::Path) -> Result<(), Error> {
+    let boot = disc.boot_bin()?;
+    let bi2 = disc.bi2_bin()?;
+    let pieces = [
+        (
+            BOOT_PATH,
+            tpmt_disc::boot_bin_over(&boot, &metadata.boot)?,
+            boot,
+        ),
+        (BI2_PATH, tpmt_disc::bi2_bin(&metadata.bi2), bi2),
+    ];
+
+    for (path, built, original) in pieces {
+        if built != original {
+            project::write(&at.join(path), &built)?;
+        }
+    }
+    Ok(())
+}
+
+/// Packs the changes into a playable disc image.
+///
+/// The same files a mod would hold, plus every one nobody touched, laid out as
+/// a disc. Written straight through in one pass, since the layout hands them
+/// over in the order they go on.
+pub fn image(project: &Path, out: Option<&Path>) -> Result<PathBuf, Error> {
+    let (metadata, disc, vanilla) = open(project)?;
+    let plan = plan::plan(project, &disc, &vanilla)?;
+    let layout = Layout::plan(&metadata, &plan.items)?;
+
+    let target = target(project, out, format!("{}.iso", print(&metadata)));
+    let staged = Staged::file(&target)?;
+    let file = File::create(staged.path()).map_err(|source| Error::Write {
+        path: staged.path().to_path_buf(),
+        source,
+    })?;
+
+    let outputs: std::collections::HashMap<&str, &Output> = plan
+        .outputs
+        .iter()
+        .map(|output| (output.path.as_str(), output))
+        .collect();
+
+    let mut image = layout.write(BufWriter::new(file));
+    for entry in layout.entries() {
+        let Entry::File { path, .. } = entry else {
+            continue;
+        };
+        let output = outputs
+            .get(path.as_str())
+            .ok_or_else(|| Error::NotOnDisc(path.clone()))?;
+        image.file(&output.bytes(&disc)?)?;
+    }
+    image.finish()?;
+
+    staged.finish()
+}
+
+/// Opens a project and the disc it came out of.
+///
+/// Both endings copy untouched files straight off that disc, so it has to be
+/// findable and has to still be the dump the project was unpacked from.
+/// Anything else would quietly mix two prints together.
+fn open(
+    project: &Path,
+) -> Result<(Metadata, Disc, std::collections::HashMap<String, String>), Error> {
+    let metadata = Project::read(project)?;
+    let store = Store::new(project);
+    let source = store.source()?;
+
+    if !source.path.exists() {
+        return Err(Error::SourceMissing(source.path));
+    }
+    let disc = Disc::open(&source.path)?;
+    if disc.sha1()? != source.sha1 {
+        return Err(Error::SourceChanged(source.path));
+    }
+
+    let vanilla = store.hashes()?;
+    Ok((metadata, disc, vanilla))
+}
+
+/// Where a finished mod or image goes: exactly where it was asked for, or
+/// `name` under the project's own output directory.
+///
+/// A named path is taken whole, including the last component, so `-o test.iso`
+/// produces a test.iso rather than a test.iso holding something else.
+fn target(project: &Path, out: Option<&Path>, name: String) -> PathBuf {
+    match out {
+        Some(out) => out.to_path_buf(),
+        None => project.join(OUT).join(name),
+    }
+}
+
+/// What a build names its output after, which is the print rather than the
+/// project, since that is what an image or a mod is of.
+fn print(metadata: &Metadata) -> String {
+    format!("{}-rev{}", metadata.boot.id, metadata.boot.revision)
 }
 
 /// Unpacks one disc entry: an archive becomes a directory of its contents,
 /// anything else becomes a file of the bytes the disc holds.
 ///
+/// Gives back the hash of everything it wrote, keyed by where it wrote it,
+/// which is what a build later compares against to find the edits.
+///
 /// A directory entry only matters when it is empty. Anything with members gets
 /// created on the way past by the members themselves.
-fn unpack_entry(disc: &Disc, entry: &Entry, project: &Path) -> Result<(), Error> {
+fn unpack_entry(
+    disc: &Disc,
+    entry: &Entry,
+    project: &Path,
+) -> Result<Vec<(String, String)>, Error> {
     let path = project.join(entry.path());
     let Entry::File { offset, size, .. } = *entry else {
-        return create_dir(&path);
+        project::create_dir(&path)?;
+        return Ok(Vec::new());
     };
 
     let bytes = disc.read(offset, size)?;
+    let mut hashes = Vec::new();
     match is_archive(entry.path()) {
-        true => unpack_archive(&bytes, &path),
-        false => write(&path, &bytes),
+        true => unpack_archive(&bytes, &path, entry.path(), &mut hashes)?,
+        false => {
+            project::write(&path, &bytes)?;
+            hashes.push((entry.path().to_string(), plan::hash(&bytes)));
+        }
     }
+    Ok(hashes)
 }
 
 /// Unpacks an archive into a directory named after it.
@@ -191,10 +331,19 @@ fn unpack_entry(disc: &Disc, entry: &Entry, project: &Path) -> Result<(), Error>
 /// something either format has an opinion about. Archives nested inside
 /// archives are wrapped the same way and unpack the same way.
 ///
+/// Whether the wrapper was there is not recorded, because it does not have to
+/// be: a build that repacks this archive reads the original first, and the
+/// original says.
+///
 /// Not every `.arc` is one of ours. A handful hold other container formats
 /// entirely, and those stay whole, exactly as the disc had them, rather than
 /// being half-understood.
-fn unpack_archive(bytes: &[u8], path: &Path) -> Result<(), Error> {
+fn unpack_archive(
+    bytes: &[u8],
+    path: &Path,
+    at: &str,
+    hashes: &mut Vec<(String, String)>,
+) -> Result<(), Error> {
     let contents = match tpmt_compress::is_yaz0(bytes) {
         true => {
             Cow::Owned(
@@ -211,7 +360,11 @@ fn unpack_archive(bytes: &[u8], path: &Path) -> Result<(), Error> {
         Ok(files) => files,
         // The original bytes, not the decompressed ones: what is written here
         // has to be what goes back on the disc.
-        Err(tpmt_arc::Error::NotRarc) => return write(path, bytes),
+        Err(tpmt_arc::Error::NotRarc) => {
+            project::write(path, bytes)?;
+            hashes.push((at.to_string(), plan::hash(bytes)));
+            return Ok(());
+        }
         Err(source) => {
             return Err(Error::Archive {
                 path: path.to_path_buf(),
@@ -220,12 +373,16 @@ fn unpack_archive(bytes: &[u8], path: &Path) -> Result<(), Error> {
         }
     };
 
-    create_dir(path)?;
+    project::create_dir(path)?;
     for file in files {
+        let inside = format!("{at}/{}", file.path);
         let path = path.join(&file.path);
         match is_archive(&file.path) {
-            true => unpack_archive(file.data, &path)?,
-            false => write(&path, file.data)?,
+            true => unpack_archive(file.data, &path, &inside, hashes)?,
+            false => {
+                project::write(&path, file.data)?;
+                hashes.push((inside, plan::hash(file.data)));
+            }
         }
     }
 
@@ -236,23 +393,6 @@ fn is_archive(path: &str) -> bool {
     path.ends_with(".arc")
 }
 
-fn create_dir(path: &Path) -> Result<(), Error> {
-    fs::create_dir_all(path).map_err(|source| Error::Write {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-fn write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    if let Some(parent) = path.parent() {
-        create_dir(parent)?;
-    }
-    fs::write(path, bytes).map_err(|source| Error::Write {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("`{0}` is not a Twilight Princess disc")]
@@ -260,6 +400,39 @@ pub enum Error {
 
     #[error("`{}` already exists, so there is nothing to unpack into", .0.display())]
     ProjectExists(PathBuf),
+
+    #[error("`{}` is not a project: it has no tpmt.toml", .0.display())]
+    NotAProject(PathBuf),
+
+    #[error("`{}` holds something this did not write, so it will not be replaced", .0.display())]
+    NotOurs(PathBuf),
+
+    #[error("this project was written by schema {found}, and this is schema {want}")]
+    Schema { found: u32, want: u32 },
+
+    #[error("`{}` is not where it was when the project was unpacked", .0.display())]
+    SourceMissing(PathBuf),
+
+    #[error("`{}` is not the disc this project was unpacked from", .0.display())]
+    SourceChanged(PathBuf),
+
+    #[error("`{}` is not readable as something this wrote", .0.display())]
+    CorruptStore(PathBuf),
+
+    #[error("`{0}` is not on the source disc, so there is nothing to copy from")]
+    NotOnDisc(String),
+
+    #[error("`{0}` is a new archive, and building one from nothing is not supported yet")]
+    NewArchive(String),
+
+    #[error("`{0}` is new to its archive, and adding a member is not supported yet")]
+    AddedMember(String),
+
+    #[error("`{0}` is gone from its archive, and removing a member is not supported yet")]
+    DeletedMember(String),
+
+    #[error("`{}`: {source}", .path.display())]
+    Read { path: PathBuf, source: io::Error },
 
     #[error("`{}`: {source}", .path.display())]
     Write { path: PathBuf, source: io::Error },
@@ -278,6 +451,12 @@ pub enum Error {
 
     #[error("the project file could not be written: {0}")]
     Project(#[from] toml::ser::Error),
+
+    #[error("`{}` could not be read: {source}", .path.display())]
+    UnreadableProject {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
 
     #[error(transparent)]
     Disc(#[from] tpmt_disc::Error),

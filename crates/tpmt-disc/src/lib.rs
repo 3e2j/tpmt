@@ -25,11 +25,9 @@
 // prints. So the fill is not reported here and a build will not have it, which
 // costs a matching hash and saves 400 MB.
 
-// TODO: the SHA-1 that identifies a dump. It belongs with the project file that
-// records it, and nothing writes one yet.
-
-// TODO: writing. Building an image back is the other half of this crate. A CISO
-// reads today but only an ISO will come back out.
+// TODO: CISO out, out of scope. Containers are read because that is how dumps
+// arrive, and nothing on the other side wants one back, so an image only ever
+// comes out as a raw disc.
 
 // TODO: Wii discs, out of scope. Recognised by their magic only so the Wii
 // print of this game gets a real answer instead of being called unreadable.
@@ -42,6 +40,7 @@ mod ciso;
 mod fst;
 mod image;
 mod sys;
+mod write;
 
 #[cfg(test)]
 mod tests;
@@ -50,9 +49,12 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use sha1::{Digest, Sha1};
+
 use crate::image::{Handle, read_at};
 
-pub use crate::sys::{Bi2, Boot, Metadata};
+pub use crate::sys::{BI2_PATH, BOOT_PATH, Bi2, Boot, Metadata, bi2_bin, boot_bin_over};
+pub use crate::write::{Image, Layout};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -92,6 +94,43 @@ pub enum Error {
         want: u32,
     },
 
+    #[error("write of {len} bytes at {offset:#x}: {source}")]
+    Write {
+        offset: u64,
+        len: u64,
+        source: io::Error,
+    },
+
+    #[error("the disc's {0}")]
+    Unwritable(&'static str),
+
+    #[error("`{0}` is not a name a file table can hold")]
+    UnwritableName(String),
+
+    #[error("`{0}` and `{1}` are the same name to the game, which reads without case")]
+    NameClash(String, String),
+
+    #[error("`{0}` sits in a directory the project does not have")]
+    Orphan(String),
+
+    #[error("there are more file names than a file table can address")]
+    TooManyNames,
+
+    #[error("nothing on a disc corresponds to `{0}`")]
+    UnknownEntry(String),
+
+    #[error("the project has no `{0}`, and a disc does not boot without one")]
+    MissingEntry(&'static str),
+
+    #[error("the files come to {len:#x} bytes, where a disc holds {end:#x}")]
+    TooLarge { len: u64, end: u64 },
+
+    #[error("`{path}` is {found:#x} bytes where the layout reserved {want:#x}")]
+    WrongSize { path: String, found: u64, want: u64 },
+
+    #[error("the image was handed {0}")]
+    Mismatch(&'static str),
+
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
 }
@@ -117,6 +156,24 @@ pub enum Entry {
 }
 
 impl Entry {
+    pub fn path(&self) -> &str {
+        match self {
+            Self::File { path, .. } | Self::Directory { path } => path,
+        }
+    }
+}
+
+/// One thing to put on a disc, at the path it was edited at.
+///
+/// An `Entry` without the offset, which is the one thing about a disc that a
+/// build works out rather than being told.
+#[derive(Debug, Clone)]
+pub enum Item {
+    File { path: String, size: u64 },
+    Directory { path: String },
+}
+
+impl Item {
     pub fn path(&self) -> &str {
         match self {
             Self::File { path, .. } | Self::Directory { path } => path,
@@ -160,6 +217,19 @@ impl Disc {
         &self.metadata
     }
 
+    /// The boot header exactly as this disc holds it.
+    ///
+    /// Neither of these is a file a project keeps, so this is the only thing a
+    /// rebuilt one can be held against to say whether it came out different.
+    pub fn boot_bin(&self) -> Result<Vec<u8>> {
+        self.read(0, sys::BOOT_LEN)
+    }
+
+    /// The disc metadata exactly as this disc holds it.
+    pub fn bi2_bin(&self) -> Result<Vec<u8>> {
+        self.read(sys::BI2_OFFSET, sys::BI2_LEN)
+    }
+
     /// The length of the image, which is not the length of the file it came out
     /// of when that file is a container.
     pub fn len(&self) -> u64 {
@@ -175,6 +245,24 @@ impl Disc {
     /// Positional, so several threads can pull from one open disc at once.
     pub fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
         read_at(&self.handle, offset, len)
+    }
+
+    /// The SHA-1 of the image, which is what says whether a project's source
+    /// disc is still the same dump it was unpacked from.
+    ///
+    /// Over the image rather than the file, so a container and a raw dump of
+    /// the same disc answer the same.
+    pub fn sha1(&self) -> Result<String> {
+        const CHUNK: u64 = 1 << 20;
+
+        let mut hash = Sha1::new();
+        let mut at = 0;
+        while at < self.handle.len {
+            let take = CHUNK.min(self.handle.len - at);
+            hash.update(&self.read(at, take)?);
+            at += take;
+        }
+        Ok(format!("{:x}", hash.finalize()))
     }
 
     /// Everything the disc holds: the preamble under `sys/`, then the game's

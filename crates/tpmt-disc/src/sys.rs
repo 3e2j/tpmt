@@ -13,7 +13,7 @@
 //! rebuilt into something else.
 
 use serde::{Deserialize, Serialize};
-use tpmt_bytes::Reader;
+use tpmt_bytes::{Reader, Writer};
 
 use crate::{Disc, Entry, Error, Result};
 
@@ -35,6 +35,8 @@ pub(crate) const AUDIO_STREAMING_OFFSET: usize = 0x08;
 pub(crate) const STREAM_BUFFER_SIZE_OFFSET: usize = 0x09;
 pub(crate) const TITLE_OFFSET: usize = 0x20;
 pub(crate) const TITLE_LEN: usize = 0x40;
+/// Where the values a project keeps stop and the derived numbers start.
+const AUTHORED_LEN: usize = TITLE_OFFSET + TITLE_LEN;
 
 // The layout, all of it worked out again by a build rather than kept. `DVDBB2`
 // in the SDK covers the six from 0x420 on.
@@ -55,9 +57,12 @@ pub(crate) const DEBUG_MONITOR_ADDRESS: u32 = 0x8028_0060;
 /// where it starts.
 const FST_TOP: u32 = 0x8040_0000;
 /// The end of a GameCube disc's user area.
-const USER_AREA_END: u32 = 0x5705_8000;
+pub(crate) const USER_AREA_END: u32 = 0x5705_8000;
 /// User data starts on one of these, past the file table.
 const USER_ALIGN: u32 = 0x8000;
+/// The executable and the file table each start on one of these, past whatever
+/// the layout put in front of them.
+pub(crate) const PREAMBLE_ALIGN: u64 = 0x100;
 
 /// The stretches of the boot header that hold nothing on any of the three
 /// prints. Everything outside them is either kept or checked, so a disc with
@@ -89,6 +94,16 @@ const BI2_RESERVED: [(usize, usize); 4] = [
     (0x10, 0x18),
     (0x28, BI2_LEN as usize),
 ];
+
+/// Where the two preamble files land in a project. A build looks for them by
+/// these names, so they are spelled once.
+pub(crate) const APPLOADER_PATH: &str = "sys/apploader.img";
+pub(crate) const DOL_PATH: &str = "sys/main.dol";
+/// The two preamble pieces, which are not files a project holds: they are kept
+/// as their values and built again. Named here because a mod that carries one
+/// has to call it what a disc calls it.
+pub const BOOT_PATH: &str = "sys/boot.bin";
+pub const BI2_PATH: &str = "sys/bi2.bin";
 
 // Executable. Its length is not stored anywhere, so it is whatever the furthest
 // section reaches.
@@ -200,6 +215,12 @@ pub(crate) fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
 ///
 /// Nothing is stored for them, so if one is not what its rule says, the rule
 /// does not hold for this disc and a build would put something else there.
+///
+/// The executable's and the file table's own offsets are not held to their
+/// alignment rule. They are read off the disc and used as they are, and a
+/// build works out fresh ones and rewrites every field that mentions them, so
+/// a disc that packed its preamble differently still unpacks and rebuilds
+/// whole. The six here have no such second life: they are only ever derived.
 fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
     let fst_offset = reader.u32_at(FST_OFFSET_FIELD)?;
     let fst_len = reader.u32_at(FST_SIZE_FIELD)?;
@@ -250,7 +271,7 @@ fn fst_address(fst_len: u32) -> u32 {
 }
 
 /// User data starts on the first boundary past the file table.
-fn user_position(fst_offset: u32, fst_len: u32) -> u32 {
+pub(crate) fn user_position(fst_offset: u32, fst_len: u32) -> u32 {
     fst_offset
         .saturating_add(fst_len)
         .checked_next_multiple_of(USER_ALIGN)
@@ -282,6 +303,137 @@ pub(crate) fn bi2(bytes: &[u8]) -> Result<Bi2> {
         unknown_20: reader.u32_at(BI2_UNKNOWN_20)?,
         pad_spec: reader.u32_at(BI2_PAD_SPEC)?,
     })
+}
+
+/// Writes the boot header back out: the inverse of `boot` and `check_layout`.
+///
+/// Seven kept values and the magic. Everything else is a run of zeros, or a
+/// number that follows from where the layout put the three things the header
+/// points at.
+pub(crate) fn boot_bin(
+    boot: &Boot,
+    apploader_len: u32,
+    dol_offset: u32,
+    fst_offset: u32,
+    fst_len: u32,
+) -> Result<Vec<u8>> {
+    let mut out = Writer::with_capacity(BOOT_LEN as usize);
+    authored(&mut out, boot)?;
+
+    pad_to(&mut out, DEBUG_MONITOR_FIELD);
+    out.u32(apploader_len);
+    out.u32(DEBUG_MONITOR_ADDRESS);
+
+    pad_to(&mut out, DOL_OFFSET_FIELD);
+    out.u32(dol_offset);
+    out.u32(fst_offset);
+    out.u32(fst_len);
+    // Only ever larger on a game spanning several discs, and this is one disc.
+    out.u32(fst_len);
+    out.u32(fst_address(fst_len));
+    let user = user_position(fst_offset, fst_len);
+    out.u32(user);
+    out.u32(USER_AREA_END.saturating_sub(user));
+
+    pad_to(&mut out, BOOT_LEN as usize);
+    Ok(out.finish())
+}
+
+/// A disc's own boot header with a project's values written into it.
+///
+/// Everything a person can edit sits in the first 0x60 bytes. The rest is
+/// derived from a layout, and the layout a mod is installed into is not the one
+/// it was built against, so the original's numbers are kept rather than
+/// replaced by ours. Whatever applies the mod works those out again for the
+/// disc it is writing, which is the only place they mean anything.
+///
+/// Which also makes this its own comparison: what comes back is the original
+/// unless a value somebody edited is in it.
+pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
+    if original.len() != BOOT_LEN as usize {
+        return Err(Error::Unwritable("a boot header is 0x440 bytes"));
+    }
+
+    let mut out = Writer::with_capacity(BOOT_LEN as usize);
+    authored(&mut out, boot)?;
+    out.bytes(&original[AUTHORED_LEN..]);
+    Ok(out.finish())
+}
+
+/// The part of the header a project keeps: seven values and the magic, and the
+/// zeros between them.
+fn authored(out: &mut Writer, boot: &Boot) -> Result<()> {
+    out.bytes(&exactly(
+        &boot.id,
+        ID_LEN,
+        "game id has to be four characters",
+    )?);
+    out.bytes(&exactly(
+        &boot.maker,
+        MAKER_LEN,
+        "maker code has to be two characters",
+    )?);
+    out.u8(boot.disc_number);
+    out.u8(boot.revision);
+    out.u8(boot.audio_streaming);
+    out.u8(boot.stream_buffer_size);
+
+    pad_to(out, MAGIC_OFFSET);
+    out.u32(MAGIC);
+
+    // Short titles keep their terminator, and one that fills the field has
+    // none, which is how the reader takes it back.
+    pad_to(out, TITLE_OFFSET);
+    let title = encode(&boot.title, "title is not Shift-JIS")?;
+    if title.len() > TITLE_LEN {
+        return Err(Error::Unwritable("title does not fit its 64 byte field"));
+    }
+    out.bytes(&title);
+
+    pad_to(out, AUTHORED_LEN);
+    Ok(())
+}
+
+/// Writes the disc metadata back out: six fields in eight kilobytes of nothing.
+pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
+    let mut out = Writer::with_capacity(BI2_LEN as usize);
+
+    pad_to(&mut out, BI2_SIMULATED_MEMORY_SIZE);
+    out.u32(bi2.simulated_memory_size);
+    pad_to(&mut out, BI2_DEBUG_FLAG);
+    out.u32(bi2.debug_flag);
+    pad_to(&mut out, BI2_COUNTRY);
+    out.u32(bi2.country);
+    out.u32(bi2.unknown_1c);
+    out.u32(bi2.unknown_20);
+    out.u32(bi2.pad_spec);
+
+    pad_to(&mut out, BI2_LEN as usize);
+    out.finish()
+}
+
+/// Zero fills up to the next field, which is how both files above cross the
+/// stretches that hold nothing.
+fn pad_to(out: &mut Writer, offset: usize) {
+    out.zeros(offset - out.len());
+}
+
+/// Encodes a text field back to the Shift-JIS the reader took it out of, and
+/// requires it to still be the width of its field.
+fn exactly(text: &str, len: usize, what: &'static str) -> Result<Vec<u8>> {
+    let bytes = encode(text, what)?;
+    match bytes.len() == len {
+        true => Ok(bytes),
+        false => Err(Error::Unwritable(what)),
+    }
+}
+
+fn encode(text: &str, what: &'static str) -> Result<Vec<u8>> {
+    let (bytes, _, unmappable) = encoding_rs::SHIFT_JIS.encode(text);
+    match unmappable {
+        true => Err(Error::Unwritable(what)),
+        false => Ok(bytes.into_owned()),
+    }
 }
 
 /// Decodes one of the header's text fields. Shift-JIS, following the file table
@@ -339,18 +491,14 @@ pub(crate) fn entries(disc: &Disc) -> Result<Vec<Entry>> {
 
     let apploader = disc.read(APPLOADER_OFFSET, APPLOADER_HEADER_LEN)?;
     let entry = |path: &str, offset, size| Entry::File {
-        path: format!("sys/{path}"),
+        path: path.to_string(),
         offset,
         size,
     };
 
     Ok(vec![
-        entry(
-            "apploader.img",
-            APPLOADER_OFFSET,
-            apploader_len(&apploader)?,
-        ),
-        entry("main.dol", dol_offset, dol_len),
+        entry(APPLOADER_PATH, APPLOADER_OFFSET, apploader_len(&apploader)?),
+        entry(DOL_PATH, dol_offset, dol_len),
     ])
 }
 
