@@ -6,8 +6,6 @@
 //! builds one up and backpatches the offsets that were not knowable at the
 //! point they were reserved.
 
-// TODO: byte writer.
-
 /// A read that could not be satisfied from the buffer it was aimed at.
 ///
 /// Every offset here comes out of a file header, which is to say out of a file
@@ -122,6 +120,96 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// A buffer being built up.
+///
+/// Appends run forward from the end, and the `_at` writes take an absolute
+/// position and overwrite what is already there, which is how a field reserved
+/// before its value was known gets filled in afterwards.
+///
+/// Nothing here is fallible. The buffer grows to fit whatever is appended, and
+/// a position handed to a patch is one the writer gave out earlier rather than
+/// an offset read out of somebody else's file.
+#[derive(Default)]
+pub struct Writer {
+    data: Vec<u8>,
+}
+
+impl Writer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Starts a buffer that will not have to grow on the way to `capacity`.
+    /// Worth it for the file table, whose length is known before it is built.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// How much has been written, which is also the position the next append
+    /// lands at. Reserving a field to backpatch means keeping this first.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn bytes(&mut self, bytes: &[u8]) {
+        self.data.extend_from_slice(bytes);
+    }
+
+    pub fn u8(&mut self, value: u8) {
+        self.data.push(value);
+    }
+
+    pub fn u16(&mut self, value: u16) {
+        self.bytes(&value.to_be_bytes());
+    }
+
+    pub fn u32(&mut self, value: u32) {
+        self.bytes(&value.to_be_bytes());
+    }
+
+    /// Appends `len` bytes of nothing. Whole regions of the preamble are zero,
+    /// and a reserved field is written as zeros until it is patched.
+    pub fn zeros(&mut self, len: usize) {
+        self.data.resize(self.data.len() + len, 0);
+    }
+
+    /// Pads with zeros until the next `to` boundary, and does nothing if that
+    /// is where the buffer already ends.
+    pub fn align(&mut self, to: usize) {
+        self.zeros(self.data.len().next_multiple_of(to) - self.data.len());
+    }
+
+    pub fn u8_at(&mut self, pos: usize, value: u8) {
+        self.patch(pos, &[value]);
+    }
+
+    pub fn u16_at(&mut self, pos: usize, value: u16) {
+        self.patch(pos, &value.to_be_bytes());
+    }
+
+    pub fn u32_at(&mut self, pos: usize, value: u32) {
+        self.patch(pos, &value.to_be_bytes());
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.data
+    }
+
+    /// Overwrites bytes that were already written.
+    ///
+    /// Panics on a position the buffer has not reached, which cannot happen to
+    /// a caller patching a field it reserved itself.
+    fn patch(&mut self, pos: usize, bytes: &[u8]) {
+        self.data[pos..pos + bytes.len()].copy_from_slice(bytes);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +250,52 @@ mod tests {
             Reader::new(b"unterminated").cstr_at(0),
             Err(ByteError::Unterminated { .. })
         ));
+    }
+
+    #[test]
+    fn writes_go_out_big_endian() {
+        let mut writer = Writer::new();
+        writer.u8(0x0D);
+        writer.u16(0xACED);
+        writer.u32(0x0001_0203);
+        assert_eq!(writer.finish(), [0x0D, 0xAC, 0xED, 0x00, 0x01, 0x02, 0x03]);
+    }
+
+    /// The whole point of the writer: a field written before anybody knew what
+    /// went in it, filled in once the rest had been laid down. Read back through
+    /// the reader, since the two halves agreeing is what actually matters.
+    #[test]
+    fn a_reserved_field_is_filled_in_afterwards() {
+        let mut writer = Writer::new();
+        let field = writer.len();
+        writer.u32(0);
+        writer.bytes(b"name\0");
+
+        let end = writer.len();
+        writer.u32_at(field, end as u32);
+
+        let out = writer.finish();
+        assert_eq!(Reader::new(&out).u32_at(field).unwrap(), 9);
+    }
+
+    #[test]
+    fn padding_stops_on_the_next_boundary() {
+        let mut writer = Writer::new();
+        writer.bytes(b"abc");
+        writer.align(4);
+        assert_eq!(writer.len(), 4);
+
+        // Already on one, so there is nothing to add.
+        writer.align(4);
+        assert_eq!(writer.len(), 4);
+        assert_eq!(writer.finish(), *b"abc\0");
+    }
+
+    #[test]
+    #[should_panic]
+    fn patching_past_the_end_is_refused() {
+        let mut writer = Writer::new();
+        writer.u32(0);
+        writer.u32_at(2, 1);
     }
 }
