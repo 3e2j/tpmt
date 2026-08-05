@@ -15,6 +15,10 @@ tpmt-disc.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 sha1.workspace = true # change detection against the vanilla digests
+# tpmt.toml. Six crates, and serde was already here for the format crates. A
+# project file a person edits by hand is not worth a parser of our own.
+serde.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true
