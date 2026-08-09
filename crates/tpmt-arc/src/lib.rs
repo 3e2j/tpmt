@@ -24,10 +24,11 @@
 //! - An archive is the scope a set of cross-references resolves in.
 //!   Every file carries an id, and other files reference it by that number
 //!   rather than by path.
-//! - A lookup by id tries the id as an entry index first O(1), and only searches
-//!   for real if that guess misses. That's why a freshly authored archive
-//!   numbers every file's id as its own entry index: it keeps every lookup
-//!   on the fast path. Unknown why some archives just exist unordered/unoptimized.
+//! - A lookup by id tries the id as an entry index first O(1) if possible
+//!   (marked by a `synced` bool), and only searches by id directly if that guess misses.
+//!   That's why a freshly authored archive numbers every file's id as its own
+//!   entry index: it keeps every lookup on the fast path. It's unknown why unsynced
+//!   archives exist at all; nevertheless, their existance needs to be accounted for.
 //!
 //! # Layout
 //!
@@ -235,10 +236,10 @@ mod entry {
     pub const NO_ID: u16 = 0xFFFF;
 }
 
-// The pool opens with `.` and `..`, in that order, so the offset every
-// directory entry names its own two by is fixed.
-const DOT_IN_POOL: u32 = 0x00;
-const DOTDOT_IN_POOL: u32 = 0x02;
+// The string pool opens with `.` and `..`, in that order, so the offset
+// every directory entry names its own two by is fixed.
+const DOT_IN_STRING_POOL: u32 = 0x00;
+const DOTDOT_IN_STRING_POOL: u32 = 0x02;
 
 // Every section starts this aligned, and files' bytes are padded to it.
 const ALIGN: usize = 0x20;
@@ -260,7 +261,7 @@ struct ArchiveReader<'a> {
     entry_count: usize,
     /// Every name, null terminated and Shift-JIS, referred to by offset from
     /// the start of it.
-    strings_at: usize,
+    string_pool_at: usize,
     /// The files' bytes, each padded out to 0x20. Last section in the archive.
     file_data_at: usize,
 }
@@ -323,14 +324,14 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
         node_count,
         entries_at,
         entry_count,
-        strings_at: relative(data_header::STRING_POOL_PTR)?,
+        string_pool_at: relative(data_header::STRING_POOL_PTR)?,
         file_data_at: header.saturating_add(reader.u32_at(top_header::FILE_DATA_PTR)? as usize),
         reader,
     };
     // The root is node 0, and its name is the one thing read outside the walk.
-    let name = opened.reader.u32_at(nodes_at + node::NAME)?;
+    let name_at = opened.reader.u32_at(nodes_at + node::NAME)?;
     let hash = opened.reader.u16_at(nodes_at + node::NAME_HASH)?;
-    let root = opened.name(name, hash)?;
+    let root = opened.name(name_at, hash)?;
 
     // Only used for the verification below, never again: this is the one
     // place anything reads the stored counter back.
@@ -452,7 +453,7 @@ impl<'a> ArchiveReader<'a> {
     /// merely landed on something null-terminated is caught rather than
     /// trusted.
     fn name(&self, offset: u32, hash: u16) -> Result<String> {
-        let raw = self.reader.cstr_at(self.strings_at + offset as usize)?;
+        let raw = self.reader.cstr_at(self.string_pool_at + offset as usize)?;
         if name_hash(raw) != hash {
             return Err(Error::Corrupt("a name does not match its stored hash"));
         }
@@ -465,26 +466,28 @@ impl<'a> ArchiveReader<'a> {
     }
 }
 
-/// The tree [`pack`] rebuilds from the file paths: directories in the order
-/// a walk of the original would have met them, so a round trip lays everything
-/// back where it was.
+/// One directory.
+/// [`grow_dirs`] builds a list of these from the file paths, and
+/// [`DirTree`] then numbers that list the way the archive stores it.
 struct Dir {
     /// The name as the pool will store it, encoded once up front.
     name: Vec<u8>,
     parent: usize,
-    children: Vec<Child>,
+    children: Vec<Entry>,
 }
 
-enum Child {
-    /// Index into the directory list.
+/// One thing a [`Dir`] holds directly under it.
+enum Entry {
+    /// A subdirectory, by index into the directory list.
     Dir(usize),
-    /// Index into the caller's file list.
+    /// A file, by index into the caller's file list.
     File(usize),
 }
 
-/// That tree numbered the way the archive stores it: which node each directory
-/// becomes, and which run of entries it owns.
-struct Tree {
+/// Every [`Dir`] brought together into the tree they form, plus the
+/// numbering the archive stores them under: which node each becomes, and
+/// which run of entries it owns.
+struct DirTree {
     dirs: Vec<Dir>,
     /// The directories in node order, so `order[node]` is a directory index.
     order: Vec<usize>,
@@ -496,8 +499,10 @@ struct Tree {
     entry_count: usize,
 }
 
-impl Tree {
-    fn build(archive: &Archive) -> Result<Tree> {
+impl DirTree {
+    /// Numbers the raw shape [`grow_dirs`] grew: which node each directory
+    /// becomes, and which run of entries it owns.
+    fn build(archive: &Archive) -> Result<DirTree> {
         let dirs = grow_dirs(archive)?;
 
         // Nodes are numbered depth first, children in sibling order. First
@@ -511,7 +516,7 @@ impl Tree {
             node_of[dir] = order.len() as u32;
             order.push(dir);
             for child in dirs[dir].children.iter().rev() {
-                if let Child::Dir(sub) = child {
+                if let Entry::Dir(sub) = child {
                     stack.push(*sub);
                 }
             }
@@ -527,7 +532,7 @@ impl Tree {
             entry_count += dirs[dir].children.len() + 2;
         }
 
-        Ok(Tree {
+        Ok(DirTree {
             dirs,
             order,
             node_of,
@@ -544,8 +549,8 @@ impl Tree {
             let first = self.first_entry[node] as usize;
             self.dirs[dir].children.iter().enumerate().filter_map(
                 move |(slot, child)| match child {
-                    Child::File(index) => Some((first + slot, *index)),
-                    Child::Dir(_) => None,
+                    Entry::File(index) => Some((first + slot, *index)),
+                    Entry::Dir(_) => None,
                 },
             )
         })
@@ -571,13 +576,13 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
                 return Err(Error::UnusableName(file.path.clone()));
             }
             if parts.peek().is_none() {
-                dirs[at].children.push(Child::File(index));
+                dirs[at].children.push(Entry::File(index));
                 break;
             }
 
             let name = encode(part)?;
             at = match dirs[at].children.iter().find_map(|child| match child {
-                Child::Dir(dir) if dirs[*dir].name == name => Some(*dir),
+                Entry::Dir(dir) if dirs[*dir].name == name => Some(*dir),
                 _ => None,
             }) {
                 Some(dir) => dir,
@@ -588,7 +593,7 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
                         children: Vec::new(),
                     });
                     let dir = dirs.len() - 1;
-                    dirs[at].children.push(Child::Dir(dir));
+                    dirs[at].children.push(Entry::Dir(dir));
                     dir
                 }
             };
@@ -598,15 +603,27 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
     Ok(dirs)
 }
 
-/// The format's own convention for a fresh id, kept only for reference and
-/// not called: a file's own entry index. That's what lets a lookup by id
-/// (`JKRArchive::findIdResource` in the decomp) hit its fast path, which
-/// tries the id as an entry index before it searches. [`pack`] uses a
-/// different rule instead (see there for why): the lowest id not already
-/// claimed by another file in the archive.
+/// The format's own convention for a fresh file, kept only for reference and
+/// never called: appended past every existing entry, at the next available
+/// entry index, and given whatever id the header's [`Archive::next_free_id`]
+/// counter held at that moment.
+///
+/// That counter only ever advances: adding a file bumps it by one, but
+/// removing one never gives its id back. On an archive where every id still
+/// equals its entry's index ([`Placement::synced`]), the counter and the
+/// entry count are the same number, which is what lets a lookup by id
+/// (`JKRArchive::findIdResource` in the decomp) hit its fast path: it tries
+/// the id as an entry index before it searches.
+///
+/// [`pack`] uses a different rule instead: the lowest id not already claimed
+/// by another file in the list. That guards a partial rebuild against
+/// colliding with an id carried over from the original, and it reuses the
+/// gap a removed file left rather than leaving it unclaimed forever, so a
+/// rebuilt archive can drift back toward [`Placement::synced`] and the fast
+/// path above, rather than away from it.
 #[allow(dead_code)]
-fn entry_index_fallback(entry: usize) -> Result<u16> {
-    u16::try_from(entry).map_err(|_| Error::Oversized)
+fn entry_index_fallback(entry_count: usize) -> Result<u16> {
+    u16::try_from(entry_count).map_err(|_| Error::Oversized)
 }
 
 /// Writes a whole archive from its file list.
@@ -624,21 +641,18 @@ fn entry_index_fallback(entry: usize) -> Result<u16> {
 /// grouped.
 ///
 /// Every field is reproduced. A file with no [`File::id`] gets the lowest id
-/// no other file in the list already claims, rather than
-/// [`entry_index_fallback`]: a partial rebuild can carry ids over from the
-/// original, and a fresh one picked by entry index could land on one already
-/// in use. This only guards against a collision within the list handed in;
-/// it cannot know whether some other file, elsewhere, still references an id
-/// that a deleted file used to hold. That is a linker's job once one exists.
-/// An [`Archive::next_free_id`] the input didn't carry is derived here too.
+/// no other file in the list already claims, not [`entry_index_fallback`]'s
+/// convention (see there for why). This only guards against a collision
+/// within the list handed in; it cannot know whether some other file,
+/// elsewhere, still references an id that a deleted file used to hold. That
+/// is a linker's job once one exists.
+///
+/// An [`Archive::next_free_id`] the input didn't carry is derived here too
+/// (despite never being used by our implementation).
 pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
-    // Four passes over the file list before the first byte goes out, each
-    // needing what an earlier one worked out rather than the raw list again.
-    // `Tree` turns paths into the node/entry numbering everything else is
-    // keyed by. `Placed` and `StringPool` both only need that numbering, not
-    // each other, so either could go first. `Layout` goes last because it is
-    // the one thing that needs a finished size: the pool's.
-    let tree = Tree::build(archive)?;
+    // Numbers every directory and file; everything below is keyed off that.
+    let tree = DirTree::build(archive)?;
+    // Only needs the tree's numbering, not the string pool built below.
     let placed = place_files(archive, &tree)?;
     let next_free = match archive.next_free_id {
         Some(stored) => stored,
@@ -648,30 +662,32 @@ pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
             placed.synced,
         )?,
     };
-    let pool = build_string_pool(archive, &tree)?;
-    let layout = Layout::of(&tree, pool.bytes.len());
+    // Also only needs the numbering, independent of `placed`.
+    let string_pool = build_string_pool(archive, &tree)?;
+    // Needs the finished pool's length, so it goes last.
+    let sections = SectionOffsets::of(&tree, string_pool.bytes.len());
 
     // Every length is known by now, so the whole archive is one allocation.
-    let mut out = Writer::with_capacity(layout.data_at + placed.data_size);
-    write_headers(&mut out, &tree, &layout, next_free, placed.synced);
-    write_nodes(&mut out, &tree, &pool);
-    write_entries(&mut out, archive, &tree, &pool, &placed)?;
-    out.bytes(&pool.bytes);
-    out.zeros(layout.pool_size - pool.bytes.len());
+    let mut out = Writer::with_capacity(sections.data_at + placed.data_size);
+    write_headers(&mut out, &tree, &sections, next_free, placed.synced);
+    write_nodes(&mut out, &tree, &string_pool);
+    write_entries(&mut out, archive, &tree, &string_pool, &placed)?;
+    out.bytes(&string_pool.bytes);
+    out.zeros(sections.string_pool_size - string_pool.bytes.len());
     write_file_data(&mut out, archive, &tree);
 
     // The four fields that need the finished file's length.
     let size = u32::try_from(out.len()).map_err(|_| Error::Oversized)?;
     out.u32_at(top_header::FILE_SIZE, size);
-    out.u32_at(top_header::TOTAL_DATA_SIZE, size - layout.data_at as u32);
+    out.u32_at(top_header::TOTAL_DATA_SIZE, size - sections.data_at as u32);
     out.u32_at(top_header::MRAM_SIZE, placed.mram as u32);
     out.u32_at(top_header::ARAM_SIZE, placed.aram as u32);
     Ok(out.finish())
 }
 
-/// What a file's entry needs that only a whole pass can say, worked out for
-/// every file before the first entry goes out.
-struct Placed {
+/// Where each file's raw bytes get placed in the data section, plus the id
+/// it goes out under.
+struct Placement {
     /// The id each file goes out under, by its place in the caller's list.
     ids: Vec<u16>,
     /// Where each file's bytes land in the data section, same indexing.
@@ -692,13 +708,13 @@ struct Placed {
 /// A file without an id claims the lowest one nothing else in the list already
 /// holds, so a fallback can never collide with an id carried over from the
 /// original (see [`pack`]'s doc, and [`entry_index_fallback`] for the format's
-/// own convention). The sync flag records whether every file's final id,
+/// own convention). The `synced` flag records whether every file's final id,
 /// however it got one, happens to equal its entry index, the guess a lookup by
 /// id tries before it searches, though nothing reads the flag back to decide
 /// anything. The two preload totals are the lengths of the runs the game slices
 /// the data section into, so they count the padded sizes, and the order check
 /// below is what makes them runs rather than sums.
-fn place_files(archive: &Archive, tree: &Tree) -> Result<Placed> {
+fn place_files(archive: &Archive, tree: &DirTree) -> Result<Placement> {
     // Placeholder values: the loop below fills in every slot for real, one per
     // file, before anything reads these back.
     let mut ids = vec![entry::NO_ID; archive.files.len()];
@@ -753,7 +769,7 @@ fn place_files(archive: &Archive, tree: &Tree) -> Result<Placed> {
         }
     }
 
-    Ok(Placed {
+    Ok(Placement {
         ids,
         offsets,
         synced,
@@ -767,13 +783,13 @@ fn place_files(archive: &Archive, tree: &Tree) -> Result<Placed> {
 struct StringPool {
     bytes: Vec<u8>,
     /// Where each directory's name landed, by directory index.
-    dirs: Vec<u32>,
+    dir_name_ats: Vec<u32>,
     /// Where each file's name landed and what it hashes to, by its place in
     /// the caller's list. The hash rides along because this is where the name
     /// gets encoded, and the entry pass would otherwise have to encode it
     /// again just to hash it. A directory already keeps its encoded name, so
     /// there is nothing to carry for one.
-    files: Vec<(u32, u16)>,
+    file_name_ats: Vec<(u32, u16)>,
 }
 
 /// Builds the pool: `.` and `..` once at the front, then, in node order, each
@@ -781,9 +797,9 @@ struct StringPool {
 /// is stored again, never shared. This is the one section that does not simply
 /// follow the node or the entry order, and every retail archive spells it
 /// exactly this way.
-fn build_string_pool(archive: &Archive, tree: &Tree) -> Result<StringPool> {
+fn build_string_pool(archive: &Archive, tree: &DirTree) -> Result<StringPool> {
     let mut pool = Writer::new();
-    pool.bytes(b".\0..\0"); // The two `DOT_IN_POOL` and `DOTDOT_IN_POOL` point at.
+    pool.bytes(b".\0..\0"); // The two `DOT_IN_STRING_POOL` and `DOTDOT_IN_STRING_POOL` point at.
     let name_at = |pool: &mut Writer, name: &[u8]| -> Result<u32> {
         let at = u32::try_from(pool.len())
             .ok()
@@ -794,49 +810,49 @@ fn build_string_pool(archive: &Archive, tree: &Tree) -> Result<StringPool> {
         Ok(at)
     };
 
-    let mut dirs = vec![0u32; tree.dirs.len()];
-    let mut files = vec![(0u32, 0u16); archive.files.len()];
+    let mut dir_name_ats = vec![0u32; tree.dirs.len()];
+    let mut file_name_ats = vec![(0u32, 0u16); archive.files.len()];
     for &dir in &tree.order {
-        dirs[dir] = name_at(&mut pool, &tree.dirs[dir].name)?;
+        dir_name_ats[dir] = name_at(&mut pool, &tree.dirs[dir].name)?;
         for child in &tree.dirs[dir].children {
-            if let Child::File(index) = child {
+            if let Entry::File(index) = child {
                 let path = &archive.files[*index].path;
                 let name = encode(path.rsplit('/').next().unwrap_or(path))?;
-                files[*index] = (name_at(&mut pool, &name)?, name_hash(&name));
+                file_name_ats[*index] = (name_at(&mut pool, &name)?, name_hash(&name));
             }
         }
     }
 
     Ok(StringPool {
         bytes: pool.finish(),
-        dirs,
-        files,
+        dir_name_ats,
+        file_name_ats,
     })
 }
 
 /// Where each section lands, everything after the two headers 0x20 aligned.
-struct Layout {
+struct SectionOffsets {
     nodes_at: usize,
     entries_at: usize,
-    strings_at: usize,
+    string_pool_at: usize,
     /// The pool padded out, which is the size the header states, so the file
     /// data starts exactly where the pool's stated end is.
-    pool_size: usize,
+    string_pool_size: usize,
     data_at: usize,
 }
 
-impl Layout {
-    fn of(tree: &Tree, pool_len: usize) -> Layout {
+impl SectionOffsets {
+    fn of(tree: &DirTree, string_pool_len: usize) -> SectionOffsets {
         let nodes_at = data_header::AT + data_header::LEN;
         let entries_at = (nodes_at + tree.order.len() * node::LEN).next_multiple_of(ALIGN);
-        let strings_at = (entries_at + tree.entry_count * entry::LEN).next_multiple_of(ALIGN);
-        let pool_size = pool_len.next_multiple_of(ALIGN);
-        Layout {
+        let string_pool_at = (entries_at + tree.entry_count * entry::LEN).next_multiple_of(ALIGN);
+        let string_pool_size = string_pool_len.next_multiple_of(ALIGN);
+        SectionOffsets {
             nodes_at,
             entries_at,
-            strings_at,
-            pool_size,
-            data_at: strings_at + pool_size,
+            string_pool_at,
+            string_pool_size,
+            data_at: string_pool_at + string_pool_size,
         }
     }
 }
@@ -844,37 +860,46 @@ impl Layout {
 /// Both headers, which go out as zeros and are then patched field by field.
 /// Whatever is never patched stays zero, which is what the unnamed fields hold
 /// on a retail archive anyway.
-fn write_headers(out: &mut Writer, tree: &Tree, layout: &Layout, next_free: u16, synced: bool) {
+fn write_headers(
+    out: &mut Writer,
+    tree: &DirTree,
+    sections: &SectionOffsets,
+    next_free: u16,
+    synced: bool,
+) {
     let header = data_header::AT;
     out.bytes(top_header::MAGIC);
-    out.zeros(layout.nodes_at - top_header::MAGIC.len());
+    out.zeros(sections.nodes_at - top_header::MAGIC.len());
     out.u32_at(top_header::DATA_HEADER_PTR, header as u32);
-    out.u32_at(top_header::FILE_DATA_PTR, (layout.data_at - header) as u32);
+    out.u32_at(
+        top_header::FILE_DATA_PTR,
+        (sections.data_at - header) as u32,
+    );
 
     out.u32_at(header + data_header::NODE_COUNT, tree.order.len() as u32);
     out.u32_at(
         header + data_header::NODE_LIST_PTR,
-        (layout.nodes_at - header) as u32,
+        (sections.nodes_at - header) as u32,
     );
     out.u32_at(header + data_header::ENTRY_COUNT, tree.entry_count as u32);
     out.u32_at(
         header + data_header::ENTRY_LIST_PTR,
-        (layout.entries_at - header) as u32,
+        (sections.entries_at - header) as u32,
     );
     out.u32_at(
         header + data_header::STRING_POOL_SIZE,
-        layout.pool_size as u32,
+        sections.string_pool_size as u32,
     );
     out.u32_at(
         header + data_header::STRING_POOL_PTR,
-        (layout.strings_at - header) as u32,
+        (sections.string_pool_at - header) as u32,
     );
     out.u16_at(header + data_header::NEXT_FREE_ID, next_free);
     out.u8_at(header + data_header::SYNCED_IDS, synced as u8);
 }
 
 /// One record per directory, in node order, naming the run of entries it holds.
-fn write_nodes(out: &mut Writer, tree: &Tree, pool: &StringPool) {
+fn write_nodes(out: &mut Writer, tree: &DirTree, string_pool: &StringPool) {
     for (node, &dir) in tree.order.iter().enumerate() {
         // The fourcc: the name ASCII-uppercased, truncated to four, space
         // padded. The root is `ROOT` whatever its name is.
@@ -888,7 +913,7 @@ fn write_nodes(out: &mut Writer, tree: &Tree, pool: &StringPool) {
                 out.bytes(&fourcc);
             }
         }
-        out.u32(pool.dirs[dir]);
+        out.u32(string_pool.dir_name_ats[dir]);
         out.u16(name_hash(&tree.dirs[dir].name));
         out.u16((tree.dirs[dir].children.len() + 2) as u16);
         out.u32(tree.first_entry[node]);
@@ -902,29 +927,29 @@ fn write_nodes(out: &mut Writer, tree: &Tree, pool: &StringPool) {
 fn write_entries(
     out: &mut Writer,
     archive: &Archive,
-    tree: &Tree,
-    pool: &StringPool,
-    placed: &Placed,
+    tree: &DirTree,
+    string_pool: &StringPool,
+    placed: &Placement,
 ) -> Result<()> {
     for (node, &dir) in tree.order.iter().enumerate() {
         for child in &tree.dirs[dir].children {
             match child {
-                Child::Dir(sub) => {
+                Entry::Dir(sub) => {
                     dir_entry(
                         out,
                         &tree.dirs[*sub].name,
-                        pool.dirs[*sub],
+                        string_pool.dir_name_ats[*sub],
                         tree.node_of[*sub],
                     );
                 }
-                Child::File(index) => {
+                Entry::File(index) => {
                     let file = &archive.files[*index];
-                    let (name, hash) = pool.files[*index];
+                    let (name_at, hash) = string_pool.file_name_ats[*index];
                     file_entry(
                         out,
                         placed.ids[*index],
                         hash,
-                        name,
+                        name_at,
                         file.preload,
                         placed.offsets[*index],
                         file.data,
@@ -935,12 +960,12 @@ fn write_entries(
 
         // `.` points at the directory's own node, `..` at its parent's, and
         // the root's `..` at nothing. Both names are at the front of the pool.
-        dir_entry(out, b".", DOT_IN_POOL, node as u32);
+        dir_entry(out, b".", DOT_IN_STRING_POOL, node as u32);
         let parent = match node {
             0 => u32::MAX,
             _ => tree.node_of[tree.dirs[dir].parent],
         };
-        dir_entry(out, b"..", DOTDOT_IN_POOL, parent);
+        dir_entry(out, b"..", DOTDOT_IN_STRING_POOL, parent);
     }
     out.align(ALIGN);
     Ok(())
@@ -948,7 +973,7 @@ fn write_entries(
 
 /// The files' bytes last, in the order their entries went out, each padded to
 /// the alignment its offset was worked out against.
-fn write_file_data(out: &mut Writer, archive: &Archive, tree: &Tree) {
+fn write_file_data(out: &mut Writer, archive: &Archive, tree: &DirTree) {
     for (_, index) in tree.files() {
         let data = archive.files[index].data;
         out.bytes(data);
@@ -957,12 +982,13 @@ fn write_file_data(out: &mut Writer, archive: &Archive, tree: &Tree) {
 }
 
 /// One directory's entry: no bytes of its own, pointing at the node it opens
-/// rather than at the data section. `name` is what the pool holds at `at`, and
-/// is only needed for its hash. Directories share the id that is no id.
-fn dir_entry(out: &mut Writer, name: &[u8], at: u32, node: u32) {
+/// rather than at the data section. `name` is what the pool holds at
+/// `name_at`, and is only needed for its hash. Directories share the id that
+/// is no id.
+fn dir_entry(out: &mut Writer, name: &[u8], name_at: u32, node: u32) {
     out.u16(entry::NO_ID);
     out.u16(name_hash(name));
-    out.u32(entry::FLAG_DIRECTORY << entry::FLAGS_SHIFT | at);
+    out.u32(entry::FLAG_DIRECTORY << entry::FLAGS_SHIFT | name_at);
     out.u32(node);
     out.u32(entry::DIRECTORY_SIZE);
     out.u32(0);
@@ -974,7 +1000,7 @@ fn file_entry(
     out: &mut Writer,
     id: u16,
     hash: u16,
-    name: u32,
+    name_at: u32,
     preload: Preload,
     offset: u32,
     data: &[u8],
@@ -995,7 +1021,7 @@ fn file_entry(
 
     out.u16(id);
     out.u16(hash);
-    out.u32(flags << entry::FLAGS_SHIFT | name);
+    out.u32(flags << entry::FLAGS_SHIFT | name_at);
     out.u32(offset);
     out.u32(size);
     out.u32(0);
