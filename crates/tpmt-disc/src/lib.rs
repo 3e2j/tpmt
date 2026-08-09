@@ -21,8 +21,8 @@
 // nothing. It measures as uniform random and nothing on the disc points at it.
 // The game reads only through the file table: the decompilation has no
 // absolute-offset read in it, and the audio streaming library, the one
-// documented way around the file table, is not linked into any of the three
-// prints. So the fill is not reported here and a build will not have it, which
+// documented way around the file table, is not linked into the game. So the
+// fill is not reported here and a build will not have it, which
 // costs a matching hash and saves 400 MB.
 
 // TODO: CISO out, out of scope. Containers are read because that is how dumps

@@ -50,8 +50,7 @@ pub(crate) const FST_ADDRESS_FIELD: usize = 0x430;
 pub(crate) const USER_POSITION_FIELD: usize = 0x434;
 pub(crate) const USER_LENGTH_FIELD: usize = 0x438;
 
-/// Where the debug monitor would be loaded. The same on all three prints, and
-/// nothing on a retail disc reads it.
+/// Where the debug monitor would be loaded. Nothing on a retail disc reads it.
 pub(crate) const DEBUG_MONITOR_ADDRESS: u32 = 0x8028_0060;
 /// The file table is loaded as high as it fits under here, and the arena ends
 /// where it starts.
@@ -64,9 +63,9 @@ const USER_ALIGN: u32 = 0x8000;
 /// the layout put in front of them.
 pub(crate) const PREAMBLE_ALIGN: u64 = 0x100;
 
-/// The stretches of the boot header that hold nothing on any of the three
-/// prints. Everything outside them is either kept or checked, so a disc with
-/// bytes in here is one this would not reproduce.
+/// The stretches of the boot header that hold nothing. Everything outside
+/// them is either kept or checked, so a disc with bytes in here is one this
+/// would not reproduce.
 const BOOT_RESERVED: [(usize, usize); 4] =
     [(0x0A, 0x1C), (0x60, 0x400), (0x408, 0x420), (0x43C, 0x440)];
 
@@ -135,8 +134,8 @@ pub struct Boot {
     /// Revision of the print, `0` for the first.
     pub revision: u8,
     /// Whether the game reads audio straight off the disc rather than through
-    /// the file table. Zero on all three prints, and the library that would act
-    /// on it is linked into none of them.
+    /// the file table. The library that would act on it is not linked into
+    /// the game.
     pub audio_streaming: u8,
     pub stream_buffer_size: u8,
     pub title: String,
@@ -227,8 +226,8 @@ fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
     let user = user_position(fst_offset, fst_len);
 
     let derived = [
-        // The mastering put the apploader's length here on all three prints,
-        // whatever it meant by it, and nothing on a retail disc reads it.
+        // The mastering put the apploader's length here, whatever it meant by
+        // it, and nothing on a retail disc reads it.
         (
             DEBUG_MONITOR_FIELD,
             apploader_len as u32,
@@ -436,8 +435,8 @@ fn encode(text: &str, what: &'static str) -> Result<Vec<u8>> {
     }
 }
 
-/// Decodes one of the header's text fields. Shift-JIS, following the file table
-/// and the archives, which is the same as ASCII for every print of this game.
+/// Decodes one of the header's text fields. Shift-JIS, following the file
+/// table and the archives.
 fn text(raw: &[u8], what: &'static str) -> Result<String> {
     let (text, _, malformed) = encoding_rs::SHIFT_JIS.decode(raw);
     match malformed {

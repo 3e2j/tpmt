@@ -13,12 +13,12 @@ const DATA_OFFSET: u64 = 0x2800;
 const IMAGE_LEN: u64 = 0x2830;
 
 // Positions in the name pool of `\0a.bin\0sub\0b.bin\0empty\0c.bin\0`.
-const NAME_ROOT: u32 = 0;
-const NAME_A: u32 = 1;
-const NAME_SUB: u32 = 7;
-const NAME_B: u32 = 11;
-const NAME_EMPTY: u32 = 17;
-const NAME_C: u32 = 23;
+const NAME_ROOT: u32 = 0x00;
+const NAME_A: u32 = 0x01;
+const NAME_SUB: u32 = 0x07;
+const NAME_B: u32 = 0x0B;
+const NAME_EMPTY: u32 = 0x11;
+const NAME_C: u32 = 0x17;
 const NAME_POOL: &[u8] = b"\0a.bin\0sub\0b.bin\0empty\0c.bin\0";
 
 const ENTRY_COUNT: u32 = 6;

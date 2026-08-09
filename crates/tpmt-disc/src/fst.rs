@@ -76,12 +76,7 @@ pub(crate) fn walk(fst: &[u8]) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Reads one name out of the pool.
-///
-/// Assumed Shift-JIS, following the archives on this disc, which demonstrably
-/// are: a member name in `dmapres.arc` holds a fullwidth `ｘ` stored as `82 98`.
-/// No name in the file table of any of the three prints has a byte over 0x7F,
-/// so nothing here confirms it either way.
+/// Reads one name out of the pool. Shift-JIS, following the archives.
 ///
 /// A name has to be one path component and nothing else, or it puts a file
 /// somewhere the disc never asked for. Checked after decoding, since `0x5C` is
@@ -121,11 +116,10 @@ pub(crate) struct Table {
 /// uppercased name, and the name pool follows in that same order, back to back
 /// and NUL terminated. The root has no name of its own: its offset is left at
 /// 0, which is where the first entry's name starts, and nothing reads it.
-/// Rebuilding the three prints that way reproduces their `fst.bin` byte for
-/// byte, length included. Ordering on the raw bytes instead misplaces 7
-/// directories and a case-insensitive compare misplaces 4, `_` being the
-/// character that sits between the cases. Two siblings sharing an uppercased
-/// name are refused, so the order is total.
+/// The uppercasing matters: ordering on the raw bytes or comparing
+/// case-insensitively puts `_` on the other side of the letters and lays the
+/// table out differently. Two siblings sharing an uppercased name are refused,
+/// so the order is total.
 pub(crate) fn build(items: &[&Item]) -> Result<Table> {
     // Everything the tree is, keyed by the path of the directory holding it.
     // The paths come in flat, so this is what puts them back together.

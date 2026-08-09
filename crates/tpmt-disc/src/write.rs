@@ -165,7 +165,7 @@ impl Layout {
 }
 
 /// Files sit on one of these, and mostly back to back.
-const FILE_ALIGN: u64 = 4;
+const FILE_ALIGN: u64 = 0x04;
 
 /// Whether a path is somewhere in the file table's tree, rather than one of the
 /// preamble files or something a disc has no room for at all.
