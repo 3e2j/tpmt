@@ -6,11 +6,17 @@
 //! the hash taken at unpack is left alone. An untouched file is bytes on the
 //! source disc and goes back as those bytes, never through a codec.
 //!
-//! An archive is one file on the disc however deep it was unpacked, so it is
-//! decided as a whole. Untouched, it is copied off the disc still compressed.
-//! Touched anywhere inside, it is repacked, and even then only the edited
-//! members come out of the project: every other one is pulled out of the
-//! original, which is the same bytes it always was.
+//! A file the project no longer holds has nothing to hash and nothing to
+//! walk, so it simply never enters the output: a deletion stays a deletion
+//! rather than falling back to the vanilla bytes it once matched. That holds
+//! whether it is a top-level file or an archive member.
+//!
+//! An archive is one file on the disc however deep it was unpacked, decided
+//! as a whole the way the crate root describes. Untouched, it is copied off
+//! the disc unopened. Touched anywhere, every member in it is rebuilt from
+//! the project, not only the ones that changed: a linker can make one
+//! member's bytes depend on another's, so there is no such thing as a member
+//! an edit elsewhere cannot reach.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -23,6 +29,7 @@ use tpmt_disc::{Disc, Item};
 
 use crate::Error;
 use crate::project::{FILES, SYS, read};
+use crate::sidecars::arc::{self, Manifest, Member, Preload};
 
 /// One finished game file, ready to go on a disc or into a mod.
 pub(crate) struct Output {
@@ -91,13 +98,21 @@ pub(crate) fn plan(
         .map(|path| Ok((path.as_str(), hash(&read(&project.join(path))?))))
         .collect::<Result<_, Error>>()?;
 
-    // A file nobody has a hash for is one nobody had at unpack, so it counts as
-    // changed for the same reason an edited one does.
-    let changed: HashSet<&str> = hashes
+    // A file nobody has a hash for is one nobody had at unpack, so it counts
+    // as changed for the same reason an edited one does. So does a file the
+    // project no longer holds: a removal has no bytes to hash, but the archive
+    // that used to hold the member still has to be rebuilt without it.
+    let mut changed: HashSet<&str> = hashes
         .iter()
         .filter(|(path, hash)| vanilla.get(**path) != Some(hash))
         .map(|(path, _)| *path)
         .collect();
+    changed.extend(
+        vanilla
+            .keys()
+            .filter(|path| !hashes.contains_key(path.as_str()))
+            .map(String::as_str),
+    );
 
     // How many files each disc file was unpacked into, then and now. An archive
     // whose count moved had a member added or taken out, which is a change even
@@ -125,6 +140,9 @@ pub(crate) fn plan(
     // The archives that have to be rebuilt, done first and in parallel: each
     // one is a decompress, a repack and a recompress, and there can be a lot of
     // them.
+    //
+    // Untouched is a claim that the source disc has the bytes already, so
+    // something the disc never had is never untouched, however little is in it.
     let untouched = |node: &Node| {
         let path = node.path();
         !node
@@ -132,17 +150,14 @@ pub(crate) fn plan(
             .iter()
             .any(|leaf| changed.contains(leaf.as_str()))
             && before.get(path) == now.get(path)
+            && on_disc.contains_key(path)
     };
     let mut repacked: HashMap<&str, Vec<u8>> = nodes
         .par_iter()
         .filter(|node| matches!(node, Node::Archive { .. }) && !untouched(node))
         .map(|node| {
             let path = node.path();
-            let (offset, size) = *on_disc
-                .get(path)
-                .ok_or_else(|| Error::NewArchive(path.to_string()))?;
-            let original = disc.read(offset, size)?;
-            Ok((path, repack(project, path, &original, &changed)?))
+            Ok((path, repack(project, path, on_disc.contains_key(path))?))
         })
         .collect::<Result<_, Error>>()?;
 
@@ -181,21 +196,27 @@ pub(crate) fn plan(
     Ok(Plan { items, outputs })
 }
 
-/// Repacks an archive around the members that changed.
+/// Rebuilds an archive out of what the project holds now.
 ///
-/// Everything that did not change is handed straight back out of the original,
-/// so nothing is re-encoded because something next to it was edited. An archive
-/// nested inside this one is the same job again, and only if something under it
-/// changed.
+/// The sidecar at the root of the directory is what says which archive this
+/// is. Its root name, the order its members go back in, and everything about a
+/// member that the bytes on disk cannot carry all come from there, so an
+/// archive somebody wrote from nothing rebuilds the same way one off the disc
+/// does.
 ///
-/// Whether to compress on the way out is not recorded anywhere, and does not
-/// have to be: the original is in hand here, and it says.
-fn repack(
-    project: &Path,
-    path: &str,
-    original: &[u8],
-    changed: &HashSet<&str>,
-) -> Result<Vec<u8>, Error> {
+/// Every member is read fresh from the project, never carried over from the
+/// archive's own original bytes. Once a linker is in the picture, a member
+/// nobody touched can still resolve to different bytes because something
+/// elsewhere in the archive moved, so an archive being rebuilt at all is
+/// rebuilt whole.
+///
+/// A member gone from the project drops out; one the project grew goes in at
+/// the end of the main memory run, which is where a member with nothing saying
+/// otherwise belongs. Nobody adding a file has to know any of this exists.
+///
+/// An empty directory under an archive is dropped without a word: a member
+/// list cannot spell one, and the game would find nothing in it anyway.
+fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
     let archive = |source| Error::Archive {
         path: PathBuf::from(path),
         source,
@@ -205,54 +226,109 @@ fn repack(
         source,
     };
 
-    let wrapped = tpmt_compress::is_yaz0(original);
-    let raw = match wrapped {
-        true => Cow::Owned(tpmt_compress::yaz0_decode(original).map_err(compress)?),
-        false => Cow::Borrowed(original),
-    };
-    let members = tpmt_arc::files(&raw).map_err(archive)?;
+    let directory = project.join(path);
 
-    // Rebuilding the tables a changed member set would take is the re-emitter
-    // still marked TODO in tpmt-arc, so an add or a remove is refused by name
-    // here rather than quietly built back into the original's shape.
+    // On an archive the disc never had there is nothing to recover, so a
+    // missing sidecar is answered rather than asked for. On one the disc did
+    // have, the same missing file is a lost sidecar and worth stopping over.
+    let manifest = match Manifest::read(&directory) {
+        Err(Error::LostSidecar(_)) if !existed => Manifest::fresh(),
+        manifest => manifest?,
+    };
+
     let mut in_project = Vec::new();
     member_names(project, path, "", &mut in_project)?;
-    let original_names: HashSet<&str> = members.iter().map(|member| member.path.as_str()).collect();
-    for name in &in_project {
-        if !original_names.contains(name.as_str()) {
-            return Err(Error::AddedMember(format!("{path}/{name}")));
-        }
-    }
-    let in_project: HashSet<&str> = in_project.iter().map(String::as_str).collect();
-    for member in &members {
-        if !in_project.contains(member.path.as_str()) {
-            return Err(Error::DeletedMember(format!("{path}/{}", member.path)));
-        }
-    }
+    let present: HashSet<&str> = in_project.iter().map(String::as_str).collect();
+    let named: HashSet<&str> = manifest
+        .members
+        .iter()
+        .map(|member| member.path.as_str())
+        .collect();
 
-    // Held apart from the list below so that a member taken out of the project
-    // outlives the archive being built out of it.
-    let mut fresh = Vec::with_capacity(members.len());
+    // The sidecar's order, since that is the order the archive laid its file
+    // bytes out in and the order the header's two preload runs are cut from.
+    //
+    // A member dropped here by a missing file is dropped silently: see the
+    // cross-reference TODO in lib.rs. Nothing checks whether its id was still
+    // wanted by something else in the game.
+    let mut members: Vec<Member> = manifest
+        .members
+        .iter()
+        .filter(|member| present.contains(member.path.as_str()))
+        .cloned()
+        .collect();
+    let added: Vec<Member> = in_project
+        .iter()
+        .filter(|name| !named.contains(name.as_str()))
+        .map(|name| Member::new(name.clone()))
+        .collect();
+
+    // Added members keep the `None` id `Member::new` gave them: `pack` claims
+    // the lowest id nothing else in the list holds, the same gap-filling rule
+    // it applies to any other id-less file.
+
+    // What the project grew (no sidecar to say where it goes) is put at the end
+    // of the main memory (default) run rather than the end of the list.
+    let at = members
+        .iter()
+        .position(|member| member.preload != Preload::Mram)
+        .unwrap_or(members.len());
+    members.splice(at..at, added);
+
+    // Fetches each member's actual bytes from the project: the list above only
+    // carries metadata, whether read from the sidecar or filled in for a
+    // member just added, never the bytes themselves.
+    //
+    // Owned out here rather than beside the member list below, so that bytes
+    // read for this archive outlive the archive being built out of them.
+    let mut data: Vec<Vec<u8>> = Vec::with_capacity(members.len());
     for member in &members {
         let at = format!("{path}/{}", member.path);
-        fresh.push(match member.path.ends_with(".arc") {
-            true if touched(changed, &at) => Some(repack(project, &at, member.data, changed)?),
-            _ if changed.contains(at.as_str()) => Some(read(&project.join(&at))?),
-            _ => None,
-        });
+        let inside = directory.join(&member.path);
+
+        // A member unpacked into a directory is a nested archive. One that is
+        // still a file is bytes however it is named, since a `.arc` the archive
+        // crate could not open was never taken apart.
+        let bytes = match inside.is_dir() {
+            true => repack(
+                project,
+                &at,
+                existed && named.contains(member.path.as_str()),
+            )?,
+            // The wrapper the sidecar recorded during unpack goes back on here.
+            false => match member.yaz0_compressed {
+                true => tpmt_compress::yaz0_encode(&read(&inside)?).map_err(compress)?,
+                false => read(&inside)?,
+            },
+        };
+        data.push(bytes);
     }
 
-    let members: Vec<tpmt_arc::File> = members
+    // Pairs each member's metadata (from the sidecar, or filled in for a
+    // member just added) with the bytes just fetched for it, in the shape the
+    // packer below expects.
+    let files: Vec<tpmt_arc::File> = members
         .iter()
-        .zip(&fresh)
-        .map(|(member, replacement)| tpmt_arc::File {
+        .zip(&data)
+        .map(|(member, bytes)| tpmt_arc::File {
             path: member.path.clone(),
-            data: replacement.as_deref().unwrap_or(member.data),
+            data: bytes.as_slice(),
+            id: member.id,
+            preload: member.preload.into(),
         })
         .collect();
 
-    let built = tpmt_arc::build(&raw, &members).map_err(archive)?;
-    match wrapped {
+    // The next-free-id counter is worked out rather than kept in the sidecar.
+    // The few archives that stored a different one only differ in a field
+    // nothing reads, and only once rebuilt, which has moved every offset in
+    // them anyway.
+    let built = tpmt_arc::pack(&tpmt_arc::Archive {
+        root: manifest.root.clone(),
+        files,
+        ..Default::default()
+    })
+    .map_err(archive)?;
+    match manifest.yaz0_compressed {
         true => tpmt_compress::yaz0_encode(&built).map_err(compress),
         false => Ok(built),
     }
@@ -315,9 +391,13 @@ fn walk(project: &Path, at: &str, nodes: &mut Vec<Node>) -> Result<(), Error> {
 }
 
 /// The member names an archive directory holds now, in the form the archive's
-/// own tables spell them. A `.arc` directory is one name however deep its
+/// own entries spell them. A `.arc` directory is one name however deep its
 /// contents go, since it is one member; any other directory is structure
 /// inside this archive and recurses.
+///
+/// The sidecar is not one of them. It sits at the root describing the archive
+/// rather than in it, and packing it would put a file on the disc that the game
+/// never had.
 fn member_names(
     project: &Path,
     at: &str,
@@ -325,6 +405,9 @@ fn member_names(
     names: &mut Vec<String>,
 ) -> Result<(), Error> {
     for (name, directory) in listing(&project.join(at))? {
+        if inside.is_empty() && name == arc::SIDECAR {
+            continue;
+        }
         let path = format!("{at}/{name}");
         let member = match inside.is_empty() {
             true => name.clone(),
@@ -340,6 +423,10 @@ fn member_names(
 
 /// Every file under a directory, at any depth. Archives nested inside archives
 /// are more of the same file, not a boundary.
+///
+/// Sidecars are gathered along with everything else. They are not members, but
+/// editing one changes what the archive rebuilds into just as editing a member
+/// does, so change detection has to see them.
 fn gather(project: &Path, at: &str, leaves: &mut Vec<String>) -> Result<(), Error> {
     for (path, directory) in listing(&project.join(at))? {
         let path = format!("{at}/{path}");
@@ -394,17 +481,625 @@ fn owner(path: &str) -> &str {
     path
 }
 
-/// Whether anything under a directory changed.
-fn touched(changed: &HashSet<&str>, path: &str) -> bool {
-    changed
-        .iter()
-        .any(|at| at.strip_prefix(path).is_some_and(|at| at.starts_with('/')))
-}
-
 /// What change detection compares. Taken at unpack over the bytes as they were
 /// written into the project, and again at build over what is there now.
 pub(crate) fn hash(bytes: &[u8]) -> String {
     let mut hash = Sha1::new();
     hash.update(bytes);
     format!("{:x}", hash.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use tpmt_arc::Preload;
+
+    use super::*;
+    use crate::project::write;
+
+    /// A directory to work in, gone again when the test that made it ends.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let at = std::env::temp_dir().join(format!("tpmt-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&at);
+            fs::create_dir_all(&at).unwrap();
+            Self(at)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const AT: &str = "files/thing.arc";
+
+    fn packed(files: &[(&str, &[u8], Preload)]) -> Vec<u8> {
+        tpmt_arc::pack(&tpmt_arc::Archive {
+            root: "archive".to_string(),
+            files: files
+                .iter()
+                .map(|(path, data, preload)| tpmt_arc::File {
+                    path: (*path).to_string(),
+                    data,
+                    id: None,
+                    preload: *preload,
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    /// Unpacks into the scratch directory and hands back where the project is.
+    fn unpacked(scratch: &Scratch, original: &[u8]) -> PathBuf {
+        let mut hashes = Vec::new();
+        crate::unpack_archive(original, &scratch.0.join(AT), AT, &mut hashes).unwrap();
+        scratch.0.clone()
+    }
+
+    fn member<'a>(archive: &'a tpmt_arc::Archive, path: &str) -> &'a tpmt_arc::File<'a> {
+        archive
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .expect("the archive should still hold it")
+    }
+
+    /// The whole point of the sidecar: an archive rebuilds out of the project
+    /// with nothing to compare against, and comes back the archive it was.
+    /// Byte for byte, which is also what says the sidecar file itself was not
+    /// packed in as a member.
+    #[test]
+    fn rebuilds_without_an_original() {
+        let scratch = Scratch::new("rebuilds");
+        // The ARAM one goes last in the walk rather than last in the list: the
+        // data section is laid out a directory at a time, so a member of the
+        // root would come before anything under `sub`.
+        let original = packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("sub/b.bin", b"second", Preload::Mram),
+            ("sub/late.bin", b"third", Preload::Aram),
+        ]);
+
+        let project = unpacked(&scratch, &original);
+        let built = repack(&project, AT, false).unwrap();
+        assert_eq!(built, original);
+    }
+
+    /// Editing a member used to be where an ARAM one quietly became a main
+    /// memory one, since nothing outside the archive said which it was.
+    #[test]
+    fn an_edited_member_keeps_its_memory() {
+        let scratch = Scratch::new("memory");
+        let original = packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("late.bin", b"third", Preload::Aram),
+        ]);
+
+        let project = unpacked(&scratch, &original);
+        write(&project.join(AT).join("late.bin"), b"edited").unwrap();
+
+        let built = repack(&project, AT, false).unwrap();
+
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(rebuilt.root, "archive");
+        assert_eq!(member(&rebuilt, "late.bin").data, b"edited");
+        assert_eq!(member(&rebuilt, "late.bin").preload, Preload::Aram);
+    }
+
+    /// A wrapped member is written out as what it is, so that whatever edits it
+    /// sees the bytes rather than the wrapping, and is wrapped again on the way
+    /// back in.
+    #[test]
+    fn a_members_wrapper_comes_off_and_goes_back_on() {
+        let scratch = Scratch::new("wrapper");
+        let plain = b"a run of bytes with enough repetition to encode".repeat(4);
+        let wrapped = tpmt_compress::yaz0_encode(&plain).unwrap();
+        let original = packed(&[("data.bin", &wrapped, Preload::Mram)]);
+
+        let project = unpacked(&scratch, &original);
+        let on_disk = read(&project.join(AT).join("data.bin")).unwrap();
+        assert_eq!(on_disk, plain);
+
+        let built = repack(&project, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        let data = member(&rebuilt, "data.bin").data;
+        assert!(tpmt_compress::is_yaz0(data));
+        assert_eq!(tpmt_compress::yaz0_decode(data).unwrap(), plain);
+    }
+
+    /// A nested archive is its own sidecar and its own rebuild, wrapper
+    /// included, so the one holding it does not have to know what it is.
+    #[test]
+    fn a_nested_archive_rebuilds_itself() {
+        let scratch = Scratch::new("nested");
+        let inner =
+            tpmt_compress::yaz0_encode(&packed(&[("in.bin", b"inner", Preload::Mram)])).unwrap();
+        let original = packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("nested.arc", &inner, Preload::Mram),
+        ]);
+
+        let project = unpacked(&scratch, &original);
+        assert!(project.join(AT).join("nested.arc").is_dir());
+
+        let built = repack(&project, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        let nested = member(&rebuilt, "nested.arc").data;
+        assert!(tpmt_compress::is_yaz0(nested));
+
+        let opened = tpmt_compress::yaz0_decode(nested).unwrap();
+        let opened = tpmt_arc::unpack(&opened).unwrap();
+        assert_eq!(member(&opened, "in.bin").data, b"inner");
+    }
+
+    /// A file the sidecar never named goes on the end in main memory, which is
+    /// what a member with nothing saying otherwise gets.
+    #[test]
+    fn an_added_member_lands_in_main_memory() {
+        let scratch = Scratch::new("added");
+        let original = packed(&[("a.bin", b"first", Preload::Mram)]);
+
+        let project = unpacked(&scratch, &original);
+        write(&project.join(AT).join("new.bin"), b"new").unwrap();
+
+        let built = repack(&project, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        let added = rebuilt.files.last().unwrap();
+        assert_eq!(added.path, "new.bin");
+        assert_eq!(added.data, b"new");
+        assert_eq!(added.preload, Preload::Mram);
+    }
+
+    /// Main memory is a run rather than a flag, so a member with nothing saying
+    /// otherwise has to land before the audio run starts, not merely be labelled
+    /// main. Nobody dropping a file in should have to know either thing.
+    #[test]
+    fn an_added_member_lands_before_the_aram_run() {
+        let scratch = Scratch::new("addedaram");
+        let original = packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("late.bin", b"third", Preload::Aram),
+        ]);
+
+        let project = unpacked(&scratch, &original);
+        write(&project.join(AT).join("new.bin"), b"new").unwrap();
+
+        let built = repack(&project, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(member(&rebuilt, "new.bin").data, b"new");
+        assert_eq!(member(&rebuilt, "new.bin").preload, Preload::Mram);
+        assert_eq!(member(&rebuilt, "late.bin").preload, Preload::Aram);
+        assert_eq!(
+            rebuilt
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["a.bin", "new.bin", "late.bin"]
+        );
+    }
+
+    /// A member the sidecar does name is placed by what it says, so somebody who
+    /// wants their added file in audio memory says so once and gets it.
+    #[test]
+    fn a_member_the_sidecar_puts_in_aram_lands_there() {
+        let scratch = Scratch::new("addedsaid");
+        let original = packed(&[("a.bin", b"first", Preload::Mram)]);
+
+        let project = unpacked(&scratch, &original);
+        write(&project.join(AT).join("new.bin"), b"new").unwrap();
+
+        let mut manifest = Manifest::read(&project.join(AT)).unwrap();
+        manifest.members.push(Member {
+            path: "new.bin".to_string(),
+            preload: arc::Preload::Aram,
+            yaz0_compressed: false,
+            id: None,
+        });
+        manifest.write(&project.join(AT)).unwrap();
+
+        let built = repack(&project, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(member(&rebuilt, "new.bin").preload, tpmt_arc::Preload::Aram);
+        assert_eq!(rebuilt.files.last().unwrap().path, "new.bin");
+    }
+
+    /// An archive that stored ids of its own keeps them, so a member added to
+    /// one cannot be given an entry index and hope: the ids sat still while the
+    /// indices moved along under them. It claims the lowest id nothing else
+    /// holds instead, which here is the 0 the originals skipped.
+    #[test]
+    fn an_added_member_takes_an_id_nothing_else_holds() {
+        let scratch = Scratch::new("addedid");
+        let original = tpmt_arc::pack(&tpmt_arc::Archive {
+            root: "archive".to_string(),
+            files: vec![
+                tpmt_arc::File {
+                    path: "a.bin".to_string(),
+                    data: b"first",
+                    id: Some(7),
+                    preload: Preload::Mram,
+                },
+                tpmt_arc::File {
+                    path: "b.bin".to_string(),
+                    data: b"second",
+                    id: Some(1),
+                    preload: Preload::Mram,
+                },
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let project = unpacked(&scratch, &original);
+        write(&project.join(AT).join("new.bin"), b"new").unwrap();
+
+        let built = repack(&project, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+
+        let mut ids: Vec<Option<u16>> = rebuilt.files.iter().map(|file| file.id).collect();
+        assert_eq!(member(&rebuilt, "new.bin").id, Some(0));
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), rebuilt.files.len());
+    }
+
+    /// Stored ids are pinned to their members, not to their places in the
+    /// entry order, and adding a member leaves them where they were.
+    ///
+    /// `sub/b.bin` is the one that shows it. Its entry moves along to make room
+    /// for the added member, so an id worked out from the order would hand
+    /// anything holding the old number a different file. The stored 4 stays
+    /// put, and the added member fills a gap below it instead.
+    #[test]
+    fn an_added_member_moves_no_id_but_its_own() {
+        let scratch = Scratch::new("instep");
+        let original = tpmt_arc::pack(&tpmt_arc::Archive {
+            root: "archive".to_string(),
+            files: vec![
+                tpmt_arc::File {
+                    path: "a.bin".to_string(),
+                    data: b"first",
+                    id: Some(0),
+                    preload: Preload::Mram,
+                },
+                tpmt_arc::File {
+                    path: "sub/b.bin".to_string(),
+                    data: b"second",
+                    id: Some(4),
+                    preload: Preload::Mram,
+                },
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let project = unpacked(&scratch, &original);
+        let manifest = Manifest::read(&project.join(AT)).unwrap();
+        let ids: Vec<Option<u16>> = manifest.members.iter().map(|member| member.id).collect();
+        assert_eq!(ids, [Some(0), Some(4)]);
+
+        write(&project.join(AT).join("new.bin"), b"new").unwrap();
+        let built = repack(&project, AT, false).unwrap();
+
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(rebuilt.files.len(), 3);
+        assert_eq!(member(&rebuilt, "a.bin").id, Some(0));
+        assert_eq!(member(&rebuilt, "sub/b.bin").id, Some(4));
+        assert_eq!(member(&rebuilt, "new.bin").id, Some(1));
+    }
+
+    /// A member the sidecar names and the project no longer holds is a file
+    /// somebody deleted, and deleting a file is all they should have to do.
+    #[test]
+    fn a_removed_member_drops_out() {
+        let scratch = Scratch::new("removed");
+        let original = packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("sub/b.bin", b"second", Preload::Mram),
+        ]);
+
+        let project = unpacked(&scratch, &original);
+        fs::remove_file(project.join(AT).join("sub").join("b.bin")).unwrap();
+
+        let built = repack(&project, AT, true).unwrap();
+
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(rebuilt.files.len(), 1);
+        assert_eq!(rebuilt.files[0].path, "a.bin");
+    }
+
+    /// Deleting a member closes the gap it left in the entry order, so the same
+    /// pinning that survives an addition has to survive a removal. The two after
+    /// it keep the ids they were stored under rather than sliding down to 0 and
+    /// 1 behind it.
+    #[test]
+    fn a_removed_member_moves_no_id_after_it() {
+        let scratch = Scratch::new("removedids");
+        let original = packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("b.bin", b"second", Preload::Mram),
+            ("c.bin", b"third", Preload::Mram),
+        ]);
+
+        let project = unpacked(&scratch, &original);
+        fs::remove_file(project.join(AT).join("a.bin")).unwrap();
+
+        let built = repack(&project, AT, true).unwrap();
+
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(rebuilt.files.len(), 2);
+        assert_eq!(member(&rebuilt, "b.bin").id, Some(1));
+        assert_eq!(member(&rebuilt, "c.bin").id, Some(2));
+    }
+
+    /// The same, one directory down, and into a directory nobody had before: the
+    /// run is cut from the whole layout rather than per directory, so a new
+    /// directory has to land ahead of the audio one as much as a new file does.
+    #[test]
+    fn an_added_member_lands_in_a_subdirectory() {
+        let scratch = Scratch::new("addedsub");
+        let original = packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("sub/b.bin", b"second", Preload::Mram),
+            ("snd/late.bin", b"third", Preload::Aram),
+        ]);
+
+        let project = unpacked(&scratch, &original);
+        write(&project.join(AT).join("sub").join("new.bin"), b"new").unwrap();
+        write(&project.join(AT).join("fresh").join("new.bin"), b"fresh").unwrap();
+
+        let built = repack(&project, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(member(&rebuilt, "sub/new.bin").data, b"new");
+        assert_eq!(member(&rebuilt, "fresh/new.bin").data, b"fresh");
+        assert_eq!(member(&rebuilt, "snd/late.bin").preload, Preload::Aram);
+        assert_eq!(rebuilt.files.last().unwrap().path, "snd/late.bin");
+    }
+
+    /// Making an archive is making a directory and calling it `.arc`. Nothing
+    /// was lost taking one apart that never existed, so nothing has to be
+    /// written down before it builds.
+    #[test]
+    fn a_new_archive_needs_no_sidecar() {
+        let scratch = Scratch::new("nosidecar");
+        write(&scratch.0.join(AT).join("a.bin"), b"first").unwrap();
+        write(&scratch.0.join(AT).join("sub").join("b.bin"), b"second").unwrap();
+
+        let built = repack(&scratch.0, AT, false).unwrap();
+        let rebuilt = tpmt_arc::unpack(&built).unwrap();
+        assert_eq!(member(&rebuilt, "a.bin").data, b"first");
+        assert_eq!(member(&rebuilt, "sub/b.bin").data, b"second");
+        assert!(
+            rebuilt
+                .files
+                .iter()
+                .all(|file| file.preload == Preload::Mram)
+        );
+    }
+
+    /// An archive the disc did have is a different story: the sidecar is the
+    /// only thing that knows what its members were loaded into and what came off
+    /// it, so a missing one there is a lost one and worth stopping over.
+    #[test]
+    fn a_lost_sidecar_is_refused() {
+        let scratch = Scratch::new("lostsidecar");
+        let original = packed(&[("a.bin", b"first", Preload::Mram)]);
+
+        let project = unpacked(&scratch, &original);
+        fs::remove_file(project.join(AT).join(arc::SIDECAR)).unwrap();
+
+        let refused = repack(&project, AT, true);
+        assert!(matches!(refused, Err(Error::LostSidecar(_))));
+    }
+
+    /// A member list cannot spell an empty directory, so one made under an
+    /// archive is dropped and the rebuild comes out as though it were never
+    /// there.
+    #[test]
+    fn an_empty_directory_under_an_archive_is_dropped() {
+        let scratch = Scratch::new("emptydir");
+        let original = packed(&[("a.bin", b"first", Preload::Mram)]);
+
+        let project = unpacked(&scratch, &original);
+        fs::create_dir(project.join(AT).join("empty")).unwrap();
+
+        let built = repack(&project, AT, false).unwrap();
+        assert_eq!(built, original);
+    }
+
+    /// An archive is one file on the disc however deep it was unpacked, so
+    /// everything under the outermost `.arc` maps back to it, nested archives
+    /// included, and anything else maps to itself.
+    #[test]
+    fn a_path_belongs_to_its_outermost_archive() {
+        assert_eq!(owner("sys/main.dol"), "sys/main.dol");
+        assert_eq!(owner("files/plain.bin"), "files/plain.bin");
+        assert_eq!(owner("files/thing.arc"), "files/thing.arc");
+        assert_eq!(owner("files/thing.arc/sub/a.bin"), "files/thing.arc");
+        assert_eq!(
+            owner("files/thing.arc/nested.arc/in.bin"),
+            "files/thing.arc"
+        );
+    }
+
+    // Everything below tests `plan` itself, which needs a source disc to
+    // compare the project against. The fixture writes a real image through
+    // tpmt-disc's own writer and unpacks it the way a project is actually
+    // made, so the vanilla hashes and the disc offsets are the genuine ones.
+
+    use tpmt_disc::{Bi2, Boot, Entry, Layout, Metadata};
+
+    const PLAIN: &str = "files/plain.bin";
+
+    fn metadata() -> Metadata {
+        Metadata {
+            boot: Boot {
+                id: "GZ2E".to_string(),
+                maker: "01".to_string(),
+                disc_number: 0,
+                revision: 0,
+                audio_streaming: 0,
+                stream_buffer_size: 0,
+                title: "test".to_string(),
+            },
+            bi2: Bi2 {
+                simulated_memory_size: 0x0180_0000,
+                debug_flag: 0,
+                country: 1,
+                unknown_1c: 4,
+                unknown_20: 5,
+                pad_spec: 6,
+            },
+        }
+    }
+
+    /// Writes a small but complete disc image holding the given files.
+    ///
+    /// An all-zero apploader header reports both of its halves as zero, and an
+    /// all-zero dol header reaches no further than itself, so each is its own
+    /// length and nothing more has to be crafted for the preamble.
+    fn imaged(scratch: &Scratch, files: &[(&str, &[u8])]) -> PathBuf {
+        let apploader = vec![0u8; 0x20];
+        let dol = vec![0u8; 0x100];
+        let mut project: Vec<(&str, &[u8])> =
+            vec![("sys/apploader.img", &apploader), ("sys/main.dol", &dol)];
+        project.extend_from_slice(files);
+
+        let items: Vec<Item> = project
+            .iter()
+            .map(|(path, data)| Item::File {
+                path: (*path).to_string(),
+                size: data.len() as u64,
+            })
+            .collect();
+        let layout = Layout::plan(&metadata(), &items).unwrap();
+
+        let mut out = Vec::new();
+        let mut image = layout.write(&mut out);
+        for entry in layout.entries() {
+            let Entry::File { path, .. } = entry else {
+                continue;
+            };
+            let (_, data) = project
+                .iter()
+                .find(|(at, _)| at == path)
+                .expect("the layout only holds what it was given");
+            image.file(data).unwrap();
+        }
+        image.finish().unwrap();
+
+        let iso = scratch.0.join("source.iso");
+        fs::write(&iso, out).unwrap();
+        iso
+    }
+
+    fn two_members() -> Vec<u8> {
+        packed(&[
+            ("a.bin", b"first", Preload::Mram),
+            ("b.bin", b"second", Preload::Mram),
+        ])
+    }
+
+    /// A disc holding one plain file and one archive, unpacked into a project:
+    /// what every test of `plan` starts from, before its own edit.
+    fn on_disc(scratch: &Scratch) -> (PathBuf, Disc, HashMap<String, String>) {
+        let archive = two_members();
+        let iso = imaged(scratch, &[(PLAIN, b"plain"), (AT, &archive)]);
+
+        let project = scratch.0.join("project");
+        crate::unpack(&iso, &project).unwrap();
+        let disc = Disc::open(&iso).unwrap();
+        let vanilla = crate::store::Store::new(&project).hashes().unwrap();
+        (project, disc, vanilla)
+    }
+
+    fn output<'a>(plan: &'a Plan, path: &str) -> &'a Output {
+        plan.outputs
+            .iter()
+            .find(|output| output.path == path)
+            .expect("the plan should hold it")
+    }
+
+    /// Nothing edited means nothing rebuilt: every file is a range of the
+    /// source disc, the archive stays unopened, and what those ranges read
+    /// back as is the bytes that went on.
+    #[test]
+    fn an_untouched_project_copies_everything_off_the_disc() {
+        let scratch = Scratch::new("plancopies");
+        let (project, disc, vanilla) = on_disc(&scratch);
+
+        let plan = plan(&project, &disc, &vanilla).unwrap();
+        assert_eq!(plan.outputs.len(), 4);
+        assert!(plan.outputs.iter().all(|output| !output.is_changed()));
+        assert_eq!(
+            output(&plan, AT).bytes(&disc).unwrap().as_ref(),
+            two_members()
+        );
+        assert_eq!(
+            output(&plan, PLAIN).bytes(&disc).unwrap().as_ref(),
+            b"plain"
+        );
+    }
+
+    /// Each change is sourced by what happened to it: an edited file is its
+    /// own bytes, anything touched inside an archive rebuilds the whole
+    /// archive, and a file or archive the disc never had is changed however
+    /// its bytes look. The preamble sits untouched through all of it, still
+    /// copied. What the rebuilt archives hold is the repack tests' business;
+    /// only the decision is at stake here.
+    #[test]
+    fn a_change_is_sourced_by_what_happened_to_it() {
+        let scratch = Scratch::new("planchanges");
+        let (project, disc, vanilla) = on_disc(&scratch);
+        write(&project.join(PLAIN), b"edited").unwrap();
+        write(&project.join(AT).join("a.bin"), b"edited").unwrap();
+        write(&project.join("files").join("new.bin"), b"new").unwrap();
+        write(&project.join("files/new.arc").join("in.bin"), b"inner").unwrap();
+
+        let plan = plan(&project, &disc, &vanilla).unwrap();
+        let source = |path| &output(&plan, path).source;
+        assert!(matches!(source(PLAIN), Source::Project(_)));
+        assert!(matches!(source(AT), Source::Built(_)));
+        assert!(matches!(source("files/new.bin"), Source::Project(_)));
+        assert!(matches!(source("files/new.arc"), Source::Built(_)));
+        assert!(matches!(source("sys/main.dol"), Source::Disc { .. }));
+    }
+
+    /// A deletion stays a deletion. A file gone from the project never enters
+    /// the output, and a member gone from an archive rebuilds it: every file
+    /// the project still holds agrees with its vanilla hash, so the member
+    /// counts are the only thing left to notice.
+    #[test]
+    fn a_deletion_stays_a_deletion() {
+        let scratch = Scratch::new("plandeleted");
+        let (project, disc, vanilla) = on_disc(&scratch);
+        fs::remove_file(project.join(PLAIN)).unwrap();
+        fs::remove_file(project.join(AT).join("b.bin")).unwrap();
+
+        let plan = plan(&project, &disc, &vanilla).unwrap();
+        assert!(plan.outputs.iter().all(|output| output.path != PLAIN));
+        assert!(plan.items.iter().all(|item| item.path() != PLAIN));
+        assert!(matches!(output(&plan, AT).source, Source::Built(_)));
+    }
+
+    /// The sidecar is not a member, but it decides what the archive rebuilds
+    /// into, so editing it alone has to count as touching the archive.
+    #[test]
+    fn an_edited_sidecar_rebuilds_the_archive() {
+        let scratch = Scratch::new("plansidecar");
+        let (project, disc, vanilla) = on_disc(&scratch);
+
+        let mut manifest = Manifest::read(&project.join(AT)).unwrap();
+        // The last member, so the memory runs stay contiguous.
+        manifest.members[1].preload = arc::Preload::Aram;
+        manifest.write(&project.join(AT)).unwrap();
+
+        let plan = plan(&project, &disc, &vanilla).unwrap();
+        assert!(matches!(output(&plan, AT).source, Source::Built(_)));
+    }
 }

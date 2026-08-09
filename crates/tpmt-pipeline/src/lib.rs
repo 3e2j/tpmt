@@ -1,32 +1,25 @@
 //! Unpacking a disc to a project folder and building it back.
 //!
-//! Unpacking walks the disc, peels off compression, opens archives, hands decodable
-//! files to whichever format crate claims them, and writes the result out as a single
-//! folder a person edits in place. Building runs the same route backwards.
+//! Unpacking walks the disc, peels off compression, opens archives, hands
+//! decodable files to whichever format crate claims them, and writes the
+//! result out as a single folder a person edits in place. Building runs the
+//! same route backwards.
 //!
-//! Building has two endings. A build works out what changed, re-encodes it, and
-//! gathers the finished game files into a mod somebody else can install. An
-//! image carries on from there and lays those files out as a disc, which is the
-//! only step of the two that has to know where anything goes. Everything before
-//! that split is one path, and neither ending is built by way of the other.
+//! Building has two endings. A `build` works out what changed, re-encodes it,
+//! and gathers the finished game files into a mod somebody else can install.
+//! An `image` carries on from there and lays those files out as a disc, which
+//! is the only step of the two that has to know where anything goes.
+//! Everything before that split is one path, and neither ending is built by
+//! way of the other.
 //!
 //! Edits are never tracked as they happen. Which files a person touched is
 //! worked out at build time, by hashing them against the vanilla hashes taken
 //! at unpack, and only those get re-encoded. Everything else is copied out of
 //! the source disc verbatim as raw bytes.
 //!
-//! Rebuilding an archive does not mean rebuilding what is inside it. An archive
-//! nobody touched is copied off the disc whole, still compressed. An archive
-//! counts as modified when any member was edited, added or deleted, and only
-//! then is it repacked and recompressed. Even so, only the added and edited
-//! members are re-encoded: every member left alone is pulled verbatim off the
-//! source disc rather than rebuilt, and a deleted member is simply not pulled
-//! at all. No file is ever put back through a codec because something sitting
-//! next to it changed.
-//!
-//! The only crate allowed to know how formats stack. That a `.arc` on the disc
-//! is usually Yaz0 wrapped around RARC is a fact about this pipeline, not about
-//! either format.
+//! An archive is a container around its files, and a change to any of them is
+//! a change to the whole thing: touched anywhere inside, the whole container
+//! is repacked; untouched, it is copied off the disc whole, still compressed.
 //!
 //! Format crates convert their own file type to an editable form and back.
 //! Which form that is belongs to the crate rather than here, so this one only
@@ -34,39 +27,58 @@
 //! included. Their typed models are public as well, reachable by an editor
 //! without a file in between.
 //!
-//! Unpack fans out one flat layer over FST entries, each self-contained.
+//! # Why
+//!
+//! **This is the conveyor belt: it takes the game apart into a folder of
+//! editable files, and puts it back together into a disc. Every format the
+//! game holds comes together here, and only here, to form the actual game.**
+//!
+//! - Assembling the game is a job of its own, separate from any format
+//!   knowing how to decode itself. This crate is the mediator that does it:
+//!   it walks the whole disc, hands each file to whichever format crate
+//!   claims it, and folds the results back into one.
+//! - Taking the game apart and putting it back together are the same route,
+//!   walked in each direction: what unpack writes out is exactly what build
+//!   folds back in, so nothing about assembling the game lives anywhere else.
+//!
+//! Paths mirror the disc, and decoded files chain extensions (zel_00.bmg.json).
+//!
+//! # External quirks to know
+//!
+//! - Some facts about a file do not survive being written out as one, like a
+//!   wrapper that came off it or which memory an archive member loads into.
+//!   Those go into a sidecar next to it instead.
+//!
+//! # Layout
+//!
+//! A project is one directory, edited in place:
+//!
+//! ```text
+//! tpmt.toml   schema version, the preamble values a build cannot derive
+//! sys/        apploader.img, main.dol
+//! files/      game content, archives as directories
+//! out/        built mods and images
+//! ```
+//!
+//! Sidecars hold what a decoded file could not carry, one name per format:
+//!
+//! ```text
+//! *.arc/.tpmt-arc.toml   what an unpacked archive is, minus its bytes
+//! ```
+//!
+//! The store holds everything generated about the project rather than for it:
+//!
+//! ```text
+//! .tpmt/source.toml   where the ISO was last seen, plus its sha1
+//! .tpmt/hashes        vanilla hashes, for change detection
+//! ```
 
-// Project, one directory, edited in place:
-//   tpmt.toml   schema version, the preamble values a build cannot derive
-//   sys/        apploader.img, main.dol
-//   files/      game content, archives as directories
-//   out/        built mods and images
+// TODO: the golden roundtrip. Unpack a retail ISO, image it straight back
+// with nothing edited, and diff the two.
 //
-// Store, everything we generate about it rather than for it:
-//   .tpmt/source.toml   where the ISO was last seen, plus its sha1
-//   .tpmt/hashes        vanilla hashes, for change detection
-//
-// Paths mirror the disc, decoded files chain extensions (zel_00.bmg.json).
-
-// TODO: the golden roundtrip. The end to end fidelity test: unpack a retail
-// ISO, image it straight back with nothing edited, and require every entry the
-// disc reports to come back byte for byte. It lives at this level because only
-// the pipeline sees the whole path (disc, compression, archives, formats); the
-// format crates each proved their own fidelity with throwaway probes, and this
-// is the committed test that keeps all of it true at once. Needs an ISO on hand,
-// so it runs as an ignored integration test under tests/ pointed at assets/. It
-// goes through image, since that is the one that produces something a disc
-// reader can be pointed back at, and getting there means every step build owns
-// was already right.
-//
-// It compares entries, not whole files: an image drops the mastering fill (see
-// tpmt-disc) and so is smaller than its source. assets/NA.iso is already
-// scrubbed, so it is the one print where comparing the files would pass anyway.
-// Do not calibrate on it.
-//
-// The file table is the exception worth checking whole. It is never unpacked,
-// so an image derives it from the project tree, and the source disc still has
-// the original to hold that against. Only the offsets are allowed to differ.
+// Byte equality is the wrong measurement for rebuilt entries. A format that
+// stores something derived comes back derived rather than restored, so the
+// bytes can move freely without anything being "wrong".
 
 // TODO: routing tables (disc path to project path) are still hardcoded nowhere.
 // Scope is Twilight Princess only, but GZ2E, GZ2P and GZ2J do not share paths,
@@ -78,19 +90,26 @@
 // hashed as it was written, and a build already asks for the bytes that go on
 // the disc rather than the bytes on the filesystem.
 
-// TODO: adding or removing an archive member. Both are refused by name, since
-// rebuilding the tables it would take is the re-emitter marked TODO in
-// tpmt-arc. Adding or removing a file on the disc itself already works.
-
 // TODO: decide whether to keep our own copy of the ISO rather than remembering
 // its originating path. Either way, tell the user before taking their disk space.
 
-// TODO: a mod does not say a file was deleted, only which ones it replaces or
-// adds. An image handles a deletion fine, since it lays out whatever the tree
-// holds.
+// TODO: a mod has no way to say a file was deleted, only which ones it
+// replaces or adds. Only matters outside an archive, since a deleted member
+// is already covered by the whole container repacking. An image handles a
+// deletion fine either way, since it lays out whatever the tree holds. But
+// a `build` folder can't.
+
+// TODO: nothing here catches a deleted file that something else still
+// references by id, path, or name; that only surfaces as a crash in game,
+// far from the build that caused it. Two separate defenses belong here
+// eventually: a build-time warning when a file the original archive held is
+// gone from what gets packed (cheap, catches the common case, blind to
+// whether anything actually referenced it), and, once a linker exists,
+// rejecting a build outright when a reference resolves to nothing.
 
 mod plan;
 mod project;
+mod sidecars;
 mod store;
 
 use std::borrow::Cow;
@@ -103,6 +122,7 @@ use tpmt_disc::{BI2_PATH, BOOT_PATH, Disc, Entry, Layout, Metadata};
 
 use crate::plan::Output;
 use crate::project::{FILES, OUT, Project, SYS, Staged};
+use crate::sidecars::arc;
 use crate::store::{Source, Store};
 
 /// The three Twilight Princess prints. Any other disc would unpack fine and
@@ -331,9 +351,14 @@ fn unpack_entry(
 /// something either format has an opinion about. Archives nested inside
 /// archives are wrapped the same way and unpack the same way.
 ///
-/// Whether the wrapper was there is not recorded, because it does not have to
-/// be: a build that repacks this archive reads the original first, and the
-/// original says.
+/// A wrapper found on an arc (and its entries) is taken off too.
+/// Format crates expect the format bytes, not wrapped in something unexpected.
+/// A sidecar notes wrapping down per member and a build puts it back.
+///
+/// Everything the files themselves cannot say goes in the sidecar at the root
+/// of the directory: the root name, the member order, which memory each member
+/// belongs in, and which wrappers came off. A rebuild works off that, so it
+/// does not need the disc to remember what this archive was.
 ///
 /// Not every `.arc` is one of ours. A handful hold other container formats
 /// entirely, and those stay whole, exactly as the disc had them, rather than
@@ -344,20 +369,14 @@ fn unpack_archive(
     at: &str,
     hashes: &mut Vec<(String, String)>,
 ) -> Result<(), Error> {
-    let contents = match tpmt_compress::is_yaz0(bytes) {
-        true => {
-            Cow::Owned(
-                tpmt_compress::yaz0_decode(bytes).map_err(|source| Error::Compress {
-                    path: path.to_path_buf(),
-                    source,
-                })?,
-            )
-        }
+    let yaz0_compressed = tpmt_compress::is_yaz0(bytes);
+    let contents = match yaz0_compressed {
+        true => Cow::Owned(decompress(bytes, path)?),
         false => Cow::Borrowed(bytes),
     };
 
-    let files = match tpmt_arc::files(&contents) {
-        Ok(files) => files,
+    let unpacked = match tpmt_arc::unpack(&contents) {
+        Ok(unpacked) => unpacked,
         // The original bytes, not the decompressed ones: what is written here
         // has to be what goes back on the disc.
         Err(tpmt_arc::Error::NotRarc) => {
@@ -374,19 +393,48 @@ fn unpack_archive(
     };
 
     project::create_dir(path)?;
-    for file in files {
+    let mut members = Vec::with_capacity(unpacked.files.len());
+    for file in unpacked.files {
         let inside = format!("{at}/{}", file.path);
-        let path = path.join(&file.path);
+        let member = path.join(&file.path);
+
+        // A nested archive keeps its own wrapping in its own sidecar, so the
+        // one entry that stays false here is the one that has somewhere better
+        // to be.
+        let mut yaz0_compressed = false;
         match is_archive(&file.path) {
-            true => unpack_archive(file.data, &path, &inside, hashes)?,
+            true => unpack_archive(file.data, &member, &inside, hashes)?,
             false => {
-                project::write(&path, file.data)?;
-                hashes.push((inside, plan::hash(file.data)));
+                yaz0_compressed = tpmt_compress::is_yaz0(file.data);
+                let data = match yaz0_compressed {
+                    true => Cow::Owned(decompress(file.data, &member)?),
+                    false => Cow::Borrowed(file.data),
+                };
+                project::write(&member, &data)?;
+                hashes.push((inside, plan::hash(&data)));
             }
         }
+
+        members.push(arc::Member {
+            path: file.path,
+            preload: file.preload.into(),
+            yaz0_compressed,
+            id: file.id,
+        });
     }
 
+    let manifest = arc::Manifest::new(unpacked.root, yaz0_compressed, members);
+    let written = manifest.write(path)?;
+    hashes.push((format!("{at}/{}", arc::SIDECAR), plan::hash(&written)));
+
     Ok(())
+}
+
+fn decompress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
+    tpmt_compress::yaz0_decode(bytes).map_err(|source| Error::Compress {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn is_archive(path: &str) -> bool {
@@ -404,11 +452,15 @@ pub enum Error {
     #[error("`{}` is not a project: it has no tpmt.toml", .0.display())]
     NotAProject(PathBuf),
 
+    /// Raised when something is already sitting where an unpack or a build
+    /// would write, and it was not put there by an earlier run of this tool.
+    /// Refusing to overwrite means a person's own files never vanish just for
+    /// being in the way.
     #[error("`{}` holds something this did not write, so it will not be replaced", .0.display())]
-    NotOurs(PathBuf),
+    ForeignDirectory(PathBuf),
 
     #[error("this project was written by schema {found}, and this is schema {want}")]
-    Schema { found: u32, want: u32 },
+    SchemaMismatch { found: u32, want: u32 },
 
     #[error("`{}` is not where it was when the project was unpacked", .0.display())]
     SourceMissing(PathBuf),
@@ -416,20 +468,19 @@ pub enum Error {
     #[error("`{}` is not the disc this project was unpacked from", .0.display())]
     SourceChanged(PathBuf),
 
+    /// Raised when a generated file under the project only this tool ever
+    /// writes does not parse in the shape this tool always writes it in, which
+    /// means somebody or something else got to it first.
     #[error("`{}` is not readable as something this wrote", .0.display())]
     CorruptStore(PathBuf),
 
     #[error("`{0}` is not on the source disc, so there is nothing to copy from")]
     NotOnDisc(String),
 
-    #[error("`{0}` is a new archive, and building one from nothing is not supported yet")]
-    NewArchive(String),
-
-    #[error("`{0}` is new to its archive, and adding a member is not supported yet")]
-    AddedMember(String),
-
-    #[error("`{0}` is gone from its archive, and removing a member is not supported yet")]
-    DeletedMember(String),
+    /// `repack` in plan.rs catches this and defaults instead when there is no
+    /// original to compare against.
+    #[error("`{}` is missing, so there is nothing saying what archive this is", .0.display())]
+    LostSidecar(PathBuf),
 
     #[error("`{}`: {source}", .path.display())]
     Read { path: PathBuf, source: io::Error },

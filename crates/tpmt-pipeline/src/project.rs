@@ -68,7 +68,7 @@ impl Project {
                 boot: project.boot,
                 bi2: project.bi2,
             }),
-            false => Err(Error::Schema {
+            false => Err(Error::SchemaMismatch {
                 found: project.schema,
                 want: SCHEMA,
             }),
@@ -109,7 +109,7 @@ impl Staged {
                 .into_iter()
                 .any(|name| !ours.contains(&name.as_str()));
             if theirs {
-                return Err(Error::NotOurs(target.to_path_buf()));
+                return Err(Error::ForeignDirectory(target.to_path_buf()));
             }
         }
 
