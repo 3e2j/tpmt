@@ -13,8 +13,8 @@
 //!
 //! - An archive is loaded/unloaded as itself, not the files in it.
 //!   The game holds a refcount, and unloads the whole container when unused.
-//! - Every file carries a flag for which memory pool it belongs in:
-//!   main, auxiliary, or read from disc.
+//! - Every file carries a flag for which memory it belongs in: main,
+//!   auxiliary, or read from disc.
 //!
 //! # External quirks to know
 //!
@@ -632,6 +632,12 @@ fn entry_index_fallback(entry: usize) -> Result<u16> {
 /// that a deleted file used to hold. That is a linker's job once one exists.
 /// An [`Archive::next_free_id`] the input didn't carry is derived here too.
 pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
+    // Four passes over the file list before the first byte goes out, each
+    // needing what an earlier one worked out rather than the raw list again.
+    // `Tree` turns paths into the node/entry numbering everything else is
+    // keyed by. `Placed` and `StringPool` both only need that numbering, not
+    // each other, so either could go first. `Layout` goes last because it is
+    // the one thing that needs a finished size: the pool's.
     let tree = Tree::build(archive)?;
     let placed = place_files(archive, &tree)?;
     let next_free = match archive.next_free_id {
@@ -642,7 +648,7 @@ pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
             placed.synced,
         )?,
     };
-    let pool = build_pool(archive, &tree)?;
+    let pool = build_string_pool(archive, &tree)?;
     let layout = Layout::of(&tree, pool.bytes.len());
 
     // Every length is known by now, so the whole archive is one allocation.
@@ -758,7 +764,7 @@ fn place_files(archive: &Archive, tree: &Tree) -> Result<Placed> {
 }
 
 /// The string pool, and where in it every name ended up.
-struct Pool {
+struct StringPool {
     bytes: Vec<u8>,
     /// Where each directory's name landed, by directory index.
     dirs: Vec<u32>,
@@ -775,7 +781,7 @@ struct Pool {
 /// is stored again, never shared. This is the one section that does not simply
 /// follow the node or the entry order, and every retail archive spells it
 /// exactly this way.
-fn build_pool(archive: &Archive, tree: &Tree) -> Result<Pool> {
+fn build_string_pool(archive: &Archive, tree: &Tree) -> Result<StringPool> {
     let mut pool = Writer::new();
     pool.bytes(b".\0..\0"); // The two `DOT_IN_POOL` and `DOTDOT_IN_POOL` point at.
     let name_at = |pool: &mut Writer, name: &[u8]| -> Result<u32> {
@@ -801,7 +807,7 @@ fn build_pool(archive: &Archive, tree: &Tree) -> Result<Pool> {
         }
     }
 
-    Ok(Pool {
+    Ok(StringPool {
         bytes: pool.finish(),
         dirs,
         files,
@@ -868,7 +874,7 @@ fn write_headers(out: &mut Writer, tree: &Tree, layout: &Layout, next_free: u16,
 }
 
 /// One record per directory, in node order, naming the run of entries it holds.
-fn write_nodes(out: &mut Writer, tree: &Tree, pool: &Pool) {
+fn write_nodes(out: &mut Writer, tree: &Tree, pool: &StringPool) {
     for (node, &dir) in tree.order.iter().enumerate() {
         // The fourcc: the name ASCII-uppercased, truncated to four, space
         // padded. The root is `ROOT` whatever its name is.
@@ -897,7 +903,7 @@ fn write_entries(
     out: &mut Writer,
     archive: &Archive,
     tree: &Tree,
-    pool: &Pool,
+    pool: &StringPool,
     placed: &Placed,
 ) -> Result<()> {
     for (node, &dir) in tree.order.iter().enumerate() {
