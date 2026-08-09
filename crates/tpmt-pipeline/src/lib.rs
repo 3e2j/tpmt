@@ -107,6 +107,7 @@
 // whether anything actually referenced it), and, once a linker exists,
 // rejecting a build outright when a reference resolves to nothing.
 
+mod fs;
 mod plan;
 mod project;
 mod sidecars;
@@ -120,8 +121,9 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use tpmt_disc::{BI2_PATH, BOOT_PATH, Disc, Entry, Layout, Metadata};
 
+use crate::fs::Staged;
 use crate::plan::Output;
-use crate::project::{FILES, OUT, Project, SYS, Staged};
+use crate::project::{FILES, OUT, Project, SYS};
 use crate::sidecars::arc;
 use crate::store::{Source, Store};
 
@@ -191,7 +193,7 @@ pub fn build(project: &Path, out: Option<&Path>) -> Result<PathBuf, Error> {
     let staged = Staged::directory(&target, &[SYS, FILES])?;
 
     for output in plan.outputs.iter().filter(|output| output.is_changed()) {
-        project::write(&staged.path().join(&output.path), &output.bytes(&disc)?)?;
+        fs::write(&staged.path().join(&output.path), &output.bytes(&disc)?)?;
     }
     preamble(&metadata, &disc, staged.path())?;
 
@@ -224,7 +226,7 @@ fn preamble(metadata: &Metadata, disc: &Disc, at: &std::path::Path) -> Result<()
 
     for (path, built, original) in pieces {
         if built != original {
-            project::write(&at.join(path), &built)?;
+            fs::write(&at.join(path), &built)?;
         }
     }
     Ok(())
@@ -325,7 +327,7 @@ fn unpack_entry(
 ) -> Result<Vec<(String, String)>, Error> {
     let path = project.join(entry.path());
     let Entry::File { offset, size, .. } = *entry else {
-        project::create_dir(&path)?;
+        fs::create_dir(&path)?;
         return Ok(Vec::new());
     };
 
@@ -334,7 +336,7 @@ fn unpack_entry(
     match is_archive(entry.path()) {
         true => unpack_archive(&bytes, &path, entry.path(), &mut hashes)?,
         false => {
-            project::write(&path, &bytes)?;
+            fs::write(&path, &bytes)?;
             hashes.push((entry.path().to_string(), plan::hash(&bytes)));
         }
     }
@@ -380,7 +382,7 @@ fn unpack_archive(
         // The original bytes, not the decompressed ones: what is written here
         // has to be what goes back on the disc.
         Err(tpmt_arc::Error::NotRarc) => {
-            project::write(path, bytes)?;
+            fs::write(path, bytes)?;
             hashes.push((at.to_string(), plan::hash(bytes)));
             return Ok(());
         }
@@ -392,7 +394,7 @@ fn unpack_archive(
         }
     };
 
-    project::create_dir(path)?;
+    fs::create_dir(path)?;
     let mut members = Vec::with_capacity(unpacked.files.len());
     for file in unpacked.files {
         let inside = format!("{at}/{}", file.path);
@@ -410,7 +412,7 @@ fn unpack_archive(
                     true => Cow::Owned(decompress(file.data, &member)?),
                     false => Cow::Borrowed(file.data),
                 };
-                project::write(&member, &data)?;
+                fs::write(&member, &data)?;
                 hashes.push((inside, plan::hash(&data)));
             }
         }

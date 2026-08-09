@@ -28,7 +28,8 @@ use sha1::{Digest, Sha1};
 use tpmt_disc::{Disc, Item};
 
 use crate::Error;
-use crate::project::{FILES, SYS, read};
+use crate::fs::read;
+use crate::project::{FILES, SYS};
 use crate::sidecars::arc::{self, Manifest, Member, Preload};
 
 /// One finished game file, ready to go on a disc or into a mod.
@@ -494,7 +495,7 @@ mod tests {
     use tpmt_arc::Preload;
 
     use super::*;
-    use crate::project::write;
+    use crate::fs::write;
 
     /// A directory to work in, gone again when the test that made it ends.
     struct Scratch(PathBuf);

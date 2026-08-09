@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
-use crate::project::{read, write};
+use crate::fs::{read, write};
 
 /// Everything generated about a project, out of the way of what is edited.
 const STORE: &str = ".tpmt";

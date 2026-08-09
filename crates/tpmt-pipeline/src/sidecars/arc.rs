@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
-use crate::project::{read, write};
+use crate::fs::{read, write};
 
 /// Sits at the root of every unpacked archive.
 pub(crate) const SIDECAR: &str = ".tpmt-arc.toml";
