@@ -11,10 +11,6 @@ use tpmt_disc::{Bi2, Boot, Metadata};
 use crate::Error;
 use crate::fs::{read, write};
 
-/// Bumped whenever a field in the project file moves or changes meaning, so an
-/// old project is told so rather than quietly misread.
-const SCHEMA: u32 = 1;
-
 pub(crate) const PROJECT_FILE: &str = "tpmt.toml";
 /// The game's own files, and the two preamble pieces, mirroring the disc.
 pub(crate) const FILES: &str = "files";
@@ -29,7 +25,6 @@ pub(crate) const OUT: &str = "out";
 /// region somewhere a person can edit them.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Project {
-    schema: u32,
     boot: Boot,
     bi2: Bi2,
 }
@@ -37,17 +32,18 @@ pub(crate) struct Project {
 impl Project {
     pub(crate) fn new(metadata: &Metadata) -> Self {
         Self {
-            schema: SCHEMA,
             boot: metadata.boot.clone(),
             bi2: metadata.bi2.clone(),
         }
     }
 
-    /// Reads the project file, refusing one written by a version that meant
-    /// something else by these fields.
+    /// Reads the project file.
     ///
     /// A missing file is what says this directory is not a project at all,
     /// since it is the one thing every project has.
+    // TODO: no version fallback here yet. Once the project file's shape
+    // changes, an older project needs a way to still be read rather than
+    // just failing to parse.
     pub(crate) fn read(project: &Path) -> Result<Metadata, Error> {
         let path = project.join(PROJECT_FILE);
         if !path.exists() {
@@ -60,16 +56,10 @@ impl Project {
             source,
         })?;
 
-        match project.schema == SCHEMA {
-            true => Ok(Metadata {
-                boot: project.boot,
-                bi2: project.bi2,
-            }),
-            false => Err(Error::SchemaMismatch {
-                found: project.schema,
-                want: SCHEMA,
-            }),
-        }
+        Ok(Metadata {
+            boot: project.boot,
+            bi2: project.bi2,
+        })
     }
 
     pub(crate) fn write(&self, project: &Path) -> Result<(), Error> {

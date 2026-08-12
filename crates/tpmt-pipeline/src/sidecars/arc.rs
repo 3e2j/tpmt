@@ -21,9 +21,6 @@ use crate::fs::{read, write};
 /// Sits at the root of every unpacked archive.
 pub(crate) const SIDECAR: &str = ".tpmt-arc.toml";
 
-/// Bumped whenever a field here moves or changes meaning.
-const SCHEMA: u32 = 1;
-
 /// What an archive nobody named calls its root.
 ///
 /// The name is not how anything finds a file inside, so an archive that never
@@ -43,7 +40,6 @@ const ROOT: &str = "archive";
 /// earning a key nobody would ever set.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Manifest {
-    schema: u32,
     /// The name the archive's root directory carries inside the archive, which
     /// is rarely the file name. See [`tpmt_arc::Archive::root`] for why it is
     /// worth keeping.
@@ -154,7 +150,6 @@ impl Member {
 impl Manifest {
     pub(crate) fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
         Self {
-            schema: SCHEMA,
             root,
             yaz0_compressed,
             members,
@@ -191,13 +186,7 @@ impl Manifest {
             source,
         })?;
 
-        match manifest.schema == SCHEMA {
-            true => Ok(manifest),
-            false => Err(Error::SchemaMismatch {
-                found: manifest.schema,
-                want: SCHEMA,
-            }),
-        }
+        Ok(manifest)
     }
 
     /// Writes the sidecar, giving back the bytes it wrote, since change
@@ -242,8 +231,7 @@ mod tests {
         let text = toml::to_string_pretty(&example()).unwrap();
         assert_eq!(
             text,
-            "schema = 1\n\
-             root = \"archive\"\n\
+            "root = \"archive\"\n\
              yaz0_compressed = true\n\
              \n\
              [[member]]\n\
@@ -273,8 +261,7 @@ mod tests {
     #[test]
     fn a_hand_written_one_can_leave_the_rest_out() {
         let read: Manifest = toml::from_str(
-            "schema = 1\n\
-             root = \"archive\"\n\
+            "root = \"archive\"\n\
              \n\
              [[member]]\n\
              path = \"new.bin\"\n\

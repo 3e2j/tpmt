@@ -54,7 +54,7 @@
 //! A project is one directory, edited in place:
 //!
 //! ```text
-//! tpmt.toml   schema version, the preamble values a build cannot derive
+//! tpmt.toml   the preamble values a build cannot derive
 //! sys/        apploader.img, main.dol
 //! files/      game content, archives as directories
 //! out/        built mods and images
@@ -540,9 +540,6 @@ pub enum Error {
     /// being in the way.
     #[error("`{}` holds something this did not write, so it will not be replaced", .0.display())]
     ForeignDirectory(PathBuf),
-
-    #[error("this project was written by schema {found}, and this is schema {want}")]
-    SchemaMismatch { found: u32, want: u32 },
 
     #[error("`{}` is not where it was when the project was unpacked", .0.display())]
     SourceMissing(PathBuf),
