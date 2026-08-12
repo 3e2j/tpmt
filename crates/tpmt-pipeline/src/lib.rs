@@ -110,6 +110,7 @@
 mod fs;
 mod plan;
 mod project;
+mod revert;
 mod sidecars;
 mod store;
 
@@ -126,6 +127,9 @@ use crate::plan::Output;
 use crate::project::{FILES, OUT, Project, SYS};
 use crate::sidecars::arc;
 use crate::store::{Source, Store};
+
+pub use crate::plan::{Change, ChangeKind};
+pub use crate::revert::{RevertPlan, SidecarEntry};
 
 /// The three Twilight Princess prints. Any other disc would unpack fine and
 /// then mean nothing to the rest of the toolkit, so it is turned away here.
@@ -178,6 +182,36 @@ pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
 
     staged.finish()?;
     Ok(())
+}
+
+/// Every project leaf that differs from vanilla.
+///
+/// Nothing here touches the source disc: a status only compares the
+/// project's own files against the hashes taken at unpack, so it still works
+/// with the disc missing or moved.
+pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
+    Project::read(project)?;
+    let vanilla = Store::new(project).hashes()?;
+    plan::changes(project, &vanilla)
+}
+
+/// Works out what reverting `path` would do, without writing anything.
+///
+/// `path` is a project-relative leaf (put back on its own) or a directory
+/// (every vanilla leaf under it put back together). Neither has to exist on
+/// disk right now: a file already deleted from the project is as revertable
+/// as one somebody edited.
+pub fn revert_plan(project: &Path, path: &str) -> Result<RevertPlan, Error> {
+    revert::plan(project, path)
+}
+
+/// Carries out a plan `revert_plan` already worked out.
+///
+/// `restore_sidecar_entry` only matters when the plan found one: it decides
+/// whether the archive member being restored also gets its own entry in the
+/// sidecar put back, without touching any other member's.
+pub fn revert(project: &Path, plan: &RevertPlan, restore_sidecar_entry: bool) -> Result<(), Error> {
+    revert::apply(project, plan, restore_sidecar_entry)
 }
 
 /// Packs the changes into a mod somebody else can install.
@@ -439,8 +473,20 @@ fn decompress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
     })
 }
 
-fn is_archive(path: &str) -> bool {
+pub(crate) fn is_archive(path: &str) -> bool {
     path.ends_with(".arc")
+}
+
+/// Every disc file's offset and size, keyed by its disc path, for a caller
+/// that needs one back out by name rather than walking every entry.
+pub(crate) fn on_disc(entries: &[Entry]) -> std::collections::HashMap<&str, (u64, u64)> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::File { path, offset, size } => Some((path.as_str(), (*offset, *size))),
+            Entry::Directory { .. } => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -478,6 +524,9 @@ pub enum Error {
 
     #[error("`{0}` is not on the source disc, so there is nothing to copy from")]
     NotOnDisc(String),
+
+    #[error("`{0}` is not part of this project, so there is nothing to revert")]
+    NotTracked(String),
 
     /// `repack` in plan.rs catches this and defaults instead when there is no
     /// original to compare against.

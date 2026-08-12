@@ -128,15 +128,7 @@ pub(crate) fn plan(
     }
 
     let entries = disc.entries()?;
-    let on_disc: HashMap<&str, (u64, u64)> = entries
-        .iter()
-        .filter_map(|entry| match entry {
-            tpmt_disc::Entry::File { path, offset, size } => {
-                Some((path.as_str(), (*offset, *size)))
-            }
-            tpmt_disc::Entry::Directory { .. } => None,
-        })
-        .collect();
+    let on_disc = crate::on_disc(&entries);
 
     // The archives that have to be rebuilt, done first and in parallel: each
     // one is a decompress, a repack and a recompress, and there can be a lot of
@@ -195,6 +187,64 @@ pub(crate) fn plan(
     }
 
     Ok(Plan { items, outputs })
+}
+
+/// One project leaf, and how it differs from the vanilla hash taken at
+/// unpack.
+pub struct Change {
+    pub path: String,
+    pub kind: ChangeKind,
+}
+
+#[derive(Clone, Copy)]
+pub enum ChangeKind {
+    /// The project holds this file, but the disc never did.
+    Added,
+    /// The project's bytes no longer match what came off the disc.
+    Modified,
+    /// The disc held this, and the project no longer does.
+    Deleted,
+}
+
+/// Every leaf that differs from vanilla, sorted by path.
+///
+/// The same walk-and-hash `plan` opens with, without the disc: a status has
+/// nothing to read off it and nothing to repack, since all it needs is which
+/// files changed, not what a build would produce from them.
+pub(crate) fn changes(project: &Path, vanilla: &HashMap<String, String>) -> Result<Vec<Change>, Error> {
+    let mut nodes = Vec::new();
+    walk(project, SYS, &mut nodes)?;
+    walk(project, FILES, &mut nodes)?;
+
+    let leaves: Vec<&String> = nodes.iter().flat_map(Node::leaves).collect();
+    let hashes: HashMap<&str, String> = leaves
+        .par_iter()
+        .map(|path| Ok((path.as_str(), hash(&read(&project.join(path))?))))
+        .collect::<Result<_, Error>>()?;
+
+    let mut changes: Vec<Change> = hashes
+        .iter()
+        .filter_map(|(path, digest)| match vanilla.get(*path) {
+            Some(vanilla_digest) if vanilla_digest == digest => None,
+            Some(_) => Some(Change {
+                path: path.to_string(),
+                kind: ChangeKind::Modified,
+            }),
+            None => Some(Change {
+                path: path.to_string(),
+                kind: ChangeKind::Added,
+            }),
+        })
+        .collect();
+    changes.extend(vanilla.keys().filter(|path| !hashes.contains_key(path.as_str())).map(|path| {
+        Change {
+            path: path.clone(),
+            kind: ChangeKind::Deleted,
+        }
+    }));
+
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(changes)
 }
 
 /// Rebuilds an archive out of what the project holds now.
@@ -375,7 +425,7 @@ impl Node {
 fn walk(project: &Path, at: &str, nodes: &mut Vec<Node>) -> Result<(), Error> {
     for (path, directory) in listing(&project.join(at))? {
         let path = format!("{at}/{path}");
-        match (directory, path.ends_with(".arc")) {
+        match (directory, crate::is_archive(&path)) {
             (true, true) => {
                 let mut leaves = Vec::new();
                 gather(project, &path, &mut leaves)?;
@@ -414,7 +464,7 @@ fn member_names(
             true => name.clone(),
             false => format!("{inside}/{name}"),
         };
-        match directory && !name.ends_with(".arc") {
+        match directory && !crate::is_archive(&name) {
             true => member_names(project, &path, &member, names)?,
             false => names.push(member),
         }
@@ -428,7 +478,7 @@ fn member_names(
 /// Sidecars are gathered along with everything else. They are not members, but
 /// editing one changes what the archive rebuilds into just as editing a member
 /// does, so change detection has to see them.
-fn gather(project: &Path, at: &str, leaves: &mut Vec<String>) -> Result<(), Error> {
+pub(crate) fn gather(project: &Path, at: &str, leaves: &mut Vec<String>) -> Result<(), Error> {
     for (path, directory) in listing(&project.join(at))? {
         let path = format!("{at}/{path}");
         match directory {
@@ -470,11 +520,11 @@ fn length(path: &Path) -> Result<u64, Error> {
 
 /// The disc file a project path belongs to: itself, or the archive holding it,
 /// since an archive is one file on the disc however deep it was unpacked.
-fn owner(path: &str) -> &str {
+pub(crate) fn owner(path: &str) -> &str {
     let mut at = 0;
     for part in path.split('/') {
         at += part.len();
-        if part.ends_with(".arc") {
+        if crate::is_archive(part) {
             return &path[..at];
         }
         at += 1;
@@ -1086,6 +1136,35 @@ mod tests {
         assert!(plan.outputs.iter().all(|output| output.path != PLAIN));
         assert!(plan.items.iter().all(|item| item.path() != PLAIN));
         assert!(matches!(output(&plan, AT).source, Source::Built(_)));
+    }
+
+    /// A status is the same walk `plan` opens with, laid out per leaf rather
+    /// than folded into a build decision: an edited file, an edited member,
+    /// an addition and a deletion each show up as their own line, archive
+    /// membership included, and nothing untouched shows up at all.
+    #[test]
+    fn changes_lists_every_leaf_that_differs() {
+        let scratch = Scratch::new("changes");
+        let (project, _disc, vanilla) = on_disc(&scratch);
+        write(&project.join(PLAIN), b"edited").unwrap();
+        write(&project.join(AT).join("a.bin"), b"edited").unwrap();
+        write(&project.join("files").join("new.bin"), b"new").unwrap();
+        fs::remove_file(project.join(AT).join("b.bin")).unwrap();
+
+        let changes = changes(&project, &vanilla).unwrap();
+        let kind = |path: &str| {
+            changes
+                .iter()
+                .find(|change| change.path == path)
+                .unwrap_or_else(|| panic!("{path} should be reported"))
+                .kind
+        };
+        assert!(matches!(kind(PLAIN), ChangeKind::Modified));
+        assert!(matches!(kind(&format!("{AT}/a.bin")), ChangeKind::Modified));
+        assert!(matches!(kind("files/new.bin"), ChangeKind::Added));
+        assert!(matches!(kind(&format!("{AT}/b.bin")), ChangeKind::Deleted));
+        assert_eq!(changes.len(), 4);
+        assert!(changes.windows(2).all(|pair| pair[0].path < pair[1].path));
     }
 
     /// The sidecar is not a member, but it decides what the archive rebuilds
