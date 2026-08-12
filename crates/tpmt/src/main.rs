@@ -94,33 +94,83 @@ fn run(command: Command) -> Result<(), Error> {
             Ok(())
         }
         Command::Status { dir } => {
-            let changes = tpmt_pipeline::status(project(&dir))?;
+            let root = project(&dir)?;
+            let changes = tpmt_pipeline::status(&root)?;
             print_status(&changes);
             Ok(())
         }
-        Command::Revert { path, dir, yes } => revert(project(&dir), &path, yes),
+        Command::Revert { path, dir, yes } => {
+            let root = project(&dir)?;
+            let target = resolve(&root, &path)?;
+            revert(&root, &target, yes)
+        }
         // Both default to the project around us, the way every other tool that
         // works on a checkout does, and take one somewhere else if named.
         Command::Build { dir, output } => {
-            let out = tpmt_pipeline::build(project(&dir), output.as_deref())?;
+            let root = project(&dir)?;
+            let out = tpmt_pipeline::build(&root, output.as_deref())?;
             println!("built {}", out.display());
             Ok(())
         }
         Command::Image { dir, output } => {
-            let out = tpmt_pipeline::image(project(&dir), output.as_deref())?;
+            let root = project(&dir)?;
+            let out = tpmt_pipeline::image(&root, output.as_deref())?;
             println!("wrote {}", out.display());
             Ok(())
         }
     }
 }
 
-/// The project a command works on, which is the current directory unless one
-/// was named.
-fn project(dir: &Option<PathBuf>) -> &Path {
-    match dir {
-        Some(dir) => dir,
+/// The project a command works on: discovered by walking up from `dir` (or
+/// the current directory, if none was named), the way `git -C` starts its own
+/// search from wherever it is pointed rather than treating that spot as the
+/// root itself.
+fn project(dir: &Option<PathBuf>) -> Result<PathBuf, Error> {
+    let start = match dir {
+        Some(dir) => dir.as_path(),
         None => Path::new("."),
+    };
+    Ok(tpmt_pipeline::discover(start)?)
+}
+
+/// Resolves `path`, taken as relative to the current directory the way a
+/// shell argument is, onto the project-relative key `revert` needs
+/// internally, git pathspec style, so `revert` works the same run from the
+/// project root or from a subdirectory of it.
+fn resolve(root: &Path, path: &Path) -> Result<String, Error> {
+    let cwd = std::env::current_dir()?.canonicalize()?;
+    let absolute = match path.is_absolute() {
+        true => path.to_path_buf(),
+        false => cwd.join(path),
+    };
+
+    let relative = normalize(&absolute)
+        .strip_prefix(root)
+        .map_err(|_| Error::OutsideProject(path.to_path_buf()))?
+        .to_path_buf();
+
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+/// Resolves `.`/`..` components lexically, without touching the filesystem: a
+/// revert target does not have to exist on disk to be revertable, so it can't
+/// be run through `canonicalize`.
+fn normalize(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => result.push(other),
+        }
     }
+    result
 }
 
 /// Prints a status listing, colored red/yellow/green for deleted, modified
@@ -145,10 +195,10 @@ fn print_status(changes: &[Change]) {
     }
 }
 
-/// Reverts `path` in `project`, asking first unless `yes` was given.
-fn revert(project: &Path, path: &Path, yes: bool) -> Result<(), Error> {
-    let target = path.to_string_lossy().into_owned();
-    let plan = tpmt_pipeline::revert_plan(project, &target)?;
+/// Reverts `target`, a project-relative path already resolved by `resolve`,
+/// asking first unless `yes` was given.
+fn revert(project: &Path, target: &str, yes: bool) -> Result<(), Error> {
+    let plan = tpmt_pipeline::revert_plan(project, target)?;
 
     let Some(cascade) = confirm(&plan, yes)? else {
         return Ok(());
@@ -225,6 +275,9 @@ enum Error {
     // PathBuf has no Display, and lossy is the right call in an error message.
     #[error("`{}` has no filename to borrow, so name the project directory yourself", .0.display())]
     NamelessIso(PathBuf),
+
+    #[error("`{}` is outside the project", .0.display())]
+    OutsideProject(PathBuf),
 
     #[error("could not read the answer to a prompt: {0}")]
     Io(#[from] io::Error),

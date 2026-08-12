@@ -546,24 +546,7 @@ mod tests {
 
     use super::*;
     use crate::fs::write;
-
-    /// A directory to work in, gone again when the test that made it ends.
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(name: &str) -> Self {
-            let at = std::env::temp_dir().join(format!("tpmt-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&at);
-            fs::create_dir_all(&at).unwrap();
-            Self(at)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_support::Scratch;
 
     const AT: &str = "files/thing.arc";
 

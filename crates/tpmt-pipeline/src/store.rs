@@ -22,7 +22,7 @@ use crate::Error;
 use crate::fs::{read, write};
 
 /// Everything generated about a project, out of the way of what is edited.
-const STORE: &str = ".tpmt";
+pub(crate) const STORE: &str = ".tpmt";
 const SOURCE_FILE: &str = "source.toml";
 const HASHES_FILE: &str = "hashes";
 

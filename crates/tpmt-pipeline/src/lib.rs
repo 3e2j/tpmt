@@ -113,6 +113,8 @@ mod project;
 mod revert;
 mod sidecars;
 mod store;
+#[cfg(test)]
+mod test_support;
 
 use std::borrow::Cow;
 use std::fs::File;
@@ -134,6 +136,29 @@ pub use crate::revert::{RevertPlan, SidecarEntry};
 /// The three Twilight Princess prints. Any other disc would unpack fine and
 /// then mean nothing to the rest of the toolkit, so it is turned away here.
 const SUPPORTED_IDS: [&str; 3] = ["GZ2E", "GZ2P", "GZ2J"];
+
+/// Finds the project root by walking upward from `start`, the same way git finds
+/// `.git`: canonicalize first, then climb one directory at a time until a
+/// `.tpmt` store turns up or the filesystem root is reached.
+///
+/// Checks only that `.tpmt` exists as a directory, not what is inside it,
+/// since every project has had one since `unpack` first ran, whether or not
+/// this build has started writing `.tpmt/tpmt.toml` yet.
+pub fn discover(start: &Path) -> Result<PathBuf, Error> {
+    let mut at = start.canonicalize().map_err(|source| Error::Read {
+        path: start.to_path_buf(),
+        source,
+    })?;
+
+    loop {
+        if at.join(store::STORE).is_dir() {
+            return Ok(at);
+        }
+        if !at.pop() {
+            return Err(Error::NoProjectFound(start.to_path_buf()));
+        }
+    }
+}
 
 /// Unpacks a disc image into a new project directory.
 ///
@@ -497,8 +522,17 @@ pub enum Error {
     #[error("`{}` already exists, so there is nothing to unpack into", .0.display())]
     ProjectExists(PathBuf),
 
+    /// Raised by `Project::read` when `tpmt.toml` is missing at a root
+    /// `discover` already confirmed, meaning the project itself is broken
+    /// (or, before discovery ran, the only check `unpack`'s caller had).
     #[error("`{}` is not a project: it has no tpmt.toml", .0.display())]
     NotAProject(PathBuf),
+
+    /// Raised by `discover` when no `.tpmt` turned up walking upward at all,
+    /// meaning the search never found anywhere worth checking for a
+    /// `tpmt.toml` in the first place.
+    #[error("`{}` is not inside a tpmt project", .0.display())]
+    NoProjectFound(PathBuf),
 
     /// Raised when something is already sitting where an unpack or a build
     /// would write, and it was not put there by an earlier run of this tool.
@@ -562,4 +596,40 @@ pub enum Error {
 
     #[error(transparent)]
     Disc(#[from] tpmt_disc::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::test_support::Scratch;
+
+    #[test]
+    fn finds_the_root_from_itself() {
+        let scratch = Scratch::new("self");
+        fs::create_dir_all(scratch.0.join(store::STORE)).unwrap();
+
+        let found = discover(&scratch.0).unwrap();
+        assert_eq!(found, scratch.0.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn finds_the_root_from_a_subdirectory() {
+        let scratch = Scratch::new("nested");
+        fs::create_dir_all(scratch.0.join(store::STORE)).unwrap();
+        let nested = scratch.0.join(FILES).join("thing.arc");
+        fs::create_dir_all(&nested).unwrap();
+
+        let found = discover(&nested).unwrap();
+        assert_eq!(found, scratch.0.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn refuses_a_directory_with_no_project_above_it() {
+        let scratch = Scratch::new("none");
+
+        let error = discover(&scratch.0).unwrap_err();
+        assert!(matches!(error, Error::NoProjectFound(_)));
+    }
 }
