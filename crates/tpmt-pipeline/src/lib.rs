@@ -126,7 +126,7 @@ use tpmt_disc::{BI2_PATH, BOOT_PATH, Disc, Entry, Layout, Metadata};
 
 use crate::fs::Staged;
 use crate::plan::Output;
-use crate::project::{FILES, OUT, Project, SYS};
+use crate::project::{FILES, OUT, PROJECT_FILE, Project, SYS};
 use crate::sidecars::arc;
 use crate::store::{Source, Store};
 
@@ -160,12 +160,31 @@ pub fn discover(start: &Path) -> Result<PathBuf, Error> {
     }
 }
 
-/// Unpacks a disc image into a new project directory.
-///
-/// The directory is created here and is expected not to exist yet. Reusing one
-/// would mean reconciling whatever edits are already sitting in it, which is
-/// what `build` is for.
-pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
+/// Whether `dir` is itself a project root, judged the same way `discover`
+/// recognises one while walking upward: by the store directory every project
+/// has and nothing else creates.
+pub fn is_project(dir: &Path) -> bool {
+    dir.join(store::STORE).is_dir()
+}
+
+/// Unpacks a disc image into a project directory, creating it if it does not
+/// exist. An existing project is replaced only if `overwrite` is set;
+/// anything else already there is refused.
+pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> {
+    // Checked before the disc is even opened: whether this directory is safe
+    // to write into does not depend on what is in the ISO, so there is no
+    // reason to make somebody wait on that just to be told no. An empty
+    // directory holds nothing to protect or to reconcile, so it is left to
+    // Staged below rather than judged here.
+    if project.exists() && !fs::listing(project)?.is_empty() {
+        if !is_project(project) {
+            return Err(Error::ForeignDirectory(project.to_path_buf()));
+        }
+        if !overwrite {
+            return Err(Error::ProjectExists(project.to_path_buf()));
+        }
+    }
+
     let disc = Disc::open(iso)?;
     let metadata = disc.metadata();
     let id = &metadata.boot.id;
@@ -173,12 +192,7 @@ pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
         return Err(Error::UnsupportedDisc(id.clone()));
     }
 
-    if project.exists() {
-        return Err(Error::ProjectExists(project.to_path_buf()));
-    }
-    // Nothing to allow: the check above already refused a directory that exists
-    // at all, so this one never replaces anything.
-    let staged = Staged::directory(project, &[])?;
+    let staged = Staged::directory(project, &[PROJECT_FILE, FILES, SYS, OUT, store::STORE])?;
     let at = staged.path();
     Project::new(metadata).write(at)?;
 
@@ -519,7 +533,7 @@ pub enum Error {
     #[error("`{0}` is not a Twilight Princess disc")]
     UnsupportedDisc(String),
 
-    #[error("`{}` already exists, so there is nothing to unpack into", .0.display())]
+    #[error("`{}` is already a project; pass overwrite to replace it", .0.display())]
     ProjectExists(PathBuf),
 
     /// Raised by `Project::read` when `tpmt.toml` is missing at a root
@@ -628,5 +642,48 @@ mod tests {
 
         let error = discover(&scratch.0).unwrap_err();
         assert!(matches!(error, Error::NoProjectFound(_)));
+    }
+
+    /// `unpack` never gets as far as touching a directory nothing here wrote,
+    /// so a personal folder that happens to share a name is left alone rather
+    /// than cleared to make room.
+    #[test]
+    fn refuses_to_unpack_over_a_directory_that_is_not_a_project() {
+        let scratch = Scratch::new("foreign");
+        let target = scratch.0.join("mine");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("notes.txt"), b"do not delete").unwrap();
+
+        let error = unpack(Path::new("nonexistent.iso"), &target, true).unwrap_err();
+        assert!(matches!(error, Error::ForeignDirectory(path) if path == target));
+        assert!(target.join("notes.txt").exists());
+    }
+
+    /// An empty directory has nothing in it to protect, so it is treated the
+    /// same as one that does not exist yet rather than refused as foreign.
+    #[test]
+    fn unpacks_into_a_directory_that_exists_but_is_empty() {
+        let scratch = Scratch::new("empty");
+        let target = scratch.0.join("mine");
+        fs::create_dir_all(&target).unwrap();
+
+        let error = unpack(Path::new("nonexistent.iso"), &target, false).unwrap_err();
+        assert!(!matches!(
+            error,
+            Error::ForeignDirectory(_) | Error::ProjectExists(_)
+        ));
+    }
+
+    /// Unpacking again on top of an existing project needs `overwrite` said
+    /// explicitly; the CLI turns that into a prompt, but the library itself
+    /// never overwrites on its own say-so.
+    #[test]
+    fn refuses_to_unpack_over_a_project_without_overwrite() {
+        let scratch = Scratch::new("existing");
+        let target = scratch.0.join("project");
+        fs::create_dir_all(target.join(store::STORE)).unwrap();
+
+        let error = unpack(Path::new("nonexistent.iso"), &target, false).unwrap_err();
+        assert!(matches!(error, Error::ProjectExists(path) if path == target));
     }
 }

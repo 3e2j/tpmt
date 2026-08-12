@@ -1046,7 +1046,7 @@ mod tests {
         let iso = imaged(scratch, &[(PLAIN, b"plain"), (AT, &archive)]);
 
         let project = scratch.0.join("project");
-        crate::unpack(&iso, &project).unwrap();
+        crate::unpack(&iso, &project, false).unwrap();
         let disc = Disc::open(&iso).unwrap();
         let vanilla = crate::store::Store::new(&project).hashes().unwrap();
         (project, disc, vanilla)

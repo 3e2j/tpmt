@@ -121,7 +121,7 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>, Error> {
 }
 
 /// What a directory holds, by name.
-fn listing(path: &Path) -> Result<Vec<String>, Error> {
+pub(crate) fn listing(path: &Path) -> Result<Vec<String>, Error> {
     let failed = |source| Error::Read {
         path: path.to_path_buf(),
         source,

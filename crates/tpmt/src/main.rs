@@ -31,6 +31,9 @@ enum Command {
         iso: PathBuf,
         /// Directory to create, defaults to the image's name
         dir: Option<PathBuf>,
+        /// Don't ask before overwriting an existing project
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
     /// List files that differ from vanilla
     Status {
@@ -78,7 +81,7 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<(), Error> {
     match command {
-        Command::New { iso, dir } => {
+        Command::New { iso, dir, yes } => {
             // Defaulting to the image's stem means `tpmt new game.iso` lands in
             // ./game rather than scattering a project over the current folder.
             let project = match dir {
@@ -89,7 +92,18 @@ fn run(command: Command) -> Result<(), Error> {
                     .ok_or_else(|| Error::NamelessIso(iso.clone()))?,
             };
 
-            tpmt_pipeline::unpack(&iso, &project)?;
+            if project.exists() && tpmt_pipeline::is_project(&project) {
+                let overwrite = yes
+                    || ask(&format!(
+                        "`{}` is already a project. Overwrite it? [y/N] ",
+                        project.display()
+                    ))?;
+                if !overwrite {
+                    return Ok(());
+                }
+            }
+
+            tpmt_pipeline::unpack(&iso, &project, true)?;
             println!("unpacked {} into {}", iso.display(), project.display());
             Ok(())
         }

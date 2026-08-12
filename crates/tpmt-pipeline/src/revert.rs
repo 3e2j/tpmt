@@ -367,7 +367,7 @@ mod tests {
         fs::write(&iso, out).unwrap();
 
         let project = scratch.0.join("project");
-        crate::unpack(&iso, &project).unwrap();
+        crate::unpack(&iso, &project, false).unwrap();
         project
     }
 
