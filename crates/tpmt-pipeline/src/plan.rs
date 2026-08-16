@@ -29,8 +29,8 @@ use tpmt_disc::{Disc, Item};
 
 use crate::Error;
 use crate::fs::read;
-use crate::project::{FILES, SYS};
-use crate::sidecars::arc::{self, Manifest, Member, Preload};
+use crate::manifest::{FILES, SYS};
+use crate::sidecars::arc::{self, Member, Preload, Sidecar};
 
 /// One finished game file, ready to go on a disc or into a mod.
 pub(crate) struct Output {
@@ -211,7 +211,10 @@ pub enum ChangeKind {
 /// The same walk-and-hash `plan` opens with, without the disc: a status has
 /// nothing to read off it and nothing to repack, since all it needs is which
 /// files changed, not what a build would produce from them.
-pub(crate) fn changes(project: &Path, vanilla: &HashMap<String, String>) -> Result<Vec<Change>, Error> {
+pub(crate) fn changes(
+    project: &Path,
+    vanilla: &HashMap<String, String>,
+) -> Result<Vec<Change>, Error> {
     let mut nodes = Vec::new();
     walk(project, SYS, &mut nodes)?;
     walk(project, FILES, &mut nodes)?;
@@ -236,12 +239,15 @@ pub(crate) fn changes(project: &Path, vanilla: &HashMap<String, String>) -> Resu
             }),
         })
         .collect();
-    changes.extend(vanilla.keys().filter(|path| !hashes.contains_key(path.as_str())).map(|path| {
-        Change {
-            path: path.clone(),
-            kind: ChangeKind::Deleted,
-        }
-    }));
+    changes.extend(
+        vanilla
+            .keys()
+            .filter(|path| !hashes.contains_key(path.as_str()))
+            .map(|path| Change {
+                path: path.clone(),
+                kind: ChangeKind::Deleted,
+            }),
+    );
 
     changes.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(changes)
@@ -282,15 +288,15 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
     // On an archive the disc never had there is nothing to recover, so a
     // missing sidecar is answered rather than asked for. On one the disc did
     // have, the same missing file is a lost sidecar and worth stopping over.
-    let manifest = match Manifest::read(&directory) {
-        Err(Error::LostSidecar(_)) if !existed => Manifest::fresh(),
-        manifest => manifest?,
+    let sidecar = match Sidecar::read(&directory) {
+        Err(Error::LostSidecar(_)) if !existed => Sidecar::fresh(),
+        sidecar => sidecar?,
     };
 
     let mut in_project = Vec::new();
     member_names(project, path, "", &mut in_project)?;
     let present: HashSet<&str> = in_project.iter().map(String::as_str).collect();
-    let named: HashSet<&str> = manifest
+    let named: HashSet<&str> = sidecar
         .members
         .iter()
         .map(|member| member.path.as_str())
@@ -302,7 +308,7 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
     // A member dropped here by a missing file is dropped silently: see the
     // cross-reference TODO in lib.rs. Nothing checks whether its id was still
     // wanted by something else in the game.
-    let mut members: Vec<Member> = manifest
+    let mut members: Vec<Member> = sidecar
         .members
         .iter()
         .filter(|member| present.contains(member.path.as_str()))
@@ -374,12 +380,12 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
     // nothing reads, and only once rebuilt, which has moved every offset in
     // them anyway.
     let built = tpmt_arc::pack(&tpmt_arc::Archive {
-        root: manifest.root.clone(),
+        root: sidecar.root.clone(),
         files,
         ..Default::default()
     })
     .map_err(archive)?;
-    match manifest.yaz0_compressed {
+    match sidecar.yaz0_compressed {
         true => tpmt_compress::yaz0_encode(&built).map_err(compress),
         false => Ok(built),
     }
@@ -727,14 +733,14 @@ mod tests {
         let project = unpacked(&scratch, &original);
         write(&project.join(AT).join("new.bin"), b"new").unwrap();
 
-        let mut manifest = Manifest::read(&project.join(AT)).unwrap();
-        manifest.members.push(Member {
+        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
+        sidecar.members.push(Member {
             path: "new.bin".to_string(),
             preload: arc::Preload::Aram,
             yaz0_compressed: false,
             id: None,
         });
-        manifest.write(&project.join(AT)).unwrap();
+        sidecar.write(&project.join(AT)).unwrap();
 
         let built = repack(&project, AT, false).unwrap();
         let rebuilt = tpmt_arc::unpack(&built).unwrap();
@@ -813,8 +819,8 @@ mod tests {
         .unwrap();
 
         let project = unpacked(&scratch, &original);
-        let manifest = Manifest::read(&project.join(AT)).unwrap();
-        let ids: Vec<Option<u16>> = manifest.members.iter().map(|member| member.id).collect();
+        let sidecar = Sidecar::read(&project.join(AT)).unwrap();
+        let ids: Vec<Option<u16>> = sidecar.members.iter().map(|member| member.id).collect();
         assert_eq!(ids, [Some(0), Some(4)]);
 
         write(&project.join(AT).join("new.bin"), b"new").unwrap();
@@ -1157,10 +1163,10 @@ mod tests {
         let scratch = Scratch::new("plansidecar");
         let (project, disc, vanilla) = on_disc(&scratch);
 
-        let mut manifest = Manifest::read(&project.join(AT)).unwrap();
+        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
         // The last member, so the memory runs stay contiguous.
-        manifest.members[1].preload = arc::Preload::Aram;
-        manifest.write(&project.join(AT)).unwrap();
+        sidecar.members[1].preload = arc::Preload::Aram;
+        sidecar.write(&project.join(AT)).unwrap();
 
         let plan = plan(&project, &disc, &vanilla).unwrap();
         assert!(matches!(output(&plan, AT).source, Source::Built(_)));

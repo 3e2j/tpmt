@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::sidecars::arc::{self, Manifest};
+use crate::sidecars::arc::{self, Sidecar};
 use crate::store::Store;
 use crate::{Error, plan};
 
@@ -211,7 +211,7 @@ fn sidecar_update(
     scratch: &Path,
     entry: &Option<SidecarEntry>,
     member: &str,
-) -> Result<Option<(String, Manifest)>, Error> {
+) -> Result<Option<(String, Sidecar)>, Error> {
     let Some(entry) = entry else { return Ok(None) };
     let archive = entry
         .path
@@ -221,7 +221,7 @@ fn sidecar_update(
         .strip_prefix(&format!("{archive}/"))
         .expect("a member with a sidecar entry always sits under that entry's archive");
 
-    let vanilla = Manifest::read(&scratch.join(archive))?;
+    let vanilla = Sidecar::read(&scratch.join(archive))?;
     let Some(original) = vanilla
         .members
         .iter()
@@ -230,7 +230,7 @@ fn sidecar_update(
         return Ok(None);
     };
 
-    let mut current = Manifest::read(&project.join(archive))?;
+    let mut current = Sidecar::read(&project.join(archive))?;
     let Some(member) = current
         .members
         .iter_mut()
@@ -431,15 +431,15 @@ mod tests {
         let member = format!("{AT}/a.bin");
         write(&project.join(&member), b"edited").unwrap();
 
-        let mut manifest = Manifest::read(&project.join(AT)).unwrap();
-        manifest.members[0].preload = SidecarPreload::Aram;
-        manifest.members[1].preload = SidecarPreload::Aram;
-        manifest.write(&project.join(AT)).unwrap();
+        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
+        sidecar.members[0].preload = SidecarPreload::Aram;
+        sidecar.members[1].preload = SidecarPreload::Aram;
+        sidecar.write(&project.join(AT)).unwrap();
 
         let plan = plan(&project, &member).unwrap();
         apply(&project, &plan, true).unwrap();
 
-        let after = Manifest::read(&project.join(AT)).unwrap();
+        let after = Sidecar::read(&project.join(AT)).unwrap();
         assert_eq!(after.members[0].preload, SidecarPreload::Mram);
         assert_eq!(after.members[1].preload, SidecarPreload::Aram);
     }
@@ -453,14 +453,14 @@ mod tests {
         let member = format!("{AT}/a.bin");
         write(&project.join(&member), b"edited").unwrap();
 
-        let mut manifest = Manifest::read(&project.join(AT)).unwrap();
-        manifest.members[0].preload = SidecarPreload::Aram;
-        manifest.write(&project.join(AT)).unwrap();
+        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
+        sidecar.members[0].preload = SidecarPreload::Aram;
+        sidecar.write(&project.join(AT)).unwrap();
 
         let plan = plan(&project, &member).unwrap();
         apply(&project, &plan, false).unwrap();
 
-        let after = Manifest::read(&project.join(AT)).unwrap();
+        let after = Sidecar::read(&project.join(AT)).unwrap();
         assert_eq!(after.members[0].preload, SidecarPreload::Aram);
     }
 

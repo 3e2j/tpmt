@@ -39,7 +39,7 @@ const ROOT: &str = "archive";
 /// archives storing an unusual number come back two bytes off rather than
 /// earning a key nobody would ever set.
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Manifest {
+pub(crate) struct Sidecar {
     /// The name the archive's root directory carries inside the archive, which
     /// is rarely the file name. See [`tpmt_arc::Archive::root`] for why it is
     /// worth keeping.
@@ -147,7 +147,7 @@ impl Member {
     }
 }
 
-impl Manifest {
+impl Sidecar {
     pub(crate) fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
         Self {
             root,
@@ -181,12 +181,12 @@ impl Manifest {
         }
 
         let text = String::from_utf8_lossy(&read(&path)?).into_owned();
-        let manifest: Self = toml::from_str(&text).map_err(|source| Error::UnreadableProject {
+        let sidecar: Self = toml::from_str(&text).map_err(|source| Error::UnreadableProject {
             path: path.clone(),
             source,
         })?;
 
-        Ok(manifest)
+        Ok(sidecar)
     }
 
     /// Writes the sidecar, giving back the bytes it wrote, since change
@@ -202,8 +202,8 @@ impl Manifest {
 mod tests {
     use super::*;
 
-    fn example() -> Manifest {
-        Manifest::new(
+    fn example() -> Sidecar {
+        Sidecar::new(
             "archive".to_string(),
             true,
             vec![
@@ -246,7 +246,7 @@ mod tests {
              id = 3\n"
         );
 
-        let read: Manifest = toml::from_str(&text).unwrap();
+        let read: Sidecar = toml::from_str(&text).unwrap();
         assert_eq!(read.root, "archive");
         assert!(read.yaz0_compressed);
         assert_eq!(read.members[0].id, Some(0));
@@ -260,7 +260,7 @@ mod tests {
     /// Everything else has an answer already.
     #[test]
     fn a_hand_written_one_can_leave_the_rest_out() {
-        let read: Manifest = toml::from_str(
+        let read: Sidecar = toml::from_str(
             "root = \"archive\"\n\
              \n\
              [[member]]\n\

@@ -18,10 +18,8 @@ impl Scratch {
         static CALLS: AtomicU64 = AtomicU64::new(0);
         let unique = CALLS.fetch_add(1, Ordering::Relaxed);
 
-        let at = std::env::temp_dir().join(format!(
-            "tpmt-test-{name}-{}-{unique}",
-            std::process::id()
-        ));
+        let at =
+            std::env::temp_dir().join(format!("tpmt-test-{name}-{}-{unique}", std::process::id()));
         let _ = fs::remove_dir_all(&at);
         fs::create_dir_all(&at).unwrap();
         Self(at)

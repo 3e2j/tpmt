@@ -108,8 +108,8 @@
 // rejecting a build outright when a reference resolves to nothing.
 
 mod fs;
+mod manifest;
 mod plan;
-mod project;
 mod revert;
 mod sidecars;
 mod store;
@@ -125,8 +125,8 @@ use rayon::prelude::*;
 use tpmt_disc::{BI2_PATH, BOOT_PATH, Disc, Entry, Layout, Metadata};
 
 use crate::fs::Staged;
+use crate::manifest::{FILES, Manifest, OUT, PROJECT_FILE, SYS};
 use crate::plan::Output;
-use crate::project::{FILES, OUT, PROJECT_FILE, Project, SYS};
 use crate::sidecars::arc;
 use crate::store::{Source, Store};
 
@@ -194,7 +194,7 @@ pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> 
 
     let staged = Staged::directory(project, &[PROJECT_FILE, FILES, SYS, OUT, store::STORE])?;
     let at = staged.path();
-    Project::new(metadata).write(at)?;
+    Manifest::new(metadata).write(at)?;
 
     // One flat layer of work. Every entry reads its own bytes off the shared
     // disc and writes its own outputs, so there is nothing to hand between
@@ -229,7 +229,7 @@ pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> 
 /// project's own files against the hashes taken at unpack, so it still works
 /// with the disc missing or moved.
 pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
-    Project::read(project)?;
+    Manifest::read(project)?;
     let vanilla = Store::new(project).hashes()?;
     plan::changes(project, &vanilla)
 }
@@ -351,7 +351,7 @@ pub fn image(project: &Path, out: Option<&Path>) -> Result<PathBuf, Error> {
 fn open(
     project: &Path,
 ) -> Result<(Metadata, Disc, std::collections::HashMap<String, String>), Error> {
-    let metadata = Project::read(project)?;
+    let metadata = Manifest::read(project)?;
     let store = Store::new(project);
     let source = store.source()?;
 
@@ -498,8 +498,8 @@ fn unpack_archive(
         });
     }
 
-    let manifest = arc::Manifest::new(unpacked.root, yaz0_compressed, members);
-    let written = manifest.write(path)?;
+    let sidecar = arc::Sidecar::new(unpacked.root, yaz0_compressed, members);
+    let written = sidecar.write(path)?;
     hashes.push((format!("{at}/{}", arc::SIDECAR), plan::hash(&written)));
 
     Ok(())
@@ -536,7 +536,7 @@ pub enum Error {
     #[error("`{}` is already a project; pass overwrite to replace it", .0.display())]
     ProjectExists(PathBuf),
 
-    /// Raised by `Project::read` when `tpmt.toml` is missing at a root
+    /// Raised by `Manifest::read` when `tpmt.toml` is missing at a root
     /// `discover` already confirmed, meaning the project itself is broken
     /// (or, before discovery ran, the only check `unpack`'s caller had).
     #[error("`{}` is not a project: it has no tpmt.toml", .0.display())]
