@@ -25,12 +25,14 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
+use tpmt_arc::Preload;
+use tpmt_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
 use tpmt_disc::{Disc, Item};
 
 use crate::Error;
 use crate::fs::read;
 use crate::manifest::{FILES, SYS};
-use crate::sidecars::arc::{self, Member, Preload, Sidecar};
+use crate::sidecars::arc::read_sidecar;
 
 /// One finished game file, ready to go on a disc or into a mod.
 pub(crate) struct Output {
@@ -273,6 +275,10 @@ pub(crate) fn changes(
 ///
 /// An empty directory under an archive is dropped without a word: a member
 /// list cannot spell one, and the game would find nothing in it anyway.
+///
+/// Assembled here, not in `tpmt-arc`, for the same reason `unpack_archive`
+/// builds its sidecar here: it takes walking every format crate to know a
+/// member's bytes, a view `tpmt-arc` doesn't have.
 fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
     let archive = |source| Error::Archive {
         path: PathBuf::from(path),
@@ -283,7 +289,7 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
     // On an archive the disc never had there is nothing to recover, so a
     // missing sidecar is answered rather than asked for. On one the disc did
     // have, the same missing file is a lost sidecar and worth stopping over.
-    let sidecar = match Sidecar::read(&directory) {
+    let sidecar = match read_sidecar(&directory) {
         Err(Error::LostSidecar(_)) if !existed => Sidecar::fresh(),
         sidecar => sidecar?,
     };
@@ -366,7 +372,7 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
             path: member.path.clone(),
             data: bytes.as_slice(),
             id: member.id,
-            preload: member.preload.into(),
+            preload: member.preload,
         })
         .collect();
 
@@ -457,7 +463,7 @@ fn member_names(
     names: &mut Vec<String>,
 ) -> Result<(), Error> {
     for (name, directory) in listing(&project.join(at))? {
-        if inside.is_empty() && name == arc::SIDECAR {
+        if inside.is_empty() && name == SIDECAR {
             continue;
         }
         let path = format!("{at}/{name}");
@@ -543,10 +549,9 @@ pub(crate) fn hash(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_arc::Preload;
-
     use super::*;
     use crate::fs::write;
+    use crate::sidecars::arc::write_sidecar;
     use crate::test_support::Scratch;
 
     const AT: &str = "files/thing.arc";
@@ -728,14 +733,14 @@ mod tests {
         let project = unpacked(&scratch, &original);
         write(&project.join(AT).join("new.bin"), b"new").unwrap();
 
-        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
+        let mut sidecar = read_sidecar(&project.join(AT)).unwrap();
         sidecar.members.push(Member {
             path: "new.bin".to_string(),
-            preload: arc::Preload::Aram,
+            preload: Preload::Aram,
             yaz0_compressed: false,
             id: None,
         });
-        sidecar.write(&project.join(AT)).unwrap();
+        write_sidecar(&sidecar, &project.join(AT)).unwrap();
 
         let built = repack(&project, AT, false).unwrap();
         let rebuilt = tpmt_arc::unpack(&built).unwrap();
@@ -814,7 +819,7 @@ mod tests {
         .unwrap();
 
         let project = unpacked(&scratch, &original);
-        let sidecar = Sidecar::read(&project.join(AT)).unwrap();
+        let sidecar = read_sidecar(&project.join(AT)).unwrap();
         let ids: Vec<Option<u16>> = sidecar.members.iter().map(|member| member.id).collect();
         assert_eq!(ids, [Some(0), Some(4)]);
 
@@ -926,7 +931,7 @@ mod tests {
         let original = packed(&[("a.bin", b"first", Preload::Mram)]);
 
         let project = unpacked(&scratch, &original);
-        fs::remove_file(project.join(AT).join(arc::SIDECAR)).unwrap();
+        fs::remove_file(project.join(AT).join(SIDECAR)).unwrap();
 
         let refused = repack(&project, AT, true);
         assert!(matches!(refused, Err(Error::LostSidecar(_))));
@@ -1158,10 +1163,10 @@ mod tests {
         let scratch = Scratch::new("plansidecar");
         let (project, disc, vanilla) = on_disc(&scratch);
 
-        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
+        let mut sidecar = read_sidecar(&project.join(AT)).unwrap();
         // The last member, so the memory runs stay contiguous.
-        sidecar.members[1].preload = arc::Preload::Aram;
-        sidecar.write(&project.join(AT)).unwrap();
+        sidecar.members[1].preload = Preload::Aram;
+        write_sidecar(&sidecar, &project.join(AT)).unwrap();
 
         let plan = plan(&project, &disc, &vanilla).unwrap();
         assert!(matches!(output(&plan, AT).source, Source::Built(_)));

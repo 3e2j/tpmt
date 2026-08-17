@@ -441,7 +441,9 @@ name = "tpmt-arc"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
+ "serde",
  "thiserror",
+ "toml",
  "tpmt-bytes",
 ]
 

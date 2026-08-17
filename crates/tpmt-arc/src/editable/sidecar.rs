@@ -1,5 +1,4 @@
-//! The archive sidecar, at the root of every directory an archive was unpacked
-//! into.
+//! What an archive is, minus its bytes.
 //!
 //! - Pre-assigned member IDs used for cross-referencing.
 //! - Which memory each member is loaded into.
@@ -10,16 +9,19 @@
 //! the order its entries come, and the two preload runs the header describes
 //! are stretches of that order, so a rebuild that reordered them would describe
 //! the wrong bytes.
-
-use std::path::Path;
+//!
+//! TOML, so a project can keep this as text alongside an unpacked archive.
+//! Where it sits and what a missing one means belongs to whoever stores a
+//! project; that it round-trips through TOML at all is this crate's own
+//! call.
 
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
-use crate::fs::{read, write};
+use crate::Preload;
 
-/// Sits at the root of every unpacked archive.
-pub(crate) const SIDECAR: &str = ".tpmt-arc.toml";
+/// The name a project keeps this under, at the root of every directory an
+/// archive was unpacked into.
+pub const SIDECAR: &str = ".tpmt-arc.toml";
 
 /// What an archive nobody named calls its root.
 ///
@@ -27,8 +29,6 @@ pub(crate) const SIDECAR: &str = ".tpmt-arc.toml";
 /// existed can carry the plainest one there is.
 const ROOT: &str = "archive";
 
-/// What an archive is, minus the bytes.
-///
 /// Only two things here are the archive's own. Everything the format records
 /// per file sits on [`Member`] instead, because that is where the archive keeps
 /// it: an entry each, not a setting for the container.
@@ -39,17 +39,17 @@ const ROOT: &str = "archive";
 /// archives storing an unusual number come back two bytes off rather than
 /// earning a key nobody would ever set.
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Sidecar {
+pub struct Sidecar {
     /// The name the archive's root directory carries inside the archive, which
-    /// is rarely the file name. See [`tpmt_arc::Archive::root`] for why it is
+    /// is rarely the file name. See [`crate::Archive::root`] for why it is
     /// worth keeping.
-    pub(crate) root: String,
+    pub root: String,
     /// Whether a Yaz0 wrapper came off this archive on the way in.
     #[serde(default)]
-    pub(crate) yaz0_compressed: bool,
+    pub yaz0_compressed: bool,
     /// Every member, in the order the archive stored them.
     #[serde(default, rename = "member")]
-    pub(crate) members: Vec<Member>,
+    pub members: Vec<Member>,
 }
 
 /// One member, at the path it sits at under the archive root.
@@ -59,16 +59,16 @@ pub(crate) struct Sidecar {
 /// can differ in all of it. The header's two preload sizes look like archive
 /// settings and are not: they are totals, added up from these.
 #[derive(Serialize, Deserialize, Clone)]
-pub(crate) struct Member {
-    pub(crate) path: String,
+pub struct Member {
+    pub path: String,
     /// Which memory the game loads this one file into.
-    pub(crate) preload: Preload,
+    pub preload: Preload,
     /// Whether this member's bytes were Yaz0 wrapped inside the archive.
     ///
     /// Recorded because unpack takes the wrapper off members before writing
     /// the member out.
     #[serde(default, skip_serializing_if = "not_compressed")]
-    pub(crate) yaz0_compressed: bool,
+    pub yaz0_compressed: bool,
     /// The id the game asks for this member by.
     ///
     /// Left out only for a member nothing has named, which is one somebody put
@@ -89,43 +89,12 @@ pub(crate) struct Member {
     // switch in the project config whichever way it lands, since rewriting
     // somebody else's file to suit an archive is a bigger claim to make than
     // repacking one.
+    //
+    // Resolving references belongs in tpmt-pipeline, not here, same as the
+    // sidecar itself: it takes seeing every format to know who references
+    // what. This crate would only claim an id it's handed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) id: Option<u16>,
-}
-
-/// Mirrors [`tpmt_arc::Preload`]. Kept here rather than derived over there so
-/// that the archive format does not take on a serialisation format to suit how
-/// this pipeline happens to store projects.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Preload {
-    /// Main memory.
-    #[default]
-    Mram,
-    /// Auxiliary memory.
-    Aram,
-    /// Not preloaded, read on demand.
-    Disc,
-}
-
-impl From<tpmt_arc::Preload> for Preload {
-    fn from(preload: tpmt_arc::Preload) -> Self {
-        match preload {
-            tpmt_arc::Preload::Mram => Self::Mram,
-            tpmt_arc::Preload::Aram => Self::Aram,
-            tpmt_arc::Preload::Disc => Self::Disc,
-        }
-    }
-}
-
-impl From<Preload> for tpmt_arc::Preload {
-    fn from(preload: Preload) -> Self {
-        match preload {
-            Preload::Mram => Self::Mram,
-            Preload::Aram => Self::Aram,
-            Preload::Disc => Self::Disc,
-        }
-    }
+    pub id: Option<u16>,
 }
 
 fn not_compressed(yaz0_compressed: &bool) -> bool {
@@ -137,7 +106,7 @@ impl Member {
     /// directory themselves. Main memory is where a file with nothing saying
     /// otherwise belongs, and an id it was never stored under is one the
     /// rebuild works out.
-    pub(crate) fn new(path: String) -> Self {
+    pub fn new(path: String) -> Self {
         Self {
             path,
             preload: Preload::Mram,
@@ -148,7 +117,7 @@ impl Member {
 }
 
 impl Sidecar {
-    pub(crate) fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
+    pub fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
         Self {
             root,
             yaz0_compressed,
@@ -162,39 +131,23 @@ impl Sidecar {
     /// Nothing here is guessed: one that never existed has no root name to
     /// recover, no wrapping it arrived under and no members it used to hold.
     /// The files in the directory become members on their own terms.
-    pub(crate) fn fresh() -> Self {
+    pub fn fresh() -> Self {
         Self::new(ROOT.to_string(), false, Vec::new())
     }
 
-    /// Reads the sidecar at the root of an unpacked archive.
+    /// The TOML text a project keeps this as.
     ///
-    /// A missing one is an error here rather than a [`fresh`](Self::fresh)
-    /// archive, because on a directory that came off the disc it means the
-    /// sidecar was lost: defaulting there would quietly throw away the memory
-    /// every member was loaded into and the wrapper the archive arrived under.
-    /// Only a caller that knows the disc never had this archive can say the
-    /// missing file is nothing to worry about.
-    pub(crate) fn read(directory: &Path) -> Result<Self, Error> {
-        let path = directory.join(SIDECAR);
-        if !path.exists() {
-            return Err(Error::LostSidecar(path));
-        }
-
-        let text = String::from_utf8_lossy(&read(&path)?).into_owned();
-        let sidecar: Self = toml::from_str(&text).map_err(|source| Error::UnreadableProject {
-            path: path.clone(),
-            source,
-        })?;
-
-        Ok(sidecar)
+    /// Every field on a sidecar is a plain serializable shape (strings,
+    /// bools, an enum, options, a vec of the same), which `toml` only ever
+    /// fails to serialize over a NaN float or a non-string map key, neither
+    /// of which this has, so there is no `Result` to hand back.
+    pub fn to_toml(&self) -> String {
+        toml::to_string_pretty(self).expect("a Sidecar always serializes")
     }
 
-    /// Writes the sidecar, giving back the bytes it wrote, since change
-    /// detection hashes what went into the project rather than reading it back.
-    pub(crate) fn write(&self, directory: &Path) -> Result<Vec<u8>, Error> {
-        let text = toml::to_string_pretty(self)?;
-        write(&directory.join(SIDECAR), text.as_bytes())?;
-        Ok(text.into_bytes())
+    /// Reads a sidecar back out of the TOML text a project kept it as.
+    pub fn from_toml(text: &str) -> crate::Result<Self> {
+        Ok(toml::from_str(text)?)
     }
 }
 
@@ -228,7 +181,7 @@ mod tests {
     /// about wrapping.
     #[test]
     fn round_trips_through_toml() {
-        let text = toml::to_string_pretty(&example()).unwrap();
+        let text = example().to_toml();
         assert_eq!(
             text,
             "root = \"archive\"\n\
@@ -246,7 +199,7 @@ mod tests {
              id = 3\n"
         );
 
-        let read: Sidecar = toml::from_str(&text).unwrap();
+        let read = Sidecar::from_toml(&text).unwrap();
         assert_eq!(read.root, "archive");
         assert!(read.yaz0_compressed);
         assert_eq!(read.members[0].id, Some(0));
@@ -260,7 +213,7 @@ mod tests {
     /// Everything else has an answer already.
     #[test]
     fn a_hand_written_one_can_leave_the_rest_out() {
-        let read: Sidecar = toml::from_str(
+        let read = Sidecar::from_toml(
             "root = \"archive\"\n\
              \n\
              [[member]]\n\

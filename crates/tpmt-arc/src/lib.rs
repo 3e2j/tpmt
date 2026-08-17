@@ -70,7 +70,10 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
 use tpmt_bytes::{Reader, Writer};
+
+pub mod editable;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -95,6 +98,9 @@ pub enum Error {
 
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
+
+    #[error("the sidecar is not readable: {0}")]
+    Sidecar(#[from] toml::de::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -103,7 +109,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// The order the variants are declared in is the order an archive stores them
 /// in, and [`pack`] holds callers to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Preload {
     /// Main memory.
     #[default]

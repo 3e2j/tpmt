@@ -27,6 +27,13 @@
 //! included. Their typed models are public as well, reachable by an editor
 //! without a file in between.
 //!
+//! A format crate never touches a `Path` or `std::fs`: its functions take
+//! bytes or its own types in, and hand bytes or its own types back. Reading
+//! the input and writing whatever comes out of it happens here and nowhere
+//! else. How many pieces a format hands back (an editable file on its own, or
+//! one paired with a sidecar) is that format's own call, not a shape this
+//! crate imposes on it.
+//!
 //! # Why
 //!
 //! **This is the conveyor belt: it takes the game apart into a folder of
@@ -121,7 +128,7 @@ use tpmt_disc::{BI2_PATH, BOOT_PATH, Disc, Entry, Layout, Metadata};
 use crate::fs::Staged;
 use crate::manifest::{FILES, Manifest, OUT, PROJECT_FILE, SYS};
 use crate::plan::Output;
-use crate::sidecars::arc;
+use crate::sidecars::arc::write_sidecar;
 use crate::store::{Source, Store};
 
 pub use crate::plan::{Change, ChangeKind};
@@ -489,6 +496,10 @@ fn unpack_disc_entry(
 /// Not every `.arc` is one of ours. A handful hold other container formats
 /// entirely, and those stay whole, exactly as the disc had them, rather than
 /// being half-understood.
+///
+/// The sidecar is built here, not in `tpmt-arc`: a member's wrapping state
+/// is only known once it's gone through its own format crate, and `tpmt-arc`
+/// can't see other format crates without depending on them.
 fn unpack_archive(
     bytes: &[u8],
     path: &Path,
@@ -544,17 +555,21 @@ fn unpack_archive(
         // Handle unpack for nested archive or files
         unpack_format(format, &data, &member, &inside, hashes)?;
 
-        members.push(arc::Member {
+        members.push(tpmt_arc::editable::sidecar::Member {
             path: file.path,
-            preload: file.preload.into(),
+            preload: file.preload,
             yaz0_compressed,
             id: file.id,
         });
     }
 
-    let sidecar = arc::Sidecar::new(unpacked.root, yaz0_compressed, members);
-    let written = sidecar.write(path)?;
-    hashes.push((format!("{at}/{}", arc::SIDECAR), plan::hash(&written)));
+    let sidecar =
+        tpmt_arc::editable::sidecar::Sidecar::new(unpacked.root, yaz0_compressed, members);
+    let written = write_sidecar(&sidecar, path)?;
+    hashes.push((
+        format!("{at}/{}", tpmt_arc::editable::sidecar::SIDECAR),
+        plan::hash(&written),
+    ));
 
     Ok(())
 }

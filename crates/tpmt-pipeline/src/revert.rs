@@ -13,7 +13,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::sidecars::arc::{self, Sidecar};
+use tpmt_arc::editable::sidecar::{SIDECAR, Sidecar};
+
+use crate::sidecars::arc::{read_sidecar, write_sidecar};
 use crate::store::Store;
 use crate::{Error, plan};
 
@@ -122,7 +124,7 @@ fn sidecar_entry(
     path: &str,
 ) -> Option<SidecarEntry> {
     let archive = nearest_archive(path)?;
-    let sidecar = format!("{archive}/{}", arc::SIDECAR);
+    let sidecar = format!("{archive}/{}", SIDECAR);
     // Reverting the sidecar itself is not a cascade into it, and one the
     // disc never had, or one already gone from the project, has nothing to
     // splice a member's entry into.
@@ -194,8 +196,8 @@ pub(crate) fn apply(
         for (target, bytes) in data {
             crate::fs::write(&project.join(target), &bytes)?;
         }
-        if let Some((archive, manifest)) = cascade {
-            manifest.write(&project.join(archive))?;
+        if let Some((archive, sidecar)) = cascade {
+            write_sidecar(&sidecar, &project.join(archive))?;
         }
     }
 
@@ -215,13 +217,13 @@ fn sidecar_update(
     let Some(entry) = entry else { return Ok(None) };
     let archive = entry
         .path
-        .strip_suffix(&format!("/{}", arc::SIDECAR))
+        .strip_suffix(&format!("/{}", SIDECAR))
         .expect("a sidecar entry's path always ends in the sidecar's own name");
     let relative = member
         .strip_prefix(&format!("{archive}/"))
         .expect("a member with a sidecar entry always sits under that entry's archive");
 
-    let vanilla = Sidecar::read(&scratch.join(archive))?;
+    let vanilla = read_sidecar(&scratch.join(archive))?;
     let Some(original) = vanilla
         .members
         .iter()
@@ -230,7 +232,7 @@ fn sidecar_update(
         return Ok(None);
     };
 
-    let mut current = Sidecar::read(&project.join(archive))?;
+    let mut current = read_sidecar(&project.join(archive))?;
     let Some(member) = current
         .members
         .iter_mut()
@@ -280,7 +282,6 @@ mod tests {
 
     use super::*;
     use crate::fs::write;
-    use crate::sidecars::arc::Preload as SidecarPreload;
     use crate::test_support::Scratch;
 
     const PLAIN: &str = "files/plain.bin";
@@ -431,17 +432,17 @@ mod tests {
         let member = format!("{AT}/a.bin");
         write(&project.join(&member), b"edited").unwrap();
 
-        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
-        sidecar.members[0].preload = SidecarPreload::Aram;
-        sidecar.members[1].preload = SidecarPreload::Aram;
-        sidecar.write(&project.join(AT)).unwrap();
+        let mut sidecar = read_sidecar(&project.join(AT)).unwrap();
+        sidecar.members[0].preload = Preload::Aram;
+        sidecar.members[1].preload = Preload::Aram;
+        write_sidecar(&sidecar, &project.join(AT)).unwrap();
 
         let plan = plan(&project, &member).unwrap();
         apply(&project, &plan, true).unwrap();
 
-        let after = Sidecar::read(&project.join(AT)).unwrap();
-        assert_eq!(after.members[0].preload, SidecarPreload::Mram);
-        assert_eq!(after.members[1].preload, SidecarPreload::Aram);
+        let after = read_sidecar(&project.join(AT)).unwrap();
+        assert_eq!(after.members[0].preload, Preload::Mram);
+        assert_eq!(after.members[1].preload, Preload::Aram);
     }
 
     /// Declining the cascade restores the member's bytes alone: the sidecar
@@ -453,15 +454,15 @@ mod tests {
         let member = format!("{AT}/a.bin");
         write(&project.join(&member), b"edited").unwrap();
 
-        let mut sidecar = Sidecar::read(&project.join(AT)).unwrap();
-        sidecar.members[0].preload = SidecarPreload::Aram;
-        sidecar.write(&project.join(AT)).unwrap();
+        let mut sidecar = read_sidecar(&project.join(AT)).unwrap();
+        sidecar.members[0].preload = Preload::Aram;
+        write_sidecar(&sidecar, &project.join(AT)).unwrap();
 
         let plan = plan(&project, &member).unwrap();
         apply(&project, &plan, false).unwrap();
 
-        let after = Sidecar::read(&project.join(AT)).unwrap();
-        assert_eq!(after.members[0].preload, SidecarPreload::Aram);
+        let after = read_sidecar(&project.join(AT)).unwrap();
+        assert_eq!(after.members[0].preload, Preload::Aram);
     }
 
     /// A directory target reverts every vanilla leaf under it in one go,

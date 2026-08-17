@@ -9,6 +9,8 @@ repository.workspace = true
 tpmt-bytes.workspace = true
 thiserror.workspace = true
 encoding_rs.workspace = true # entry names in the string pool are Shift-JIS
+serde.workspace = true
+toml.workspace = true # sidecar
 
 [lints]
 workspace = true
