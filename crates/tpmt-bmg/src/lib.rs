@@ -144,7 +144,7 @@ pub struct Bmg {
     /// Carried rather than derived because a file with no messages still
     /// states one, and because a length the game does not recognise is a real
     /// thing some files have.
-    pub attribute_len: u8,
+    pub attribute_len: u16,
     /// `None` for a file with no MID1 at all, which is addressed by position.
     pub mid1: Option<Mid1Header>,
     pub messages: Vec<Message>,
@@ -269,12 +269,12 @@ pub fn unpack(data: &[u8]) -> Result<Bmg> {
 
     let (encoding, sections) = split(data)?;
 
-    let (messages, attribute_len) =
+    let (messages, attribute_len, mid1) =
         message::read_messages(sections.inf1, sections.dat1, sections.mid1)?;
     Ok(Bmg {
         encoding,
         attribute_len,
-        mid1: sections.mid1.map(message::read_mid1).transpose()?,
+        mid1,
         messages,
         flow: sections
             .flow
