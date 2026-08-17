@@ -84,12 +84,6 @@
 // Scope is Twilight Princess only, but GZ2E, GZ2P and GZ2J do not share paths,
 // so whatever holds them is keyed by region.
 
-// TODO: hand files to the format crates. Every file currently lands as the
-// bytes the disc holds, so a `.bmg` is still a `.bmg` rather than the JSON a
-// person would edit. Nothing else has to move for that: an unpacked file is
-// hashed as it was written, and a build already asks for the bytes that go on
-// the disc rather than the bytes on the filesystem.
-
 // TODO: decide whether to keep our own copy of the ISO rather than remembering
 // its originating path. Either way, tell the user before taking their disk space.
 
@@ -202,7 +196,7 @@ pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> 
     let hashes: Vec<(String, String)> = disc
         .entries()?
         .par_iter()
-        .map(|entry| unpack_entry(&disc, entry, at))
+        .map(|entry| unpack_disc_entry(&disc, entry, at))
         .collect::<Result<Vec<_>, Error>>()?
         .concat();
 
@@ -385,6 +379,63 @@ fn print(metadata: &Metadata) -> String {
     format!("{}-rev{}", metadata.boot.id, metadata.boot.revision)
 }
 
+/// Which format crate a file's bytes belong to. Nothing outside this
+/// type refers to a format crate by name.
+enum Format {
+    /// A RARC archive. Not a file on its own: unpacked into a directory of
+    /// its own members rather than parsed and written through.
+    Archive,
+    /// A BMG message file.
+    Bmg,
+    /// Nothing here has an opinion about this one, so its bytes go straight
+    /// through untouched.
+    Other,
+}
+
+impl Format {
+    fn of(path: &str) -> Self {
+        match path.rsplit_once('.').map(|(_, extension)| extension) {
+            Some("arc") => Self::Archive,
+            Some("bmg") => Self::Bmg,
+            _ => Self::Other,
+        }
+    }
+
+    /// Confirms `bytes` parse as this format, unpacks via format crate.
+    ///
+    /// TODO: the parsed value is discarded since no format crate can write yet,
+    /// so the caller always writes the bytes it already had.
+    fn unpack(&self, bytes: &[u8], path: &Path) -> Result<(), Error> {
+        match self {
+            Format::Bmg => match tpmt_bmg::unpack(bytes) {
+                Ok(_) | Err(tpmt_bmg::Error::NotBmg) => Ok(()),
+                Err(source) => Err(Error::Bmg {
+                    path: path.to_path_buf(),
+                    source,
+                }),
+            },
+            Format::Archive => unreachable!("archives are unpacked before reaching this"),
+            Format::Other => Ok(()),
+        }
+    }
+}
+
+/// Sends bytes to whichever unpacker their format wants: an archive unpacks
+/// into a directory of its own, anything else goes through its format crate
+/// and is written to `path` as-is.
+fn unpack_format(
+    format: Format,
+    bytes: &[u8],
+    path: &Path,
+    at: &str,
+    hashes: &mut Vec<(String, String)>,
+) -> Result<(), Error> {
+    match format {
+        Format::Archive => unpack_archive(bytes, path, at, hashes),
+        format => unpack_file(format, bytes, path, at, hashes),
+    }
+}
+
 /// Unpacks one disc entry: an archive becomes a directory of its contents,
 /// anything else becomes a file of the bytes the disc holds.
 ///
@@ -393,7 +444,7 @@ fn print(metadata: &Metadata) -> String {
 ///
 /// A directory entry only matters when it is empty. Anything with members gets
 /// created on the way past by the members themselves.
-fn unpack_entry(
+fn unpack_disc_entry(
     disc: &Disc,
     entry: &Entry,
     project: &Path,
@@ -406,13 +457,13 @@ fn unpack_entry(
 
     let bytes = disc.read(offset, size)?;
     let mut hashes = Vec::new();
-    match is_archive(entry.path()) {
-        true => unpack_archive(&bytes, &path, entry.path(), &mut hashes)?,
-        false => {
-            fs::write(&path, &bytes)?;
-            hashes.push((entry.path().to_string(), plan::hash(&bytes)));
-        }
-    }
+    unpack_format(
+        Format::of(entry.path()),
+        &bytes,
+        &path,
+        entry.path(),
+        &mut hashes,
+    )?;
     Ok(hashes)
 }
 
@@ -473,22 +524,25 @@ fn unpack_archive(
         let inside = format!("{at}/{}", file.path);
         let member = path.join(&file.path);
 
+        let format = Format::of(&file.path);
+
         // A nested archive keeps its own wrapping in its own sidecar, so the
         // one entry that stays false here is the one that has somewhere better
-        // to be.
+        // to be, and it is also why an archive gets its bytes raw here rather
+        // than through the decompression below: it does that unwrapping itself.
         let mut yaz0_compressed = false;
-        match is_archive(&file.path) {
-            true => unpack_archive(file.data, &member, &inside, hashes)?,
-            false => {
+        let data = match format {
+            Format::Archive => Cow::Borrowed(file.data),
+            _ => {
                 yaz0_compressed = tpmt_compress::is_yaz0(file.data);
-                let data = match yaz0_compressed {
+                match yaz0_compressed {
                     true => Cow::Owned(decompress(file.data, &member)?),
                     false => Cow::Borrowed(file.data),
-                };
-                fs::write(&member, &data)?;
-                hashes.push((inside, plan::hash(&data)));
+                }
             }
-        }
+        };
+        // Handle unpack for nested archive or files
+        unpack_format(format, &data, &member, &inside, hashes)?;
 
         members.push(arc::Member {
             path: file.path,
@@ -512,8 +566,31 @@ fn decompress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
     })
 }
 
+pub(crate) fn compress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
+    tpmt_compress::yaz0_encode(bytes).map_err(|source| Error::Compress {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Writes a file's bytes into the project and records their hash for change
+/// detection, unpacking it against its format crate on the way past to
+/// confirm it parses.
+fn unpack_file(
+    format: Format,
+    bytes: &[u8],
+    path: &Path,
+    at: &str,
+    hashes: &mut Vec<(String, String)>,
+) -> Result<(), Error> {
+    format.unpack(bytes, path)?;
+    fs::write(path, bytes)?;
+    hashes.push((at.to_string(), plan::hash(bytes)));
+    Ok(())
+}
+
 pub(crate) fn is_archive(path: &str) -> bool {
-    path.ends_with(".arc")
+    matches!(Format::of(path), Format::Archive)
 }
 
 /// Every disc file's offset and size, keyed by its disc path, for a caller
@@ -594,6 +671,12 @@ pub enum Error {
     Archive {
         path: PathBuf,
         source: tpmt_arc::Error,
+    },
+
+    #[error("`{}`: {source}", .path.display())]
+    Bmg {
+        path: PathBuf,
+        source: tpmt_bmg::Error,
     },
 
     #[error("the project file could not be written: {0}")]
@@ -685,5 +768,37 @@ mod tests {
 
         let error = unpack(Path::new("nonexistent.iso"), &target, false).unwrap_err();
         assert!(matches!(error, Error::ProjectExists(path) if path == target));
+    }
+
+    /// A member whose extension picks a format crate, but whose bytes do not
+    /// actually match it, writes through unremarked rather than being
+    /// stopped over: the extension is a guess at what to check, not a claim
+    /// enforced on every file wearing it.
+    ///
+    /// BMG stands in here for any format crate wired into `Format`; an `.arc`
+    /// holding something other than RARC takes the same path, etc...
+    #[test]
+    fn a_mismatched_format_member_writes_through() {
+        let scratch = Scratch::new("notbmg");
+        let archive = tpmt_arc::pack(&tpmt_arc::Archive {
+            root: "archive".to_string(),
+            files: vec![tpmt_arc::File {
+                path: "fake.bmg".to_string(),
+                data: b"not a message file",
+                id: None,
+                preload: tpmt_arc::Preload::Mram,
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut hashes = Vec::new();
+        let at = scratch.0.join("thing.arc");
+        unpack_archive(&archive, &at, "files/thing.arc", &mut hashes).unwrap();
+
+        assert_eq!(
+            crate::fs::read(&at.join("fake.bmg")).unwrap(),
+            b"not a message file"
+        );
     }
 }

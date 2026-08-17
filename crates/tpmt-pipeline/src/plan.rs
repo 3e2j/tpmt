@@ -278,11 +278,6 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
         path: PathBuf::from(path),
         source,
     };
-    let compress = |source| Error::Compress {
-        path: PathBuf::from(path),
-        source,
-    };
-
     let directory = project.join(path);
 
     // On an archive the disc never had there is nothing to recover, so a
@@ -354,7 +349,7 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
             )?,
             // The wrapper the sidecar recorded during unpack goes back on here.
             false => match member.yaz0_compressed {
-                true => tpmt_compress::yaz0_encode(&read(&inside)?).map_err(compress)?,
+                true => crate::compress(&read(&inside)?, Path::new(path))?,
                 false => read(&inside)?,
             },
         };
@@ -386,7 +381,7 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
     })
     .map_err(archive)?;
     match sidecar.yaz0_compressed {
-        true => tpmt_compress::yaz0_encode(&built).map_err(compress),
+        true => crate::compress(&built, Path::new(path)),
         false => Ok(built),
     }
 }
