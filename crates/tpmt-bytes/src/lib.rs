@@ -104,6 +104,13 @@ impl<'a> Reader<'a> {
         Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    /// Borrows `N` bytes at an absolute position as a fixed-size array, for a
+    /// field with no natural integer width, like a magic or a raw param blob.
+    pub fn bytes_at<const N: usize>(&self, pos: usize) -> Result<[u8; N]> {
+        let bytes = self.slice_at(pos, N)?;
+        Ok(std::array::from_fn(|i| bytes[i]))
+    }
+
     /// Borrows the null-terminated bytes at an absolute position, terminator
     /// excluded. What encoding they are in is the caller's business.
     pub fn cstr_at(&self, pos: usize) -> Result<&'a [u8]> {
@@ -207,6 +214,15 @@ impl Writer {
     /// a caller patching a field it reserved itself.
     fn patch(&mut self, pos: usize, bytes: &[u8]) {
         self.data[pos..pos + bytes.len()].copy_from_slice(bytes);
+    }
+}
+
+/// Resumes a buffer that already has bytes in it, so an already-finished
+/// one can still be patched through `u8_at`/`u16_at`/`u32_at` instead of a
+/// second, separate way of overwriting a position.
+impl From<Vec<u8>> for Writer {
+    fn from(data: Vec<u8>) -> Self {
+        Self { data }
     }
 }
 

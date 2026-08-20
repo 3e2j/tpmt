@@ -196,10 +196,7 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let mut extra = Vec::new();
 
     for _ in 0..count {
-        let magic: [u8; 4] = reader
-            .slice_at(at, 4)?
-            .try_into()
-            .expect("four bytes are four bytes");
+        let magic: [u8; 4] = reader.bytes_at(at)?;
         let size = reader.u32_at(at + section::SIZE)? as usize;
         if size < section::HEADER_LEN {
             return Err(Error::Corrupt("a section is smaller than its own header"));
