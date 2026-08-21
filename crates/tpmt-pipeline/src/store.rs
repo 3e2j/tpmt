@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::Error;
 use crate::fs::{read, write};
+use crate::{Error, FileHash};
 
 /// Everything generated about a project, out of the way of what is edited.
 pub(crate) const STORE: &str = ".tpmt";
@@ -67,13 +67,12 @@ impl Store {
     ///
     /// One line each, since there is one for every file in the project and for
     /// every file inside every archive.
-    pub(crate) fn write_hashes(&self, hashes: &[(String, String)]) -> Result<(), Error> {
-        let mut hashes = hashes.to_vec();
-        hashes.sort();
+    pub(crate) fn write_hashes(&self, mut hashes: Vec<FileHash>) -> Result<(), Error> {
+        hashes.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.digest.cmp(&b.digest)));
 
         let mut text = String::with_capacity(hashes.len() * 64);
-        for (path, hash) in hashes {
-            text.push_str(&hash);
+        for FileHash { path, digest } in hashes {
+            text.push_str(&digest);
             text.push(' ');
             text.push_str(&path);
             text.push('\n');

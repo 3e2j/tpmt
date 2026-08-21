@@ -138,6 +138,12 @@ pub use crate::revert::{RevertPlan, SidecarEntry};
 /// then mean nothing to the rest of the toolkit, so it is turned away here.
 const SUPPORTED_IDS: [&str; 3] = ["GZ2E", "GZ2P", "GZ2J"];
 
+/// One project leaf's vanilla hash, keyed by its project path.
+pub(crate) struct FileHash {
+    pub(crate) path: String,
+    pub(crate) digest: String,
+}
+
 /// Finds the project root by walking upward from `start`, the same way git finds
 /// `.git`: canonicalize first, then climb one directory at a time until a
 /// `.tpmt` store turns up or the filesystem root is reached.
@@ -200,12 +206,14 @@ pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> 
     // One flat layer of work. Every entry reads its own bytes off the shared
     // disc and writes its own outputs, so there is nothing to hand between
     // threads and nothing to order them by.
-    let hashes: Vec<(String, String)> = disc
+    let hashes: Vec<FileHash> = disc
         .entries()?
         .par_iter()
         .map(|entry| unpack_disc_entry(&disc, entry, at))
         .collect::<Result<Vec<_>, Error>>()?
-        .concat();
+        .into_iter()
+        .flatten()
+        .collect();
 
     // Where the disc was, taken now rather than at build time: a project is
     // often built from somewhere else entirely.
@@ -218,7 +226,7 @@ pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> 
         path: found,
         sha1: disc.sha1()?,
     })?;
-    store.write_hashes(&hashes)?;
+    store.write_hashes(hashes)?;
 
     staged.finish()?;
     Ok(())
@@ -435,7 +443,7 @@ fn unpack_format(
     bytes: &[u8],
     path: &Path,
     at: &str,
-    hashes: &mut Vec<(String, String)>,
+    hashes: &mut Vec<FileHash>,
 ) -> Result<(), Error> {
     match format {
         Format::Archive => unpack_archive(bytes, path, at, hashes),
@@ -451,11 +459,7 @@ fn unpack_format(
 ///
 /// A directory entry only matters when it is empty. Anything with members gets
 /// created on the way past by the members themselves.
-fn unpack_disc_entry(
-    disc: &Disc,
-    entry: &Entry,
-    project: &Path,
-) -> Result<Vec<(String, String)>, Error> {
+fn unpack_disc_entry(disc: &Disc, entry: &Entry, project: &Path) -> Result<Vec<FileHash>, Error> {
     let path = project.join(entry.path());
     let Entry::File { offset, size, .. } = *entry else {
         fs::create_dir(&path)?;
@@ -504,7 +508,7 @@ fn unpack_archive(
     bytes: &[u8],
     path: &Path,
     at: &str,
-    hashes: &mut Vec<(String, String)>,
+    hashes: &mut Vec<FileHash>,
 ) -> Result<(), Error> {
     let yaz0_compressed = tpmt_compress::is_yaz0(bytes);
     let contents = match yaz0_compressed {
@@ -518,7 +522,10 @@ fn unpack_archive(
         // has to be what goes back on the disc.
         Err(tpmt_arc::Error::NotRarc) => {
             fs::write(path, bytes)?;
-            hashes.push((at.to_string(), plan::hash(bytes)));
+            hashes.push(FileHash {
+                path: at.to_string(),
+                digest: plan::hash(bytes),
+            });
             return Ok(());
         }
         Err(source) => {
@@ -566,10 +573,10 @@ fn unpack_archive(
     let sidecar =
         tpmt_arc::editable::sidecar::Sidecar::new(unpacked.root, yaz0_compressed, members);
     let written = write_sidecar(&sidecar, path)?;
-    hashes.push((
-        format!("{at}/{}", tpmt_arc::editable::sidecar::SIDECAR),
-        plan::hash(&written),
-    ));
+    hashes.push(FileHash {
+        path: format!("{at}/{}", tpmt_arc::editable::sidecar::SIDECAR),
+        digest: plan::hash(&written),
+    });
 
     Ok(())
 }
@@ -596,11 +603,14 @@ fn unpack_file(
     bytes: &[u8],
     path: &Path,
     at: &str,
-    hashes: &mut Vec<(String, String)>,
+    hashes: &mut Vec<FileHash>,
 ) -> Result<(), Error> {
     format.unpack(bytes, path)?;
     fs::write(path, bytes)?;
-    hashes.push((at.to_string(), plan::hash(bytes)));
+    hashes.push(FileHash {
+        path: at.to_string(),
+        digest: plan::hash(bytes),
+    });
     Ok(())
 }
 

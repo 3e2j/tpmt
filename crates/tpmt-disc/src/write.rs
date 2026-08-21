@@ -117,10 +117,12 @@ impl Layout {
 
         let boot = sys::boot_bin(
             &metadata.boot,
-            apploader as u32,
-            dol_offset as u32,
-            fst_offset as u32,
-            fst_len as u32,
+            &sys::BootLayout {
+                apploader_len: apploader as u32,
+                dol_offset: dol_offset as u32,
+                fst_offset: fst_offset as u32,
+                fst_len: fst_len as u32,
+            },
         )?;
         Ok(Self {
             entries,

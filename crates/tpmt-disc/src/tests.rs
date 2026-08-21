@@ -576,10 +576,12 @@ fn the_preamble_is_written_the_way_it_was_read() {
 
     let boot = sys::boot_bin(
         &metadata.boot,
-        APPLOADER_LEN as u32,
-        DOL_OFFSET as u32,
-        FST_OFFSET as u32,
-        FST_LEN,
+        &sys::BootLayout {
+            apploader_len: APPLOADER_LEN as u32,
+            dol_offset: DOL_OFFSET as u32,
+            fst_offset: FST_OFFSET as u32,
+            fst_len: FST_LEN,
+        },
     )
     .unwrap();
     assert_eq!(boot, data[..sys::BOOT_LEN as usize]);

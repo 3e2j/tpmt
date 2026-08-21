@@ -171,7 +171,7 @@ pub(crate) fn apply(
             continue;
         }
 
-        let scratch = Scratch::new()?;
+        let scratch = Scratch::new(&std::env::temp_dir())?;
         crate::unpack_archive(&bytes, &scratch.path().join(owner), owner, &mut Vec::new())?;
 
         // Everything that can fail (reading a member's fresh bytes,
@@ -254,11 +254,11 @@ impl Scratch {
     /// once in the same process (several archives in one bulk revert, or
     /// several tests in one binary) would all land on the same path, so a
     /// counter tags each one its own.
-    fn new() -> Result<Self, Error> {
+    fn new(base: &Path) -> Result<Self, Error> {
         static CALLS: AtomicU64 = AtomicU64::new(0);
         let unique = CALLS.fetch_add(1, Ordering::Relaxed);
 
-        let at = std::env::temp_dir().join(format!("tpmt-revert-{}-{unique}", std::process::id()));
+        let at = base.join(format!("tpmt-revert-{}-{unique}", std::process::id()));
         let _ = fs::remove_dir_all(&at);
         crate::fs::create_dir(&at)?;
         Ok(Self(at))

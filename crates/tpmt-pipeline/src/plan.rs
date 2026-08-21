@@ -89,72 +89,17 @@ pub(crate) fn plan(
     disc: &Disc,
     vanilla: &HashMap<String, String>,
 ) -> Result<Plan, Error> {
-    let mut nodes = Vec::new();
-    walk(project, SYS, &mut nodes)?;
-    walk(project, FILES, &mut nodes)?;
-
-    // One flat pass over every file in the project, which is where a build
-    // spends most of its reading.
+    let (nodes, hashes) = hashed_leaves(project)?;
     let leaves: Vec<&String> = nodes.iter().flat_map(Node::leaves).collect();
-    let hashes: HashMap<&str, String> = leaves
-        .par_iter()
-        .map(|path| Ok((path.as_str(), hash(&read(&project.join(path))?))))
-        .collect::<Result<_, Error>>()?;
-
-    // A file nobody has a hash for is one nobody had at unpack, so it counts
-    // as changed for the same reason an edited one does. So does a file the
-    // project no longer holds: a removal has no bytes to hash, but the archive
-    // that used to hold the member still has to be rebuilt without it.
-    let mut changed: HashSet<&str> = hashes
-        .iter()
-        .filter(|(path, hash)| vanilla.get(**path) != Some(hash))
-        .map(|(path, _)| *path)
-        .collect();
-    changed.extend(
-        vanilla
-            .keys()
-            .filter(|path| !hashes.contains_key(path.as_str()))
-            .map(String::as_str),
-    );
-
-    // How many files each disc file was unpacked into, then and now. An archive
-    // whose count moved had a member added or taken out, which is a change even
-    // when every member it still has is untouched.
-    let mut before: HashMap<&str, usize> = HashMap::new();
-    for path in vanilla.keys() {
-        *before.entry(owner(path)).or_default() += 1;
-    }
-    let mut now: HashMap<&str, usize> = HashMap::new();
-    for path in &leaves {
-        *now.entry(owner(path)).or_default() += 1;
-    }
 
     let entries = disc.entries()?;
     let on_disc = crate::on_disc(&entries);
+    let baseline = Baseline::build(vanilla, &hashes, &leaves, on_disc);
 
     // The archives that have to be rebuilt, done first and in parallel: each
-    // one is a decompress, a repack and a recompress, and there can be a lot of
-    // them.
-    //
-    // Untouched is a claim that the source disc has the bytes already, so
-    // something the disc never had is never untouched, however little is in it.
-    let untouched = |node: &Node| {
-        let path = node.path();
-        !node
-            .leaves()
-            .iter()
-            .any(|leaf| changed.contains(leaf.as_str()))
-            && before.get(path) == now.get(path)
-            && on_disc.contains_key(path)
-    };
-    let mut repacked: HashMap<&str, Vec<u8>> = nodes
-        .par_iter()
-        .filter(|node| matches!(node, Node::Archive { .. }) && !untouched(node))
-        .map(|node| {
-            let path = node.path();
-            Ok((path, repack(project, path, on_disc.contains_key(path))?))
-        })
-        .collect::<Result<_, Error>>()?;
+    // one is a decompress, a repack and a recompress, and there can be a lot
+    // of them.
+    let mut repacked = repack_changed(project, &nodes, &baseline)?;
 
     let mut items = Vec::with_capacity(nodes.len());
     let mut outputs = Vec::new();
@@ -169,8 +114,9 @@ pub(crate) fn plan(
         // its own hash.
         let (size, source) = match repacked.remove(node.path()) {
             Some(bytes) => (bytes.len() as u64, Source::Built(bytes)),
-            None if untouched(node) => {
-                let (offset, size) = *on_disc
+            None if baseline.is_untouched(node) => {
+                let (offset, size) = *baseline
+                    .on_disc
                     .get(node.path())
                     .ok_or_else(|| Error::NotOnDisc(path.clone()))?;
                 (size, Source::Disc { offset })
@@ -189,6 +135,112 @@ pub(crate) fn plan(
     }
 
     Ok(Plan { items, outputs })
+}
+
+/// Walks the project tree and hashes every leaf in parallel. Shared first
+/// step for `plan` and `changes`.
+fn hashed_leaves(project: &Path) -> Result<(Vec<Node>, HashMap<String, String>), Error> {
+    let mut nodes = Vec::new();
+    walk(project, SYS, &mut nodes)?;
+    walk(project, FILES, &mut nodes)?;
+
+    // One flat pass over every file in the project, which is where a build
+    // spends most of its reading.
+    let leaves: Vec<&String> = nodes.iter().flat_map(Node::leaves).collect();
+    let hashes: HashMap<String, String> = leaves
+        .par_iter()
+        .map(|path| Ok(((*path).clone(), hash(&read(&project.join(path))?))))
+        .collect::<Result<_, Error>>()?;
+
+    Ok((nodes, hashes))
+}
+
+/// What tells `plan` a node can be copied off the source disc unopened,
+/// gathered once rather than re-threaded through every helper that needs a
+/// piece of it.
+struct Baseline<'a> {
+    /// A file nobody has a hash for is one nobody had at unpack, so it counts
+    /// as changed for the same reason an edited one does. So does a file the
+    /// project no longer holds: a removal has no bytes to hash, but the
+    /// archive that used to hold the member still has to be rebuilt without
+    /// it.
+    changed: HashSet<&'a str>,
+    /// How many files each disc file was unpacked into, before and now. An
+    /// archive whose count moved had a member added or taken out, which is a
+    /// change even when every member it still has is untouched.
+    before: HashMap<&'a str, usize>,
+    now: HashMap<&'a str, usize>,
+    on_disc: HashMap<&'a str, (u64, u64)>,
+}
+
+impl<'a> Baseline<'a> {
+    fn build(
+        vanilla: &'a HashMap<String, String>,
+        hashes: &'a HashMap<String, String>,
+        leaves: &'a [&'a String],
+        on_disc: HashMap<&'a str, (u64, u64)>,
+    ) -> Self {
+        let mut changed: HashSet<&str> = hashes
+            .iter()
+            .filter(|(path, digest)| vanilla.get(path.as_str()) != Some(*digest))
+            .map(|(path, _)| path.as_str())
+            .collect();
+        changed.extend(
+            vanilla
+                .keys()
+                .filter(|path| !hashes.contains_key(path.as_str()))
+                .map(String::as_str),
+        );
+
+        let mut before: HashMap<&str, usize> = HashMap::new();
+        for path in vanilla.keys() {
+            *before.entry(owner(path)).or_default() += 1;
+        }
+        let mut now: HashMap<&str, usize> = HashMap::new();
+        for path in leaves {
+            *now.entry(owner(path)).or_default() += 1;
+        }
+
+        Baseline {
+            changed,
+            before,
+            now,
+            on_disc,
+        }
+    }
+
+    /// Untouched is a claim that the source disc has the bytes already, so
+    /// something the disc never had is never untouched, however little is in
+    /// it.
+    fn is_untouched(&self, node: &Node) -> bool {
+        let path = node.path();
+        !node
+            .leaves()
+            .iter()
+            .any(|leaf| self.changed.contains(leaf.as_str()))
+            && self.before.get(path) == self.now.get(path)
+            && self.on_disc.contains_key(path)
+    }
+}
+
+/// Rebuilds every archive the baseline says changed, in parallel: each one is
+/// a decompress, a repack and a recompress, and there can be a lot of them.
+fn repack_changed<'a>(
+    project: &Path,
+    nodes: &'a [Node],
+    baseline: &Baseline,
+) -> Result<HashMap<&'a str, Vec<u8>>, Error> {
+    nodes
+        .par_iter()
+        .filter(|node| matches!(node, Node::Archive { .. }) && !baseline.is_untouched(node))
+        .map(|node| {
+            let path = node.path();
+            Ok((
+                path,
+                repack(project, path, baseline.on_disc.contains_key(path))?,
+            ))
+        })
+        .collect()
 }
 
 /// One project leaf, and how it differs from the vanilla hash taken at
@@ -217,19 +269,11 @@ pub(crate) fn changes(
     project: &Path,
     vanilla: &HashMap<String, String>,
 ) -> Result<Vec<Change>, Error> {
-    let mut nodes = Vec::new();
-    walk(project, SYS, &mut nodes)?;
-    walk(project, FILES, &mut nodes)?;
-
-    let leaves: Vec<&String> = nodes.iter().flat_map(Node::leaves).collect();
-    let hashes: HashMap<&str, String> = leaves
-        .par_iter()
-        .map(|path| Ok((path.as_str(), hash(&read(&project.join(path))?))))
-        .collect::<Result<_, Error>>()?;
+    let (_, hashes) = hashed_leaves(project)?;
 
     let mut changes: Vec<Change> = hashes
         .iter()
-        .filter_map(|(path, digest)| match vanilla.get(*path) {
+        .filter_map(|(path, digest)| match vanilla.get(path.as_str()) {
             Some(vanilla_digest) if vanilla_digest == digest => None,
             Some(_) => Some(Change {
                 path: path.to_string(),
@@ -296,71 +340,8 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
 
     let mut in_project = Vec::new();
     member_names(project, path, "", &mut in_project)?;
-    let present: HashSet<&str> = in_project.iter().map(String::as_str).collect();
-    let named: HashSet<&str> = sidecar
-        .members
-        .iter()
-        .map(|member| member.path.as_str())
-        .collect();
-
-    // The sidecar's order, since that is the order the archive laid its file
-    // bytes out in and the order the header's two preload runs are cut from.
-    //
-    // A member dropped here by a missing file is dropped silently: see the
-    // cross-reference TODO in lib.rs. Nothing checks whether its id was still
-    // wanted by something else in the game.
-    let mut members: Vec<Member> = sidecar
-        .members
-        .iter()
-        .filter(|member| present.contains(member.path.as_str()))
-        .cloned()
-        .collect();
-    let added: Vec<Member> = in_project
-        .iter()
-        .filter(|name| !named.contains(name.as_str()))
-        .map(|name| Member::new(name.clone()))
-        .collect();
-
-    // Added members keep the `None` id `Member::new` gave them: `pack` claims
-    // the lowest id nothing else in the list holds, the same gap-filling rule
-    // it applies to any other id-less file.
-
-    // What the project grew (no sidecar to say where it goes) is put at the end
-    // of the main memory (default) run rather than the end of the list.
-    let at = members
-        .iter()
-        .position(|member| member.preload != Preload::Mram)
-        .unwrap_or(members.len());
-    members.splice(at..at, added);
-
-    // Fetches each member's actual bytes from the project: the list above only
-    // carries metadata, whether read from the sidecar or filled in for a
-    // member just added, never the bytes themselves.
-    //
-    // Owned out here rather than beside the member list below, so that bytes
-    // read for this archive outlive the archive being built out of them.
-    let mut data: Vec<Vec<u8>> = Vec::with_capacity(members.len());
-    for member in &members {
-        let at = format!("{path}/{}", member.path);
-        let inside = directory.join(&member.path);
-
-        // A member unpacked into a directory is a nested archive. One that is
-        // still a file is bytes however it is named, since a `.arc` the archive
-        // crate could not open was never taken apart.
-        let bytes = match inside.is_dir() {
-            true => repack(
-                project,
-                &at,
-                existed && named.contains(member.path.as_str()),
-            )?,
-            // The wrapper the sidecar recorded during unpack goes back on here.
-            false => match member.yaz0_compressed {
-                true => crate::compress(&read(&inside)?, Path::new(path))?,
-                false => read(&inside)?,
-            },
-        };
-        data.push(bytes);
-    }
+    let (members, named) = merge_members(&sidecar, &in_project);
+    let data = read_member_bytes(project, path, &directory, &members, existed, &named)?;
 
     // Pairs each member's metadata (from the sidecar, or filled in for a
     // member just added) with the bytes just fetched for it, in the shape the
@@ -390,6 +371,79 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
         true => crate::compress(&built, Path::new(path)),
         false => Ok(built),
     }
+}
+
+/// Reconciles the sidecar's member list against what the project holds now:
+/// dropped files are left out, new ones are added. Order matches the
+/// sidecar's, since that's the order the archive's bytes were laid out in.
+/// `named` is which paths the sidecar already listed, for the recursive
+/// nested-archive call.
+fn merge_members<'s>(
+    sidecar: &'s Sidecar,
+    in_project: &[String],
+) -> (Vec<Member>, HashSet<&'s str>) {
+    let present: HashSet<&str> = in_project.iter().map(String::as_str).collect();
+    let named: HashSet<&str> = sidecar
+        .members
+        .iter()
+        .map(|member| member.path.as_str())
+        .collect();
+
+    let mut members: Vec<Member> = sidecar
+        .members
+        .iter()
+        .filter(|member| present.contains(member.path.as_str()))
+        .cloned()
+        .collect();
+    let added: Vec<Member> = in_project
+        .iter()
+        .filter(|name| !named.contains(name.as_str()))
+        .map(|name| Member::new(name.clone()))
+        .collect();
+
+    let at = members
+        .iter()
+        .position(|member| member.preload != Preload::Mram)
+        .unwrap_or(members.len());
+    members.splice(at..at, added);
+
+    (members, named)
+}
+
+/// Fetches each member's actual bytes from the project: `members` only
+/// carries metadata, whether read from the sidecar or filled in for a member
+/// just added, never the bytes themselves.
+fn read_member_bytes(
+    project: &Path,
+    path: &str,
+    directory: &Path,
+    members: &[Member],
+    existed: bool,
+    named: &HashSet<&str>,
+) -> Result<Vec<Vec<u8>>, Error> {
+    let mut data = Vec::with_capacity(members.len());
+    for member in members {
+        let at = format!("{path}/{}", member.path);
+        let inside = directory.join(&member.path);
+
+        // A member unpacked into a directory is a nested archive. One that is
+        // still a file is bytes however it is named, since a `.arc` the archive
+        // crate could not open was never taken apart.
+        let bytes = match inside.is_dir() {
+            true => repack(
+                project,
+                &at,
+                existed && named.contains(member.path.as_str()),
+            )?,
+            // The wrapper the sidecar recorded during unpack goes back on here.
+            false => match member.yaz0_compressed {
+                true => crate::compress(&read(&inside)?, Path::new(path))?,
+                false => read(&inside)?,
+            },
+        };
+        data.push(bytes);
+    }
+    Ok(data)
 }
 
 /// One thing the project holds, at the path the disc knows it by.

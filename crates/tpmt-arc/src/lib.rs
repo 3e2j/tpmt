@@ -954,11 +954,13 @@ fn write_entries(
                     let (name_at, hash) = string_pool.file_name_ats[*index];
                     file_entry(
                         out,
-                        placed.ids[*index],
-                        hash,
-                        name_at,
+                        &StoredEntry {
+                            id: placed.ids[*index],
+                            hash,
+                            name_at,
+                            offset: placed.offsets[*index],
+                        },
                         file.preload,
-                        placed.offsets[*index],
                         file.data,
                     )?;
                 }
@@ -1001,17 +1003,18 @@ fn dir_entry(out: &mut Writer, name: &[u8], name_at: u32, node: u32) {
     out.u32(0);
 }
 
-/// A file's entry: its id, name, memory and compression flags restated from
-/// the bytes themselves, and where those bytes and their stored size land.
-fn file_entry(
-    out: &mut Writer,
+/// The four fields a file's entry states about itself that nothing else on
+/// the entry (its memory or its bytes) already says.
+struct StoredEntry {
     id: u16,
     hash: u16,
     name_at: u32,
-    preload: Preload,
     offset: u32,
-    data: &[u8],
-) -> Result<()> {
+}
+
+/// A file's entry: its id, name, memory and compression flags restated from
+/// the bytes themselves, and where those bytes and their stored size land.
+fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u8]) -> Result<()> {
     let size = u32::try_from(data.len()).map_err(|_| Error::Oversized)?;
 
     // The compression bits restate what the bytes already are.
@@ -1026,10 +1029,10 @@ fn file_entry(
             false => 0,
         };
 
-    out.u16(id);
-    out.u16(hash);
-    out.u32(flags << entry::FLAGS_SHIFT | name_at);
-    out.u32(offset);
+    out.u16(entry.id);
+    out.u16(entry.hash);
+    out.u32(flags << entry::FLAGS_SHIFT | entry.name_at);
+    out.u32(entry.offset);
     out.u32(size);
     out.u32(0);
     Ok(())

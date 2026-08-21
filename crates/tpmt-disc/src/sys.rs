@@ -304,18 +304,27 @@ pub(crate) fn bi2(bytes: &[u8]) -> Result<Bi2> {
     })
 }
 
+/// The four positions a layout works out, which the boot header restates.
+pub(crate) struct BootLayout {
+    pub(crate) apploader_len: u32,
+    pub(crate) dol_offset: u32,
+    pub(crate) fst_offset: u32,
+    pub(crate) fst_len: u32,
+}
+
 /// Writes the boot header back out: the inverse of `boot` and `check_layout`.
 ///
 /// Seven kept values and the magic. Everything else is a run of zeros, or a
 /// number that follows from where the layout put the three things the header
 /// points at.
-pub(crate) fn boot_bin(
-    boot: &Boot,
-    apploader_len: u32,
-    dol_offset: u32,
-    fst_offset: u32,
-    fst_len: u32,
-) -> Result<Vec<u8>> {
+pub(crate) fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
+    let &BootLayout {
+        apploader_len,
+        dol_offset,
+        fst_offset,
+        fst_len,
+    } = layout;
+
     let mut out = Writer::with_capacity(BOOT_LEN as usize);
     authored(&mut out, boot)?;
 
