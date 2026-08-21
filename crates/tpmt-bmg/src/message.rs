@@ -25,7 +25,7 @@ pub enum TextSegment {
 }
 
 /// One message: what it is called, how it is displayed, and what it says.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     /// The id external callers look this message up by. Held in MID1, and
     /// duplicated in the first two bytes of attributes.
@@ -47,7 +47,7 @@ pub struct Message {
 }
 
 /// What it says about the id lookup array that follows.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Mid1Header {
     /// Fast path if ids are sorted (binary search) vs scanning.
     /// Packed into the same byte as `form` in the file (high nibble).

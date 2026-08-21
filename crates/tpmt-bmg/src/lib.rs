@@ -37,6 +37,7 @@
 //! Only INF1 and DAT1 are always there. A file addressed positionally carries
 //! no MID1, and one nothing branches through carries neither flow section.
 
+pub mod editable;
 mod flow;
 mod message;
 
@@ -55,6 +56,9 @@ pub enum Error {
 
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
+
+    #[error("not a BMG translation document: {0}")]
+    InvalidJson(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -128,14 +132,14 @@ impl std::fmt::Display for Encoding {
 
 /// A section this crate has no implementation about, kept whole so it goes back out
 /// exactly as it came in.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownSection {
     pub magic: [u8; 4],
     pub data: Vec<u8>,
 }
 
 /// A message file taken apart.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bmg {
     pub encoding: Encoding,
     /// How wide one INF1 record is, the 4 byte text offset at the front of it

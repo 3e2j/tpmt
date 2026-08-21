@@ -37,7 +37,7 @@ pub struct NodeId(pub u32);
 ///
 /// Which of the three a record is comes out of its first byte. A record whose
 /// type is none of them is padding, of which there is at most one, at the end.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Node {
     /// Displays a message, then carries on.
     Text {
@@ -79,7 +79,7 @@ impl Node {
 }
 
 /// One way into the graph.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Root {
     /// The id external callers ask the game for.
     ///
@@ -96,7 +96,7 @@ pub struct Root {
 }
 
 /// A whole flow graph.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Flow {
     /// Every node. The order is the order they were stored in and carries
     /// nothing, since every edge is a handle.

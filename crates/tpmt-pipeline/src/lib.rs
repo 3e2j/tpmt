@@ -416,21 +416,26 @@ impl Format {
         }
     }
 
-    /// Confirms `bytes` parse as this format, unpacks via format crate.
+    /// Decodes `bytes` into this format's editable form, when it has one.
     ///
-    /// TODO: the parsed value is discarded since no format crate can write yet,
-    /// so the caller always writes the bytes it already had.
-    fn unpack(&self, bytes: &[u8], path: &Path) -> Result<(), Error> {
+    /// `None` means there is nothing to convert: the bytes go through
+    /// unchanged. `Some` carries the editable bytes and the extension a
+    /// project chains onto the file's own to hold them.
+    fn decode(&self, bytes: &[u8], path: &Path) -> Result<Option<(&'static str, Vec<u8>)>, Error> {
         match self {
             Format::Bmg => match tpmt_bmg::unpack(bytes) {
-                Ok(_) | Err(tpmt_bmg::Error::NotBmg) => Ok(()),
+                Ok(bmg) => Ok(Some((
+                    tpmt_bmg::editable::json::EXTENSION,
+                    tpmt_bmg::editable::json::encode(&bmg),
+                ))),
+                Err(tpmt_bmg::Error::NotBmg) => Ok(None),
                 Err(source) => Err(Error::Bmg {
                     path: path.to_path_buf(),
                     source,
                 }),
             },
             Format::Archive => unreachable!("archives are unpacked before reaching this"),
-            Format::Other => Ok(()),
+            Format::Other => Ok(None),
         }
     }
 }
@@ -595,9 +600,11 @@ pub(crate) fn compress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
     })
 }
 
-/// Writes a file's bytes into the project and records their hash for change
-/// detection, unpacking it against its format crate on the way past to
-/// confirm it parses.
+/// Writes a file into the project and records its hash for change detection.
+///
+/// A format with an editable form gets that instead, chained onto the file's
+/// own extension (`zel_00.bmg` becomes `zel_00.bmg.json`); anything else goes
+/// through as the bytes it already had.
 fn unpack_file(
     format: Format,
     bytes: &[u8],
@@ -605,13 +612,23 @@ fn unpack_file(
     at: &str,
     hashes: &mut Vec<FileHash>,
 ) -> Result<(), Error> {
-    format.unpack(bytes, path)?;
-    fs::write(path, bytes)?;
+    match format.decode(bytes, path)? {
+        Some((extension, editable)) => fs::write(&chained(path, extension), &editable)?,
+        None => fs::write(path, bytes)?,
+    }
     hashes.push(FileHash {
         path: at.to_string(),
         digest: plan::hash(bytes),
     });
     Ok(())
+}
+
+/// `path` with `extension` appended after its own, rather than replacing it.
+fn chained(path: &Path, extension: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".");
+    name.push(extension);
+    PathBuf::from(name)
 }
 
 pub(crate) fn is_archive(path: &str) -> bool {
@@ -825,5 +842,57 @@ mod tests {
             crate::fs::read(&at.join("fake.bmg")).unwrap(),
             b"not a message file"
         );
+    }
+
+    /// The bytes of a one-message BMG file: a header naming its two sections,
+    /// an INF1 with a single record, and a DAT1 holding the text it points at.
+    fn minimal_bmg() -> Vec<u8> {
+        let mut inf1_body = Vec::new();
+        inf1_body.extend(1u16.to_be_bytes()); // record count
+        inf1_body.extend(4u16.to_be_bytes()); // record_len: a bare text offset, no attributes
+        inf1_body.extend([0u8; 4]); // group id + padding, neither read
+        inf1_body.extend(0u32.to_be_bytes()); // the one record's text offset into DAT1
+
+        let dat1_body = b"Hi\0".to_vec();
+
+        let mut sections = Vec::new();
+        sections.extend(b"INF1");
+        sections.extend((8 + inf1_body.len() as u32).to_be_bytes());
+        sections.extend(&inf1_body);
+        sections.extend(b"DAT1");
+        sections.extend((8 + dat1_body.len() as u32).to_be_bytes());
+        sections.extend(&dat1_body);
+
+        let mut bmg = Vec::new();
+        bmg.extend(*b"MESGbmg1");
+        bmg.extend((0x20u32 + sections.len() as u32).to_be_bytes());
+        bmg.extend(2u32.to_be_bytes()); // section count
+        bmg.push(0x03); // Shift-JIS
+        bmg.resize(0x20, 0);
+        bmg.extend(&sections);
+        bmg
+    }
+
+    /// A member whose format converts is written exactly as its format crate
+    /// handed it back, at the extension that came with it, and not at its own
+    /// original path. What the conversion actually contains is that format
+    /// crate's own concern; this only checks that `unpack_file` moves what it
+    /// is given rather than reinterpreting it.
+    ///
+    /// BMG stands in here for any format crate whose bytes convert, the same
+    /// way it stands in for one that doesn't in
+    /// `a_mismatched_format_member_writes_through`.
+    #[test]
+    fn a_converted_member_is_written_at_its_chained_extension() {
+        let scratch = Scratch::new("converted");
+        let bmg = minimal_bmg();
+        let at = scratch.0.join("message.bmg");
+        let (extension, expected) = Format::Bmg.decode(&bmg, &at).unwrap().unwrap();
+
+        let mut hashes = Vec::new();
+        unpack_file(Format::Bmg, &bmg, &at, "files/message.bmg", &mut hashes).unwrap();
+
+        assert!(!at.exists());
+        assert_eq!(crate::fs::read(&chained(&at, extension)).unwrap(), expected);
     }
 }
