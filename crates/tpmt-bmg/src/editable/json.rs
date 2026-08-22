@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::flow::{Flow, Node, NodeId, Root};
+use crate::sections::flow::{Flow, Node, NodeId, Root};
 use crate::{Bmg, Encoding, Error, Message, MessageId, Mid1Header, Result, TextSegment};
 
 /// The extension a project chains onto a BMG's own when it is written out in
@@ -500,8 +500,8 @@ mod tests {
     #[test]
     fn a_bmg_with_flow_mid1_strings_and_extra_round_trips_through_json() {
         use crate::UnknownSection;
-        use crate::flow::{Flow, Node, NodeId, Root};
-        use crate::message::Mid1Header;
+        use crate::sections::flow::{Flow, Node, NodeId, Root};
+        use crate::sections::message::Mid1Header;
 
         let bmg = Bmg {
             encoding: Encoding::ShiftJis,
