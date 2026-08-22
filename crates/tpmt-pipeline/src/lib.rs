@@ -243,14 +243,15 @@ pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
     plan::changes(project, &vanilla)
 }
 
-/// Works out what reverting `path` would do, without writing anything.
+/// Works out what reverting `target` would do, without writing anything.
 ///
-/// `path` is a project-relative leaf (put back on its own) or a directory
-/// (every vanilla leaf under it put back together). Neither has to exist on
-/// disk right now: a file already deleted from the project is as revertable
-/// as one somebody edited.
-pub fn revert_plan(project: &Path, path: &str) -> Result<RevertPlan, Error> {
-    revert::plan(project, path)
+/// `target` is an absolute path to a leaf (put back on its own) or a
+/// directory (every vanilla leaf under it put back together). Neither has to
+/// exist on disk right now: a file already deleted from the project is as
+/// revertable as one somebody edited.
+pub fn revert_plan(project: &Path, target: &Path) -> Result<RevertPlan, Error> {
+    let path = revert::resolve(project, target)?;
+    revert::plan(project, &path)
 }
 
 /// Carries out a plan `revert_plan` already worked out.
@@ -691,6 +692,9 @@ pub enum Error {
 
     #[error("`{0}` is not part of this project, so there is nothing to revert")]
     NotTracked(String),
+
+    #[error("`{}` is outside the project", .0.display())]
+    OutsideProject(PathBuf),
 
     /// `repack` in plan.rs catches this and defaults instead when there is no
     /// original to compare against.

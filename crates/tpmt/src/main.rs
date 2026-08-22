@@ -1,9 +1,6 @@
-//! Command line front end for the Twilight Princess Modding Toolkit.
+//! CLI frontend for the Twilight Princess Modding Toolkit.
 //!
-//! Reads an invocation and hands it to the pipeline. Nothing here knows what a
-//! disc, an archive or a codec is. If a decision needs any of that, it belongs
-//! downstream, and if a message about one needs printing, it travels up as an
-//! error rather than as a call back into this crate.
+//! Reads an invocation and hands it to the pipeline to deal with.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -79,6 +76,7 @@ fn main() -> ExitCode {
     }
 }
 
+/// Matches the command given and runs the pipeline.
 fn run(command: Command) -> Result<(), Error> {
     match command {
         Command::New { iso, dir, yes } => {
@@ -115,11 +113,15 @@ fn run(command: Command) -> Result<(), Error> {
         }
         Command::Revert { path, dir, yes } => {
             let root = project(&dir)?;
-            let target = resolve(&root, &path)?;
-            revert(&root, &target, yes)
+            // `git -C` semantics: a relative path resolves against where you're
+            // standing, not against the project root `-C`/`dir` points at.
+            let cwd = std::env::current_dir()?;
+            let absolute = match path.is_absolute() {
+                true => path,
+                false => cwd.join(path),
+            };
+            revert(&root, &absolute, yes)
         }
-        // Both default to the project around us, the way every other tool that
-        // works on a checkout does, and take one somewhere else if named.
         Command::Build { dir, output } => {
             let root = project(&dir)?;
             let out = tpmt_pipeline::build(&root, output.as_deref())?;
@@ -147,46 +149,6 @@ fn project(dir: &Option<PathBuf>) -> Result<PathBuf, Error> {
     Ok(tpmt_pipeline::discover(start)?)
 }
 
-/// Resolves `path`, taken as relative to the current directory the way a
-/// shell argument is, onto the project-relative key `revert` needs
-/// internally, git pathspec style, so `revert` works the same run from the
-/// project root or from a subdirectory of it.
-fn resolve(root: &Path, path: &Path) -> Result<String, Error> {
-    let cwd = std::env::current_dir()?.canonicalize()?;
-    let absolute = match path.is_absolute() {
-        true => path.to_path_buf(),
-        false => cwd.join(path),
-    };
-
-    let relative = normalize(&absolute)
-        .strip_prefix(root)
-        .map_err(|_| Error::OutsideProject(path.to_path_buf()))?
-        .to_path_buf();
-
-    Ok(relative
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/"))
-}
-
-/// Resolves `.`/`..` components lexically, without touching the filesystem: a
-/// revert target does not have to exist on disk to be revertable, so it can't
-/// be run through `canonicalize`.
-fn normalize(path: &Path) -> PathBuf {
-    let mut result = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                result.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => result.push(other),
-        }
-    }
-    result
-}
-
 /// Prints a status listing, colored red/yellow/green for deleted, modified
 /// and added when standard out is a terminal somebody is looking at.
 fn print_status(changes: &[Change]) {
@@ -209,19 +171,19 @@ fn print_status(changes: &[Change]) {
     }
 }
 
-/// Reverts `target`, a project-relative path already resolved by `resolve`,
-/// asking first unless `yes` was given.
-fn revert(project: &Path, target: &str, yes: bool) -> Result<(), Error> {
+/// Reverts `target`, an absolute filesystem path, asking first unless `yes`
+/// was given.
+fn revert(project: &Path, target: &Path, yes: bool) -> Result<(), Error> {
     let plan = tpmt_pipeline::revert_plan(project, target)?;
 
-    let Some(cascade) = confirm(&plan, yes)? else {
+    let Some(cascade) = confirm_revert(&plan, yes)? else {
         return Ok(());
     };
 
     tpmt_pipeline::revert(project, &plan, cascade)?;
     match plan.restore.as_slice() {
         [one] => println!("Reverted {one}"),
-        many => println!("Reverted {} files under {target}", many.len()),
+        many => println!("Reverted {} files under {}", many.len(), plan.path),
     }
     if !plan.skip.is_empty() {
         println!("Left {} untracked file(s) alone", plan.skip.len());
@@ -236,7 +198,7 @@ fn revert(project: &Path, target: &str, yes: bool) -> Result<(), Error> {
 /// the two are one decision to make, not two. A directory or archive gets
 /// one prompt for the whole batch, emphasised with a count and, when short
 /// enough to read at a glance, the list itself.
-fn confirm(plan: &RevertPlan, yes: bool) -> Result<Option<bool>, Error> {
+fn confirm_revert(plan: &RevertPlan, yes: bool) -> Result<Option<bool>, Error> {
     if yes {
         return Ok(Some(plan.arc_sidecar_entry.is_some()));
     }
@@ -289,9 +251,6 @@ enum Error {
     // PathBuf has no Display, and lossy is the right call in an error message.
     #[error("`{}` has no filename to borrow, so name the project directory yourself", .0.display())]
     NamelessIso(PathBuf),
-
-    #[error("`{}` is outside the project", .0.display())]
-    OutsideProject(PathBuf),
 
     #[error("could not read the answer to a prompt: {0}")]
     Io(#[from] io::Error),

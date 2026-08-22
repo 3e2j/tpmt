@@ -6,8 +6,6 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Whole operations only. Anything reaching for a format crate belongs in the
-# pipeline, not here.
 tpmt-pipeline.workspace = true
 
 thiserror.workspace = true

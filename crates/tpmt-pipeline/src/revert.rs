@@ -42,6 +42,35 @@ pub struct SidecarEntry {
     pub path: String,
 }
 
+/// Converts `target`, an absolute filesystem path, to the project-relative
+/// key the rest of revert works in.
+///
+/// `.`/`..` components are collapsed lexically rather than through
+/// `canonicalize`: a revert target does not have to exist on disk to be
+/// revertable.
+pub(crate) fn resolve(project: &Path, target: &Path) -> Result<String, Error> {
+    let mut collapsed = PathBuf::new();
+    for component in target.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                collapsed.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => collapsed.push(other),
+        }
+    }
+
+    let relative = collapsed
+        .strip_prefix(project)
+        .map_err(|_| Error::OutsideProject(target.to_path_buf()))?;
+
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
 /// Works out what reverting `path` would do, without touching anything.
 pub(crate) fn plan(project: &Path, path: &str) -> Result<RevertPlan, Error> {
     let vanilla = Store::new(project).hashes()?;
