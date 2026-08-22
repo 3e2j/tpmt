@@ -231,3 +231,190 @@ impl<'a> ArchiveReader<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tpmt_bytes::Writer;
+
+    use super::*;
+    use crate::pack::{
+        self,
+        tests::{ENTRIES, NAME_A, NODES, STRINGS, archive},
+    };
+
+    /// The fidelity contract: what comes out goes back in and reproduces the
+    /// bytes, and what was packed reads back as it was given.
+    ///
+    /// Both ids come back as they were stored: 0 and 1, the order the fixture's
+    /// two files were met in, not the entry indices they sit at.
+    #[test]
+    fn round_trips_byte_for_byte() {
+        let data = archive();
+        let opened = unpack(&data).unwrap();
+        assert_eq!(opened.root, "root");
+
+        let listed: Vec<_> = opened
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.data, file.id, file.preload))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("a.bin", b"AAAAA".as_slice(), Some(0), Preload::Mram),
+                ("sub/b.bin", b"BBB".as_slice(), Some(1), Preload::Mram),
+            ]
+        );
+
+        assert_eq!(pack::pack(&opened).unwrap(), data);
+    }
+
+    /// A counter that is not what the ids come to is the archive's own, and a
+    /// few were stored that way. Nothing else can bring it back, so it is
+    /// carried, and a counter that is what they come to is not.
+    #[test]
+    fn a_counter_of_its_own_is_carried() {
+        let mut data = archive();
+        assert!(unpack(&data).unwrap().next_free_id.is_none());
+
+        let derived = Reader::new(&data)
+            .u16_at(data_header::AT + data_header::NEXT_FREE_ID)
+            .unwrap();
+        let stored = derived + 3;
+        data[data_header::AT + data_header::NEXT_FREE_ID
+            ..data_header::AT + data_header::NEXT_FREE_ID + 2]
+            .copy_from_slice(&stored.to_be_bytes());
+
+        let opened = unpack(&data).unwrap();
+        assert_eq!(opened.next_free_id, Some(stored));
+        assert_eq!(pack::pack(&opened).unwrap(), data);
+    }
+
+    #[test]
+    fn decodes_shift_jis_names() {
+        let mut w = Writer::from(archive());
+        // Halfwidth katakana RI, one byte in Shift-JIS.
+        w.u8_at(STRINGS + NAME_A, 0xD8);
+        w.u16_at(ENTRIES + entry::NAME_HASH, name_hash(b"\xD8.bin"));
+        let data = w.finish();
+        let opened = unpack(&data).unwrap();
+        assert_eq!(opened.files[0].path, "ﾘ.bin");
+        // And the trip back spells it in Shift-JIS again.
+        assert_eq!(pack::pack(&opened).unwrap(), data);
+    }
+
+    #[test]
+    fn rejects_other_data() {
+        assert!(matches!(unpack(b"Yaz0...."), Err(Error::NotRarc)));
+    }
+
+    #[test]
+    fn rejects_a_truncated_archive() {
+        let data = archive();
+        assert!(matches!(
+            unpack(&data[..data.len() - 4]),
+            Err(Error::Corrupt(_))
+        ));
+    }
+
+    /// An archive claiming no directories at all has nothing the walk could
+    /// start from, and says so rather than complaining about node 0 missing
+    /// once it gets there. The message is what the match names: without the
+    /// check up front the walk refuses this archive too, so matching only the
+    /// variant would pass either way.
+    #[test]
+    fn rejects_an_archive_with_no_nodes() {
+        let mut w = Writer::from(archive());
+        w.u32_at(data_header::AT + data_header::NODE_COUNT, 0);
+        let data = w.finish();
+        assert!(matches!(
+            unpack(&data),
+            Err(Error::Corrupt("there is no root directory"))
+        ));
+    }
+
+    /// Either nonsense count is caught up front, before the walk takes it as a
+    /// vector length. The complaint is matched too, since a count let through
+    /// here is still refused later, only after that allocation.
+    #[test]
+    fn rejects_counts_that_cannot_fit() {
+        let counts = [
+            (
+                data_header::NODE_COUNT,
+                "more directories than the archive could hold",
+            ),
+            (
+                data_header::ENTRY_COUNT,
+                "more entries than the archive could hold",
+            ),
+        ];
+        for (field, complaint) in counts {
+            let mut w = Writer::from(archive());
+            w.u32_at(data_header::AT + field, u32::MAX);
+            let data = w.finish();
+            assert!(
+                matches!(unpack(&data), Err(Error::Corrupt(message)) if message == complaint),
+                "{complaint}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_directory_claiming_missing_entries() {
+        let mut w = Writer::from(archive());
+        w.u16_at(NODES + node::ENTRY_COUNT, 100);
+        let data = w.finish();
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn a_directory_cycle_is_refused() {
+        let mut w = Writer::from(archive());
+        // Aim `sub`'s entry back at the root's node.
+        w.u32_at(ENTRIES + entry::LEN + entry::DATA_OR_NODE, 0);
+        let data = w.finish();
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn a_dangling_directory_is_refused() {
+        let mut w = Writer::from(archive());
+        w.u32_at(ENTRIES + entry::LEN + entry::DATA_OR_NODE, 9);
+        let data = w.finish();
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn rejects_a_name_with_a_separator() {
+        let mut w = Writer::from(archive());
+        w.u8_at(STRINGS + NAME_A + 1, b'/');
+        w.u16_at(ENTRIES + entry::NAME_HASH, name_hash(b"a/bin"));
+        let data = w.finish();
+        assert!(matches!(unpack(&data), Err(Error::UnusableName(_))));
+    }
+
+    #[test]
+    fn rejects_a_name_that_is_not_shift_jis() {
+        let mut w = Writer::from(archive());
+        // A lead byte with no trail byte after it.
+        w.u8_at(STRINGS + NAME_A, 0x85);
+        w.u16_at(ENTRIES + entry::NAME_HASH, name_hash(b"\x85.bin"));
+        let data = w.finish();
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn rejects_a_wrong_name_hash() {
+        let mut w = Writer::from(archive());
+        w.u16_at(ENTRIES + entry::NAME_HASH, 0xBEEF);
+        let data = w.finish();
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn rejects_a_file_marked_for_no_memory() {
+        let mut data = archive();
+        data[ENTRIES + entry::FLAGS_AND_NAME] = 0x01;
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+}

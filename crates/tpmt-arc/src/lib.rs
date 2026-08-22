@@ -249,6 +249,3 @@ fn name_hash(name: &[u8]) -> u16 {
         hash.wrapping_mul(3).wrapping_add(byte as u16)
     })
 }
-
-#[cfg(test)]
-mod tests;
