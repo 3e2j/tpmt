@@ -230,6 +230,8 @@ impl From<Vec<u8>> for Writer {
 mod tests {
     use super::*;
 
+    // Reader
+
     #[test]
     fn reads_advance_and_stay_in_bounds() {
         let mut reader = Reader::new(&[0x00, 0x01, 0x02, 0x03, 0x04]);
@@ -267,6 +269,8 @@ mod tests {
             Err(ByteError::Unterminated { .. })
         ));
     }
+
+    // Writer
 
     #[test]
     fn writes_go_out_big_endian() {

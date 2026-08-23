@@ -9,9 +9,8 @@ repository.workspace = true
 tpmt-bytes.workspace = true
 thiserror.workspace = true
 encoding_rs.workspace = true # message text
-# Decoding to JSON is this crate's job, not the pipeline's.
 serde.workspace = true
-serde_json.workspace = true
+serde_json.workspace = true # editable
 
 [lints]
 workspace = true
