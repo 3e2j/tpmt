@@ -1,5 +1,10 @@
 avoid-breaking-exported-api = false
 
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
 disallowed-methods = [
     # The GameCube is big-endian. Native-endian conversions silently do the
     # right thing on a BE host and the wrong thing everywhere else, so all

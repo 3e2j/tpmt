@@ -34,18 +34,22 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
+    #[must_use]
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
+    #[must_use]
     pub fn pos(&self) -> usize {
         self.pos
     }
@@ -57,6 +61,11 @@ impl<'a> Reader<'a> {
     }
 
     /// Borrows `len` bytes at an absolute position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if `pos..pos + len` runs past the
+    /// end of the buffer.
     pub fn slice_at(&self, pos: usize, len: usize) -> Result<&'a [u8]> {
         let out_of_bounds = || ByteError::OutOfBounds {
             pos,
@@ -68,51 +77,96 @@ impl<'a> Reader<'a> {
     }
 
     /// Borrows `len` bytes at the cursor and steps over them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if `len` bytes are not left in the
+    /// buffer.
     pub fn take(&mut self, len: usize) -> Result<&'a [u8]> {
         let out = self.slice_at(self.pos, len)?;
-        self.pos += len;
+        // `slice_at` above already proved `self.pos + len` fits in the buffer.
+        self.pos = self.pos.saturating_add(len);
         Ok(out)
     }
 
+    /// Reads a fixed-size array at the cursor and steps over it.
+    fn take_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let out = self.bytes_at(self.pos)?;
+        self.pos = self.pos.saturating_add(N);
+        Ok(out)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if a byte is not left in the buffer.
     pub fn u8(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
+        let [byte] = self.take_array()?;
+        Ok(byte)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if 2 bytes are not left in the buffer.
     pub fn u16(&mut self) -> Result<u16> {
-        let bytes = self.take(2)?;
-        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+        Ok(u16::from_be_bytes(self.take_array()?))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if 4 bytes are not left in the buffer.
     pub fn u32(&mut self) -> Result<u32> {
-        let bytes = self.take(4)?;
-        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        Ok(u32::from_be_bytes(self.take_array()?))
     }
 
     // `at` positions don't silently advance cursor
 
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if `pos` is not a byte in the buffer.
     pub fn u8_at(&self, pos: usize) -> Result<u8> {
-        Ok(self.slice_at(pos, 1)?[0])
+        let [byte] = self.bytes_at(pos)?;
+        Ok(byte)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if `pos..pos + 2` runs past the end
+    /// of the buffer.
     pub fn u16_at(&self, pos: usize) -> Result<u16> {
-        let bytes = self.slice_at(pos, 2)?;
-        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+        Ok(u16::from_be_bytes(self.bytes_at(pos)?))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if `pos..pos + 4` runs past the end
+    /// of the buffer.
     pub fn u32_at(&self, pos: usize) -> Result<u32> {
-        let bytes = self.slice_at(pos, 4)?;
-        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        Ok(u32::from_be_bytes(self.bytes_at(pos)?))
     }
 
     /// Borrows `N` bytes at an absolute position as a fixed-size array, for a
     /// field with no natural integer width, like a magic or a raw param blob.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if `pos..pos + N` runs past the end
+    /// of the buffer.
     pub fn bytes_at<const N: usize>(&self, pos: usize) -> Result<[u8; N]> {
         let bytes = self.slice_at(pos, N)?;
-        Ok(std::array::from_fn(|i| bytes[i]))
+        bytes.try_into().map_err(|_| ByteError::OutOfBounds {
+            pos,
+            len: N,
+            size: self.data.len(),
+        })
     }
 
     /// Borrows the null-terminated bytes at an absolute position, terminator
     /// excluded. What encoding they are in is the caller's business.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if `pos` is past the end of the
+    /// buffer, or [`ByteError::Unterminated`] if no null byte follows it.
     pub fn cstr_at(&self, pos: usize) -> Result<&'a [u8]> {
         let rest = self.data.get(pos..).ok_or(ByteError::OutOfBounds {
             pos,
@@ -123,7 +177,7 @@ impl<'a> Reader<'a> {
             .iter()
             .position(|&b| b == 0)
             .ok_or(ByteError::Unterminated { pos })?;
-        Ok(&rest[..end])
+        rest.get(..end).ok_or(ByteError::Unterminated { pos })
     }
 }
 
@@ -142,12 +196,14 @@ pub struct Writer {
 }
 
 impl Writer {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Starts a buffer that will not have to grow on the way to `capacity`.
     /// Worth it for the file table, whose length is known before it is built.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             data: Vec::with_capacity(capacity),
@@ -156,10 +212,12 @@ impl Writer {
 
     /// How much has been written, which is also the position the next append
     /// lands at. Reserving a field to backpatch means keeping this first.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
@@ -183,13 +241,14 @@ impl Writer {
     /// Appends `len` bytes of nothing. Whole regions of the preamble are zero,
     /// and a reserved field is written as zeros until it is patched.
     pub fn zeros(&mut self, len: usize) {
-        self.data.resize(self.data.len() + len, 0);
+        self.data.resize(self.data.len().saturating_add(len), 0);
     }
 
     /// Pads with zeros until the next `to` boundary, and does nothing if that
     /// is where the buffer already ends.
     pub fn align(&mut self, to: usize) {
-        self.zeros(self.data.len().next_multiple_of(to) - self.data.len());
+        let len = self.data.len();
+        self.zeros(len.next_multiple_of(to).saturating_sub(len));
     }
 
     pub fn u8_at(&mut self, pos: usize, value: u8) {
@@ -204,6 +263,7 @@ impl Writer {
         self.patch(pos, &value.to_be_bytes());
     }
 
+    #[must_use]
     pub fn finish(self) -> Vec<u8> {
         self.data
     }
@@ -212,6 +272,7 @@ impl Writer {
     ///
     /// Panics on a position the buffer has not reached, which cannot happen to
     /// a caller patching a field it reserved itself.
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
     fn patch(&mut self, pos: usize, bytes: &[u8]) {
         self.data[pos..pos + bytes.len()].copy_from_slice(bytes);
     }
@@ -292,7 +353,7 @@ mod tests {
         writer.bytes(b"name\0");
 
         let end = writer.len();
-        writer.u32_at(field, end as u32);
+        writer.u32_at(field, u32::try_from(end).unwrap());
 
         let out = writer.finish();
         assert_eq!(Reader::new(&out).u32_at(field).unwrap(), 9);
@@ -312,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "range end index")]
     fn patching_past_the_end_is_refused() {
         let mut writer = Writer::new();
         writer.u32(0);
