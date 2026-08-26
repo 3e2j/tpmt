@@ -691,7 +691,7 @@ mod tests {
     fn a_members_wrapper_comes_off_and_goes_back_on() {
         let scratch = Scratch::new("wrapper");
         let plain = b"a run of bytes with enough repetition to encode".repeat(4);
-        let wrapped = tpmt_compress::yaz0_encode(&plain).unwrap();
+        let wrapped = tpmt_compress::yaz0_encode(&plain, false).unwrap();
         let original = packed(&[("data.bin", &wrapped, Preload::Mram)]);
 
         let project = unpacked(&scratch, &original);
@@ -711,7 +711,8 @@ mod tests {
     fn a_nested_archive_rebuilds_itself() {
         let scratch = Scratch::new("nested");
         let inner =
-            tpmt_compress::yaz0_encode(&packed(&[("in.bin", b"inner", Preload::Mram)])).unwrap();
+            tpmt_compress::yaz0_encode(&packed(&[("in.bin", b"inner", Preload::Mram)]), false)
+                .unwrap();
         let original = packed(&[
             ("a.bin", b"first", Preload::Mram),
             ("nested.arc", &inner, Preload::Mram),

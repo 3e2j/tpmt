@@ -1,18 +1,17 @@
 //! Nintendo compression formats used by GameCube-era titles.
 //!
-//! Yaz0, an LZSS variant, wraps most archives on the disc and is the only
-//! one this project has needed so far. Just the codec, in both directions; it
-//! knows nothing about what it is wrapping.
+//! Yaz0, an LZSS variant, wraps most archives on the disc.
+//! Just the codec, in both directions; it knows nothing about what it is wrapping.
 //!
-//! Tokens come in eights behind a flag byte, one bit each: 1 for a literal
-//! byte, 0 for a back-reference (a 12-bit distance and a length nibble,
-//! each stored with a small offset baked in, detailed at their use).
+//! To put simply, instead of storing duplicate bytes on disc, we store a small back-reference
+//! to a group of previously written bytes (tokens) rather than writing verbatim. Thats it.
+//!
+//! Each group of up to 8 tokens is preceded by a flag byte (1 bit each) which marks which
+//! of the following tokens is either a literal, or a backreference. 1 for a literal byte,
+//! 0 for a back-reference (a 12-bit distance and a length nibble).
 //!
 //! The output doubles as the dictionary a back-reference reads from, copied
 //! one byte at a time since a run's source and destination can overlap.
-
-// TODO: Yay0 and ASR support (maybe). The engine supports both alongside Yaz0
-// so they may be needed eventually.
 
 mod decode;
 mod encode;
@@ -31,20 +30,114 @@ pub enum Error {
     #[error("{len} bytes does not fit the 32-bit size in a Yaz0 header")]
     TooLarge { len: usize },
 
+    #[error("decoded output is {actual} bytes, but the header declares {expected}")]
+    SizeMismatch { expected: usize, actual: usize },
+
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-const YAZ0_MAGIC: &[u8; 4] = b"Yaz0";
-/// The magic, the decompressed size, then 8 reserved bytes.
-const YAZ0_HEADER_LEN: usize = 0x10;
+mod header {
+    pub const LEN: usize = 0x10;
+    pub const MAGIC: &[u8; 4] = b"Yaz0"; // at 0x00
+    pub const DECOMPRESSED_SIZE: usize = 0x04;
+    // 0x08 to 0x10 padding bytes
+}
+
+mod token {
+    /// The flag byte itself: one bit per token in its group.
+    pub type Flags = u8;
+    /// Number of tokens preceded by one flag byte, each bit marks each following [`Token`] type
+    // `Flags` is a `u8`, so `BITS` is always 8: this never truncates.
+    #[allow(clippy::cast_possible_truncation)]
+    pub const GROUP_SIZE: u8 = Flags::BITS as u8;
+    /// Whether the token about to be read is a literal or a match (backref).
+    pub const TOP_FLAG_BIT: Flags = 1 << (Flags::BITS - 1);
+
+    /// One entry in a group of eight: a literal byte, or a back-reference.
+    pub enum Token {
+        Literal(u8),
+        BackReference(backref::Backreference),
+    }
+
+    pub mod backref {
+        /// Size of the `u16` pair alone: a 4-bit `length` nibble and a 12-bit
+        /// `distance`. An optional extra byte can follow to account for long
+        /// lengths that cannot fit in the nibble alone; that byte is not
+        /// counted here.
+        const PAIR_SIZE: u16 = 2;
+
+        /// To warrant a backref, we need at least one more than the min size it takes
+        /// to hold a backref, otherwise we could have just stored the literal cheaply.
+        pub const MIN_LENGTH: u16 = PAIR_SIZE + 1;
+
+        /// Length too big for to hold in the nibble, so an extra byte follows.
+        /// Extended byte stores how far past this point the length reaches, not the length
+        /// itself.
+        pub const MIN_EXTENDED_LENGTH: u16 = MIN_LENGTH + 0xF;
+
+        /// Max amount that can be represented.
+        /// A full extended byte on top of `MIN_EXTENDED_LENGTH`, which already
+        /// bakes in the full nibble.
+        pub const MAX_LENGTH: u16 = 0xFF + MIN_EXTENDED_LENGTH;
+
+        /// Twelve-bit field: the raw stored value's bitmask.
+        pub const DISTANCE_MASK: u16 = 0xFFF;
+        /// A distance of 0 will still jump back one, so the real distance is the
+        /// stored value plus one.
+        pub const MAX_DISTANCE: u16 = DISTANCE_MASK + 1;
+
+        /// A back-reference's distance and length, decoupled from the u16-pair
+        /// plus optional extension byte it's packed into on the wire.
+        ///
+        /// The single home for that packing, read in [`Backreference::read`] and
+        /// written in [`Backreference::write`], so the two directions can't drift
+        /// apart from each other.
+        #[derive(Clone, Copy)]
+        pub struct Backreference {
+            pub distance: u16,
+            pub length: u16,
+        }
+
+        impl Backreference {
+            pub fn read(reader: &mut tpmt_bytes::Reader) -> crate::Result<Self> {
+                let pair = reader.u16()?;
+                // The stored distance is one short of the real one, so a distance
+                // field of zero still means "the byte before this one".
+                let distance = (pair & DISTANCE_MASK) + 1;
+                let length = match pair >> 12 {
+                    0 => u16::from(reader.u8()?) + MIN_EXTENDED_LENGTH,
+                    nibble => nibble - 1 + MIN_LENGTH,
+                };
+                Ok(Backreference { distance, length })
+            }
+
+            pub fn write(self, out: &mut Vec<u8>) {
+                // Stored one short, matching the plus one `read` puts back.
+                let distance = self.distance - 1;
+                if self.length < MIN_EXTENDED_LENGTH {
+                    // -1 here to make sure it's never represented as 0 (used for extended byte)
+                    let nibble = self.length - (MIN_LENGTH - 1);
+                    out.extend_from_slice(&(nibble << 12 | distance).to_be_bytes());
+                } else {
+                    out.extend_from_slice(&distance.to_be_bytes()); // Empty nibble + distance
+                    // `length <= MAX_LENGTH`, which is `0xFF` past `MIN_EXTENDED_LENGTH`.
+                    out.push(
+                        u8::try_from(self.length - MIN_EXTENDED_LENGTH).expect("within MAX_LENGTH"),
+                    );
+                }
+            }
+        }
+    }
+}
 
 /// Whether a buffer starts with the Yaz0 magic.
 ///
 /// Callers decide what to do about it: on this disc the wrapper is a convention
 /// of where a file sits, not something the file itself declares.
+#[must_use]
 pub fn is_yaz0(data: &[u8]) -> bool {
-    data.starts_with(YAZ0_MAGIC)
+    data.starts_with(header::MAGIC)
 }

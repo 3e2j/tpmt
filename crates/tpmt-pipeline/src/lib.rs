@@ -595,7 +595,7 @@ fn decompress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
 }
 
 pub(crate) fn compress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
-    tpmt_compress::yaz0_encode(bytes).map_err(|source| Error::Compress {
+    tpmt_compress::yaz0_encode(bytes, false).map_err(|source| Error::Compress {
         path: path.to_path_buf(),
         source,
     })

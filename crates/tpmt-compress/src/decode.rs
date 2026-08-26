@@ -1,10 +1,19 @@
-//! The read path: turns a Yaz0 stream into raw bytes.
+//! The read path: turns Yaz0 data into raw bytes.
 
 use tpmt_bytes::Reader;
 
-use crate::{Error, Result, YAZ0_HEADER_LEN, is_yaz0};
+use crate::token::backref::Backreference;
+use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
+use crate::{Error, Result, header, is_yaz0};
 
-/// Decompresses a Yaz0 stream. See the crate docs for the token format.
+/// Decompresses Yaz0 data. See the crate docs for the token format.
+///
+/// # Errors
+///
+/// Returns [`Error::NotYaz0`] if `input` lacks the magic, [`Error::BackReference`]
+/// if a back-reference reaches before the start of the output,
+/// [`Error::SizeMismatch`] if the decoded output doesn't match the header's
+/// declared size, or [`Error::Bytes`] if `input` is truncated.
 pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
     // is_yaz0 gets the raw buffer: starts_with copes with one shorter than
     // the magic, and nothing else here needs to know the magic's length.
@@ -13,55 +22,64 @@ pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
     }
 
     let mut reader = Reader::new(input);
-    let size = reader.u32_at(4)? as usize;
-    reader.seek(YAZ0_HEADER_LEN);
+    let decompressed_size = reader.u32_at(header::DECOMPRESSED_SIZE)? as usize;
+    reader.seek(header::LEN);
 
-    let mut out = Vec::with_capacity(size);
-    let mut code = 0u8;
+    let mut out = Vec::with_capacity(decompressed_size);
+    let mut flags: Flags = 0;
     let mut items_left = 0;
 
-    while out.len() < size {
+    while out.len() < decompressed_size {
         if items_left == 0 {
-            code = reader.u8()?;
-            items_left = 8;
+            flags = reader.u8()?;
+            items_left = GROUP_SIZE;
         }
-        let is_literal = code & 0x80 != 0;
-        code <<= 1;
+        // Peek into top bit, move along
+        let is_literal = flags & TOP_FLAG_BIT != 0;
+        flags <<= 1;
         items_left -= 1;
 
-        if is_literal {
-            out.push(reader.u8()?);
-            continue;
-        }
-
-        let pair = reader.u16()?;
-        // The stored distance is one short of the real one, so a distance field
-        // of zero still means "the byte before this one".
-        let distance = (pair as usize & 0x0FFF) + 1;
-        let length = match pair >> 12 {
-            0 => reader.u8()? as usize + 0x12,
-            packed => packed as usize + 2,
+        let token = if is_literal {
+            Token::Literal(reader.u8()?)
+        } else {
+            Token::BackReference(Backreference::read(&mut reader)?)
+        };
+        let Backreference { distance, length } = match token {
+            Token::Literal(byte) => {
+                out.push(byte);
+                continue;
+            }
+            Token::BackReference(backref) => backref,
         };
 
         let start = out
             .len()
-            .checked_sub(distance)
+            .checked_sub(distance as usize)
             .ok_or(Error::BackReference {
                 pos: out.len(),
-                distance,
+                distance: distance as usize,
             })?;
-        // One byte at a time on purpose: a run is encoded as a reference that
-        // overlaps its own output, so the bytes this copy writes are bytes it
-        // then goes on to read.
-        for i in 0..length {
-            let byte = out[start + i];
-            out.push(byte);
+        if distance >= length {
+            // Source and destination don't overlap, so the whole run already
+            // sits in `out` and can be copied in one shot.
+            out.extend_from_within(start..start + length as usize);
+        } else {
+            // One byte at a time here: a run this short repeats a pattern
+            // shorter than itself, so the bytes this copy writes are bytes
+            // it then goes on to read.
+            for i in 0..length {
+                let byte = out[start + i as usize];
+                out.push(byte);
+            }
         }
     }
 
-    // A back-reference at the very end may write past the declared size. The
-    // header is what says how long the file is, so the overshoot is spare.
-    out.truncate(size);
+    if out.len() != decompressed_size {
+        return Err(Error::SizeMismatch {
+            expected: decompressed_size,
+            actual: out.len(),
+        });
+    }
     Ok(out)
 }
 
@@ -72,7 +90,7 @@ mod tests {
     /// A literal group, then a back-reference over the four bytes it wrote.
     fn sample() -> Vec<u8> {
         let mut data = Vec::new();
-        data.extend_from_slice(crate::YAZ0_MAGIC);
+        data.extend_from_slice(crate::header::MAGIC);
         data.extend_from_slice(&10u32.to_be_bytes());
         data.extend_from_slice(&[0u8; 8]);
         // Four literals, then a reference: length 4 + 2, distance 3 + 1.
@@ -93,11 +111,29 @@ mod tests {
         assert!(matches!(yaz0_decode(b"RARC...."), Err(Error::NotYaz0)));
     }
 
-    /// A truncated stream is an error, never a short buffer passed off as whole.
+    /// Truncated input is an error, never a short buffer passed off as whole.
     #[test]
-    fn rejects_a_truncated_stream() {
+    fn rejects_truncated_input() {
         let data = sample();
         assert!(yaz0_decode(&data[..data.len() - 3]).is_err());
+    }
+
+    /// A match that leaves the output short of, or past, the header's
+    /// declared size is treated as corruption rather than silently accepted.
+    #[test]
+    fn rejects_a_match_that_misses_the_declared_size() {
+        let mut data = Vec::new();
+        data.extend_from_slice(crate::header::MAGIC);
+        data.extend_from_slice(&3u32.to_be_bytes());
+        data.extend_from_slice(&[0u8; 8]);
+        data.push(0b1000_0000);
+        data.push(b'a');
+        // Length (4 - 1) + 3, distance 0 + 1: writes 7 bytes total, not 3.
+        data.extend_from_slice(&[0x40, 0x00]);
+        assert!(matches!(
+            yaz0_decode(&data),
+            Err(Error::SizeMismatch { .. })
+        ));
     }
 
     /// A reference pointing further back than the output goes is corruption,
@@ -105,7 +141,7 @@ mod tests {
     #[test]
     fn rejects_a_back_reference_past_the_start() {
         let mut data = Vec::new();
-        data.extend_from_slice(crate::YAZ0_MAGIC);
+        data.extend_from_slice(crate::header::MAGIC);
         data.extend_from_slice(&4u32.to_be_bytes());
         data.extend_from_slice(&[0u8; 8]);
         data.push(0b0000_0000);
