@@ -52,7 +52,7 @@ struct DirTree {
 impl DirTree {
     /// Numbers the raw shape [`grow_dirs`] grew: which node each directory
     /// becomes, and which run of entries it owns.
-    fn build(archive: &Archive) -> Result<DirTree> {
+    fn build(archive: &Archive) -> Result<Self> {
         let dirs = grow_dirs(archive)?;
 
         // Nodes are numbered depth first, children in sibling order. First
@@ -82,7 +82,7 @@ impl DirTree {
             entry_count += dirs[dir].children.len() + 2;
         }
 
-        Ok(DirTree {
+        Ok(Self {
             dirs,
             order,
             node_of,
@@ -381,12 +381,12 @@ struct SectionOffsets {
 }
 
 impl SectionOffsets {
-    const fn of(tree: &DirTree, string_pool_len: usize) -> SectionOffsets {
+    const fn of(tree: &DirTree, string_pool_len: usize) -> Self {
         let nodes_at = data_header::AT + data_header::LEN;
         let entries_at = (nodes_at + tree.order.len() * node::LEN).next_multiple_of(ALIGN);
         let string_pool_at = (entries_at + tree.entry_count * entry::LEN).next_multiple_of(ALIGN);
         let string_pool_size = string_pool_len.next_multiple_of(ALIGN);
-        SectionOffsets {
+        Self {
             nodes_at,
             entries_at,
             string_pool_at,

@@ -62,7 +62,7 @@ pub mod backref {
                 0 => u16::from(reader.u8()?) + MIN_EXTENDED_LENGTH,
                 nibble => nibble - 1 + MIN_LENGTH,
             };
-            Ok(Backreference { distance, length })
+            Ok(Self { distance, length })
         }
 
         pub fn write(self, out: &mut Vec<u8>) {
