@@ -16,19 +16,19 @@ use crate::{Entry, Error, Item, Result};
 
 // A flags-and-name word, then two fields whose meaning depends on whether the
 // entry is a directory.
-pub(crate) const ENTRY_LEN: usize = 0x0C;
-pub(crate) const DIRECTORY_FLAG: u32 = 0xFF00_0000;
-pub(crate) const NAME_MASK: u32 = 0x00FF_FFFF;
+pub const ENTRY_LEN: usize = 0x0C;
+pub const DIRECTORY_FLAG: u32 = 0xFF00_0000;
+pub const NAME_MASK: u32 = 0x00FF_FFFF;
 /// What the mastering put in a directory's flag byte. The reader takes any
 /// nonzero one, a writer has to pick.
 const DIRECTORY_TYPE: u32 = 0x0100_0000;
 
 /// The project directory the file table covers.
-pub(crate) const ROOT: &str = "files";
+pub const ROOT: &str = "files";
 
 /// Walks a file table, giving back what it holds in the order it holds it, each
 /// at the path it will be unpacked to.
-pub(crate) fn walk(fst: &[u8]) -> Result<Vec<Entry>> {
+pub fn walk(fst: &[u8]) -> Result<Vec<Entry>> {
     let fst = Reader::new(fst);
 
     // The root entry is a directory covering everything, so its end index is the
@@ -99,7 +99,7 @@ fn name_of(raw: &[u8]) -> Result<String> {
 
 /// A file table built out of a project tree, with nowhere for the files to go
 /// yet.
-pub(crate) struct Table {
+pub struct Table {
     /// The table itself. Every file's data offset is still zero, since the
     /// layout is worked out from how long this came to.
     pub(crate) bytes: Writer,
@@ -120,7 +120,7 @@ pub(crate) struct Table {
 /// case-insensitively puts `_` on the other side of the letters and lays the
 /// table out differently. Two siblings sharing an uppercased name are refused,
 /// so the order is total.
-pub(crate) fn build(items: &[&Item]) -> Result<Table> {
+pub fn build(items: &[&Item]) -> Result<Table> {
     // Everything the tree is, keyed by the path of the directory holding it.
     // The paths come in flat, so this is what puts them back together.
     let mut children: HashMap<&str, Vec<Child>> = HashMap::new();
@@ -298,9 +298,10 @@ fn name_bytes(name: &str) -> Result<Vec<u8>> {
     }
 
     let (bytes, _, unmappable) = encoding_rs::SHIFT_JIS.encode(name);
-    match unmappable {
-        true => Err(Error::UnwritableName(name.to_string())),
-        false => Ok(bytes.into_owned()),
+    if unmappable {
+        Err(Error::UnwritableName(name.to_string()))
+    } else {
+        Ok(bytes.into_owned())
     }
 }
 

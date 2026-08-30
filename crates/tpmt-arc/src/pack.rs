@@ -52,7 +52,7 @@ struct DirTree {
 impl DirTree {
     /// Numbers the raw shape [`grow_dirs`] grew: which node each directory
     /// becomes, and which run of entries it owns.
-    fn build(archive: &Archive) -> Result<DirTree> {
+    fn build(archive: &Archive) -> Result<Self> {
         let dirs = grow_dirs(archive)?;
 
         // Nodes are numbered depth first, children in sibling order. First
@@ -82,7 +82,7 @@ impl DirTree {
             entry_count += dirs[dir].children.len() + 2;
         }
 
-        Ok(DirTree {
+        Ok(Self {
             dirs,
             order,
             node_of,
@@ -131,12 +131,14 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
             }
 
             let name = encode(part)?;
-            at = match dirs[at].children.iter().find_map(|child| match child {
-                Entry::Dir(dir) if dirs[*dir].name == name => Some(*dir),
-                _ => None,
-            }) {
-                Some(dir) => dir,
-                None => {
+            at = dirs[at]
+                .children
+                .iter()
+                .find_map(|child| match child {
+                    Entry::Dir(dir) if dirs[*dir].name == name => Some(*dir),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
                     dirs.push(Dir {
                         name,
                         parent: at,
@@ -145,8 +147,7 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
                     let dir = dirs.len() - 1;
                     dirs[at].children.push(Entry::Dir(dir));
                     dir
-                }
-            };
+                });
         }
     }
 
@@ -176,6 +177,13 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
 ///
 /// An [`Archive::next_free_id`] the input didn't carry is derived here too
 /// (despite never being used by our implementation).
+///
+/// # Errors
+///
+/// - [`Error::UnusableName`] if a path has an empty, `.`, `..`, or
+///   backslash-holding component, or one that doesn't encode as Shift-JIS.
+/// - [`Error::Ungrouped`]
+/// - [`Error::Oversized`]
 pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
     // Numbers every directory and file; everything below is keyed off that.
     let tree = DirTree::build(archive)?;
@@ -381,12 +389,12 @@ struct SectionOffsets {
 }
 
 impl SectionOffsets {
-    fn of(tree: &DirTree, string_pool_len: usize) -> SectionOffsets {
+    const fn of(tree: &DirTree, string_pool_len: usize) -> Self {
         let nodes_at = data_header::AT + data_header::LEN;
         let entries_at = (nodes_at + tree.order.len() * node::LEN).next_multiple_of(ALIGN);
         let string_pool_at = (entries_at + tree.entry_count * entry::LEN).next_multiple_of(ALIGN);
         let string_pool_size = string_pool_len.next_multiple_of(ALIGN);
-        SectionOffsets {
+        Self {
             nodes_at,
             entries_at,
             string_pool_at,
@@ -442,15 +450,14 @@ fn write_nodes(out: &mut Writer, tree: &DirTree, string_pool: &StringPool) {
     for (node, &dir) in tree.order.iter().enumerate() {
         // The fourcc: the name ASCII-uppercased, truncated to four, space
         // padded. The root is `ROOT` whatever its name is.
-        match node {
-            0 => out.bytes(b"ROOT"),
-            _ => {
-                let mut fourcc = [b' '; 4];
-                for (at, byte) in tree.dirs[dir].name.iter().take(4).enumerate() {
-                    fourcc[at] = byte.to_ascii_uppercase();
-                }
-                out.bytes(&fourcc);
+        if node == 0 {
+            out.bytes(b"ROOT");
+        } else {
+            let mut fourcc = [b' '; 4];
+            for (at, byte) in tree.dirs[dir].name.iter().take(4).enumerate() {
+                fourcc[at] = byte.to_ascii_uppercase();
             }
+            out.bytes(&fourcc);
         }
         out.u32(string_pool.dir_name_ats[dir]);
         out.u16(name_hash(&tree.dirs[dir].name));
@@ -556,9 +563,10 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
             Preload::Aram => entry::FLAG_ARAM,
             Preload::Disc => entry::FLAG_DISC,
         }
-        | match data.starts_with(b"Yaz0") {
-            true => entry::FLAG_COMPRESSED | entry::FLAG_YAZ0,
-            false => 0,
+        | if data.starts_with(b"Yaz0") {
+            entry::FLAG_COMPRESSED | entry::FLAG_YAZ0
+        } else {
+            0
         };
 
     out.u16(entry.id);
@@ -575,20 +583,21 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
 /// has no place an archive could hold it.
 fn encode(name: &str) -> Result<Vec<u8>> {
     let (bytes, _, unmappable) = encoding_rs::SHIFT_JIS.encode(name);
-    match unmappable || name.is_empty() {
-        true => Err(Error::UnusableName(name.to_owned())),
-        false => Ok(bytes.into_owned()),
+    if unmappable || name.is_empty() {
+        Err(Error::UnusableName(name.to_owned()))
+    } else {
+        Ok(bytes.into_owned())
     }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use tpmt_bytes::Reader;
 
     use super::*;
     use crate::{File, unpack};
 
-    pub(crate) fn fixture() -> Vec<File<'static>> {
+    pub fn fixture() -> Vec<File<'static>> {
         vec![
             File {
                 path: "a.bin".into(),
@@ -605,7 +614,7 @@ pub(crate) mod tests {
         ]
     }
 
-    pub(crate) fn archive() -> Vec<u8> {
+    pub fn archive() -> Vec<u8> {
         pack(&Archive {
             root: "root".into(),
             files: fixture(),
@@ -617,13 +626,13 @@ pub(crate) mod tests {
     // Where that fixture's sections land: two headers, two nodes from 0x40,
     // seven entries from 0x60 ending 0xEC, the pool 0x20 aligned after them,
     // and the file data after its padded 0x1A bytes.
-    pub(crate) const NODES: usize = 0x40;
-    pub(crate) const ENTRIES: usize = 0x60;
-    pub(crate) const STRINGS: usize = 0x100;
-    pub(crate) const FILE_DATA: usize = 0x120;
+    pub const NODES: usize = 0x40;
+    pub const ENTRIES: usize = 0x60;
+    pub const STRINGS: usize = 0x100;
+    pub const FILE_DATA: usize = 0x120;
 
     // Positions within the pool `.\0..\0root\0a.bin\0sub\0b.bin\0`.
-    pub(crate) const NAME_A: usize = 0x0A;
+    pub const NAME_A: usize = 0x0A;
 
     /// The whole fixture image checked field by field against the layout the
     /// retail discs use. Everything else in this module trusts `pack`, and
@@ -709,11 +718,11 @@ pub(crate) mod tests {
                 r.u32_at(at + entry::DATA_SIZE).unwrap(),
             )
         };
-        assert_eq!(entry(0), (0, 0x11 << 24 | 10, 0, 5));
+        assert_eq!(entry(0), (0, 0x11 << 24 | 0x0A, 0, 5));
         assert_eq!(entry(1), (0xFFFF, 0x02 << 24 | 16, 1, 0x10));
         assert_eq!(entry(2), (0xFFFF, 0x02 << 24, 0, 0x10));
         assert_eq!(entry(3), (0xFFFF, 0x02 << 24 | 2, u32::MAX, 0x10));
-        assert_eq!(entry(4), (1, 0x11 << 24 | 20, 0x20, 3));
+        assert_eq!(entry(4), (1, 0x11 << 24 | 0x14, 0x20, 3));
         assert_eq!(entry(5), (0xFFFF, 0x02 << 24, 1, 0x10));
         assert_eq!(entry(6), (0xFFFF, 0x02 << 24 | 2, 0, 0x10));
         assert_eq!(

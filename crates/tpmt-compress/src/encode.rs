@@ -28,7 +28,7 @@ impl LazyMatch {
     /// at the gamble, the floor must be raised to zero so a net-loss cannot occur.
     /// At worst a gamble loses -2 bytes (literal + extended-byte), so we need a
     /// guaranteed +2 improvement (slack of 1).
-    const PARITY: Self = LazyMatch {
+    const PARITY: Self = Self {
         depth: 1,
         slack: 1, // Improvement of +2
     };
@@ -48,12 +48,12 @@ impl LazyMatch {
     //
     // TODO: Make the cost of specifically hitting the boundary length be slack = 1
     // so we never get a loss, just a more extensive search.
-    const EXTENSIVE: Self = LazyMatch {
+    const EXTENSIVE: Self = Self {
         depth: MAX_LENGTH as usize,
         slack: 0,
     };
 
-    fn pick(extensive: bool) -> Self {
+    const fn pick(extensive: bool) -> Self {
         if extensive {
             Self::EXTENSIVE
         } else {
@@ -69,8 +69,7 @@ impl LazyMatch {
 ///
 /// # Errors
 ///
-/// Returns [`Error::TooLarge`] if `input` is too long to fit in a Yaz0 header's
-/// 32-bit size field.
+/// Returns [`Error::TooLarge`].
 pub fn yaz0_encode(input: &[u8], extensive: bool) -> Result<Vec<u8>> {
     encode_with(input, &LazyMatch::pick(extensive))
 }
@@ -231,7 +230,7 @@ struct Chains {
 
 impl Chains {
     fn new(len: usize) -> Self {
-        Chains {
+        Self {
             head: vec![NO_POSITION; HASH_SIZE],
             prev: vec![NO_POSITION; len],
             unfiled: 0,

@@ -106,30 +106,31 @@ fn run(command: Command) -> Result<(), Error> {
             Ok(())
         }
         Command::Status { dir } => {
-            let root = project(&dir)?;
+            let root = project(dir.as_ref())?;
             let changes = tpmt_pipeline::status(&root)?;
             print_status(&changes);
             Ok(())
         }
         Command::Revert { path, dir, yes } => {
-            let root = project(&dir)?;
+            let root = project(dir.as_ref())?;
             // `git -C` semantics: a relative path resolves against where you're
             // standing, not against the project root `-C`/`dir` points at.
             let cwd = std::env::current_dir()?;
-            let absolute = match path.is_absolute() {
-                true => path,
-                false => cwd.join(path),
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
             };
             revert(&root, &absolute, yes)
         }
         Command::Build { dir, output } => {
-            let root = project(&dir)?;
+            let root = project(dir.as_ref())?;
             let out = tpmt_pipeline::build(&root, output.as_deref())?;
             println!("built {}", out.display());
             Ok(())
         }
         Command::Image { dir, output } => {
-            let root = project(&dir)?;
+            let root = project(dir.as_ref())?;
             let out = tpmt_pipeline::image(&root, output.as_deref())?;
             println!("wrote {}", out.display());
             Ok(())
@@ -141,11 +142,8 @@ fn run(command: Command) -> Result<(), Error> {
 /// the current directory, if none was named), the way `git -C` starts its own
 /// search from wherever it is pointed rather than treating that spot as the
 /// root itself.
-fn project(dir: &Option<PathBuf>) -> Result<PathBuf, Error> {
-    let start = match dir {
-        Some(dir) => dir.as_path(),
-        None => Path::new("."),
-    };
+fn project(dir: Option<&PathBuf>) -> Result<PathBuf, Error> {
+    let start = dir.map_or_else(|| Path::new("."), PathBuf::as_path);
     Ok(tpmt_pipeline::discover(start)?)
 }
 
@@ -164,9 +162,10 @@ fn print_status(changes: &[Change]) {
             ChangeKind::Modified => ("M", "33"),
             ChangeKind::Deleted => ("D", "31"),
         };
-        match color {
-            true => println!("\x1b[{code}m{tag}\x1b[0m {}", change.path),
-            false => println!("{tag} {}", change.path),
+        if color {
+            println!("\x1b[{code}m{tag}\x1b[0m {}", change.path);
+        } else {
+            println!("{tag} {}", change.path);
         }
     }
 }
@@ -204,15 +203,18 @@ fn confirm_revert(plan: &RevertPlan, yes: bool) -> Result<Option<bool>, Error> {
     }
 
     if let [only] = plan.restore.as_slice() {
-        let mut prompt = format!("Revert {only} back to vanilla?");
-        if let Some(entry) = &plan.arc_sidecar_entry {
-            prompt.push_str(&format!(
-                "\nthis will also restore its entry in {}, leaving other members untouched.",
-                entry.path
-            ));
-        }
+        let suffix = plan
+            .arc_sidecar_entry
+            .as_ref()
+            .map(|entry| {
+                format!(
+                    "\nthis will also restore its entry in {}, leaving other members untouched.",
+                    entry.path
+                )
+            })
+            .unwrap_or_default();
         let cascade = plan.arc_sidecar_entry.is_some();
-        return Ok(ask(&format!("{prompt} [y/N] "))?.then_some(cascade));
+        return Ok(ask(&format!("Revert {only} back to vanilla?{suffix} [y/N] "))?.then_some(cascade));
     }
 
     println!(

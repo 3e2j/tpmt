@@ -48,7 +48,7 @@ pub struct SidecarEntry {
 /// `.`/`..` components are collapsed lexically rather than through
 /// `canonicalize`: a revert target does not have to exist on disk to be
 /// revertable.
-pub(crate) fn resolve(project: &Path, target: &Path) -> Result<String, Error> {
+pub fn resolve(project: &Path, target: &Path) -> Result<String, Error> {
     let mut collapsed = PathBuf::new();
     for component in target.components() {
         match component {
@@ -72,7 +72,7 @@ pub(crate) fn resolve(project: &Path, target: &Path) -> Result<String, Error> {
 }
 
 /// Works out what reverting `path` would do, without touching anything.
-pub(crate) fn plan(project: &Path, path: &str) -> Result<RevertPlan, Error> {
+pub fn plan(project: &Path, path: &str) -> Result<RevertPlan, Error> {
     let vanilla = Store::new(project).hashes()?;
 
     if vanilla.contains_key(path) {
@@ -153,7 +153,7 @@ fn sidecar_entry(
     path: &str,
 ) -> Option<SidecarEntry> {
     let archive = nearest_archive(path)?;
-    let sidecar = format!("{archive}/{}", SIDECAR);
+    let sidecar = format!("{archive}/{SIDECAR}");
     // Reverting the sidecar itself is not a cascade into it, and one the
     // disc never had, or one already gone from the project, has nothing to
     // splice a member's entry into.
@@ -165,7 +165,7 @@ fn sidecar_entry(
 
 /// Carries out a plan `plan` already worked out, restoring every leaf it
 /// names and, if asked, cascading into the sidecar entry it found.
-pub(crate) fn apply(
+pub fn apply(
     project: &Path,
     revert: &RevertPlan,
     restore_sidecar_entry: bool,
@@ -212,14 +212,15 @@ pub(crate) fn apply(
         for target in &targets {
             data.push((*target, crate::fs::read(&scratch.path().join(target))?));
         }
-        let cascade = match restore_sidecar_entry {
-            true => sidecar_update(
+        let cascade = if restore_sidecar_entry {
+            sidecar_update(
                 project,
                 scratch.path(),
-                &revert.arc_sidecar_entry,
+                revert.arc_sidecar_entry.as_ref(),
                 &revert.path,
-            )?,
-            false => None,
+            )?
+        } else {
+            None
         };
 
         for (target, bytes) in data {
@@ -240,13 +241,13 @@ pub(crate) fn apply(
 fn sidecar_update(
     project: &Path,
     scratch: &Path,
-    entry: &Option<SidecarEntry>,
+    entry: Option<&SidecarEntry>,
     member: &str,
 ) -> Result<Option<(String, Sidecar)>, Error> {
     let Some(entry) = entry else { return Ok(None) };
     let archive = entry
         .path
-        .strip_suffix(&format!("/{}", SIDECAR))
+        .strip_suffix(&format!("/{SIDECAR}"))
         .expect("a sidecar entry's path always ends in the sidecar's own name");
     let relative = member
         .strip_prefix(&format!("{archive}/"))
@@ -540,9 +541,8 @@ mod tests {
         let project = project(&scratch);
         write(&project.join("files/new.bin"), b"new").unwrap();
 
-        let error = match plan(&project, "files/new.bin") {
-            Err(error) => error,
-            Ok(_) => panic!("an untracked path should refuse to plan a revert"),
+        let Err(error) = plan(&project, "files/new.bin") else {
+            panic!("an untracked path should refuse to plan a revert");
         };
         assert!(matches!(error, Error::NotTracked(path) if path == "files/new.bin"));
     }

@@ -40,6 +40,15 @@ struct ArchiveReader<'a> {
 ///
 /// Compression flags are dropped, since [`pack`] recomputes them from the
 /// file's bytes.
+///
+/// # Errors
+///
+/// - [`Error::NotRarc`]
+/// - [`Error::UnusableName`]
+/// - [`Error::Corrupt`] if the archive's structure is corrupt in a way that
+///   would misplace or lose an entry (a wrong stated size, a missing root,
+///   more entries than it claims to hold, a file with no memory tag, a
+///   directory tree that loops, or similar).
 pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
     if !data.starts_with(top_header::MAGIC) {
         return Err(Error::NotRarc);
@@ -148,9 +157,10 @@ impl<'a> ArchiveReader<'a> {
                 return Err(Error::UnusableName(name));
             }
 
-            let path = match prefix.is_empty() {
-                true => name,
-                false => format!("{prefix}/{name}"),
+            let path = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
             };
             let target = self.reader.u32_at(record + entry::DATA_OR_NODE)? as usize;
 
@@ -225,9 +235,10 @@ impl<'a> ArchiveReader<'a> {
         }
 
         let (name, _, malformed) = encoding_rs::SHIFT_JIS.decode(raw);
-        match malformed {
-            true => Err(Error::Corrupt("a name is not Shift-JIS")),
-            false => Ok(name.into_owned()),
+        if malformed {
+            Err(Error::Corrupt("a name is not Shift-JIS"))
+        } else {
+            Ok(name.into_owned())
         }
     }
 }

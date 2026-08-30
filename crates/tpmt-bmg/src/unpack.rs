@@ -26,6 +26,8 @@ struct Sections<'a> {
 /// Each section says how far the next one is, so the table is walked from the
 /// front. A count larger than the file holds runs out of bytes on the section
 /// it invents, rather than being trusted as an allocation.
+// `flw1`/`fli1` mirror the file format's own FLW1/FLI1 section names.
+#[allow(clippy::similar_names)]
 fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let reader = Reader::new(data);
     let encoding = Encoding::from_byte(reader.u8_at(header::ENCODING)?);
@@ -107,6 +109,14 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
 }
 
 /// Takes a message file apart.
+///
+/// # Errors
+///
+/// - [`Error::NotBmg`]
+/// - [`Error::Corrupt`] if the section table would misplace or lose a
+///   section: a size that doesn't fit its header, a stated file size that
+///   doesn't match where the sections end, a required section missing, or a
+///   flow graph with only one of its two sections.
 pub fn unpack(data: &[u8]) -> Result<Bmg> {
     if !data.starts_with(header::MAGIC) {
         return Err(Error::NotBmg);

@@ -156,6 +156,7 @@ pub enum Entry {
 }
 
 impl Entry {
+    #[must_use]
     pub fn path(&self) -> &str {
         match self {
             Self::File { path, .. } | Self::Directory { path } => path,
@@ -174,6 +175,7 @@ pub enum Item {
 }
 
 impl Item {
+    #[must_use]
     pub fn path(&self) -> &str {
         match self {
             Self::File { path, .. } | Self::Directory { path } => path,
@@ -189,6 +191,14 @@ pub struct Disc {
 
 impl Disc {
     /// Opens an image, or a container holding one.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Open`]
+    /// - [`Error::Read`]
+    /// - [`Error::NotADisc`]
+    /// - [`Error::WiiDisc`]
+    /// - [`Error::CorruptHeader`]
     pub fn open(path: &Path) -> Result<Self> {
         let open = |source| Error::Open {
             path: path.to_path_buf(),
@@ -213,7 +223,8 @@ impl Disc {
     }
 
     /// What the preamble records that a build cannot work out again.
-    pub fn metadata(&self) -> &Metadata {
+    #[must_use]
+    pub const fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 
@@ -221,28 +232,42 @@ impl Disc {
     ///
     /// Neither of these is a file a project keeps, so this is the only thing a
     /// rebuilt one can be held against to say whether it came out different.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Read`].
     pub fn boot_bin(&self) -> Result<Vec<u8>> {
         self.read(0, sys::BOOT_LEN)
     }
 
     /// The disc metadata exactly as this disc holds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Read`].
     pub fn bi2_bin(&self) -> Result<Vec<u8>> {
         self.read(sys::BI2_OFFSET, sys::BI2_LEN)
     }
 
     /// The length of the image, which is not the length of the file it came out
     /// of when that file is a container.
-    pub fn len(&self) -> u64 {
+    #[must_use]
+    pub const fn len(&self) -> u64 {
         self.handle.len
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.handle.len == 0
     }
 
     /// Reads a range of the disc.
     ///
     /// Positional, so several threads can pull from one open disc at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Read`].
     pub fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
         read_at(&self.handle, offset, len)
     }
@@ -252,6 +277,10 @@ impl Disc {
     ///
     /// Over the image rather than the file, so a container and a raw dump of
     /// the same disc answer the same.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Read`].
     pub fn sha1(&self) -> Result<String> {
         const CHUNK: u64 = 1 << 20;
 
@@ -267,6 +296,12 @@ impl Disc {
 
     /// Everything the disc holds: the preamble under `sys/`, then the game's
     /// own files and directories under `files/`, in file table order.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Read`]
+    /// - [`Error::CorruptHeader`]
+    /// - [`Error::CorruptFileTable`]
     pub fn entries(&self) -> Result<Vec<Entry>> {
         let mut entries = sys::entries(self)?;
         entries.extend(self.file_entries()?);

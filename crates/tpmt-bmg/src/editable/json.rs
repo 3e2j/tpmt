@@ -22,6 +22,12 @@ pub const EXTENSION: &str = "json";
 
 /// Encodes a `Bmg` as the bytes of its JSON translation layer, ready to write
 /// to a file. Pretty printed: this is a file a modder reads and edits by hand.
+///
+/// # Panics
+///
+/// Never, in practice: [`to_json`] only ever produces a `Value` built from
+/// this module's own types, which `serde_json` always serializes.
+#[must_use]
 pub fn encode(bmg: &Bmg) -> Vec<u8> {
     serde_json::to_vec_pretty(&to_json(bmg)).expect("a BMG translation document always serializes")
 }
@@ -97,6 +103,12 @@ struct JsonMessage {
 }
 
 /// Turns a `Bmg` into its JSON translation layer.
+///
+/// # Panics
+///
+/// Never, in practice: `JsonBmg` is a plain serializable shape (strings,
+/// numbers, options, vecs of the same), which `serde_json` always
+/// serializes to a `Value`.
 pub fn to_json(bmg: &Bmg) -> Value {
     let json = JsonBmg {
         encoding: bmg.encoding.as_str().to_string(),
@@ -120,16 +132,22 @@ pub fn to_json(bmg: &Bmg) -> Value {
 }
 
 /// Turns a translation layer document back into a `Bmg`.
+///
+/// # Errors
+///
+/// - [`Error::InvalidJson`]
+/// - [`Error::Corrupt`] if a field fails to decode further: an unknown
+///   encoding name, a bad hex string, or text ending mid escape or mid tag.
 pub fn from_json(value: &Value) -> Result<Bmg> {
     let json: JsonBmg = serde_json::from_value(value.clone())?;
     let encoding = encoding_from_str(&json.encoding)?;
     Ok(Bmg {
         encoding,
         attribute_len: json.attribute_len,
-        mid1: json.mid1.map(mid1_from_json),
+        mid1: json.mid1.as_ref().map(mid1_from_json),
         messages: json
             .messages
-            .into_iter()
+            .iter()
             .map(|m| message_from_json(m, encoding))
             .collect::<Result<Vec<_>>>()?,
         flow: json.flow.map(flow_from_json).transpose()?,
@@ -144,13 +162,13 @@ pub fn from_json(value: &Value) -> Result<Bmg> {
             .transpose()?,
         extra: json
             .extra
-            .into_iter()
+            .iter()
             .map(unknown_section_from_json)
             .collect::<Result<Vec<_>>>()?,
     })
 }
 
-fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
+const fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
     JsonMid1 {
         ordered: mid1.ordered,
         form: mid1.form,
@@ -158,7 +176,7 @@ fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
     }
 }
 
-fn mid1_from_json(json: JsonMid1) -> Mid1Header {
+const fn mid1_from_json(json: &JsonMid1) -> Mid1Header {
     Mid1Header {
         ordered: json.ordered,
         form: json.form,
@@ -173,7 +191,7 @@ fn unknown_section_to_json(section: &crate::UnknownSection) -> JsonUnknownSectio
     }
 }
 
-fn unknown_section_from_json(json: JsonUnknownSection) -> Result<crate::UnknownSection> {
+fn unknown_section_from_json(json: &JsonUnknownSection) -> Result<crate::UnknownSection> {
     let magic = from_hex(&json.magic)?
         .try_into()
         .map_err(|_| Error::Corrupt("a section magic is not four bytes"))?;
@@ -303,7 +321,7 @@ fn message_to_json(message: &Message, encoding: Encoding) -> JsonMessage {
     }
 }
 
-fn message_from_json(json: JsonMessage, encoding: Encoding) -> Result<Message> {
+fn message_from_json(json: &JsonMessage, encoding: Encoding) -> Result<Message> {
     Ok(Message {
         public_id: json.public_id,
         id: MessageId(json.id),
@@ -403,7 +421,13 @@ fn encode_text(text: &str, encoding: Encoding) -> Result<Vec<u8>> {
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX_DIGITS[(b >> 4) as usize] as char);
+        out.push(HEX_DIGITS[(b & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn from_hex(s: &str) -> Result<Vec<u8>> {

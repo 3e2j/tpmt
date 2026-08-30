@@ -35,6 +35,19 @@ impl Layout {
     /// `items` is the whole project: the two preamble files under `sys/`, and
     /// the game's own files and directories under `files/`. Their order does
     /// not matter, since the file table has an order of its own.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnknownEntry`]
+    /// - [`Error::MissingEntry`]
+    /// - [`Error::TooLarge`]
+    /// - anything bubbled from [`fst::build`] or [`sys::boot_bin`]
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`fst::build`] reserves fewer offsets than `items` has
+    /// files. That's an invariant [`fst::build`] is trusted to hold, not
+    /// something a caller can trigger.
     pub fn plan(metadata: &Metadata, items: &[Item]) -> Result<Self> {
         let mut apploader = None;
         let mut dol = None;
@@ -140,16 +153,19 @@ impl Layout {
     ///
     /// The same list, at the same offsets, that reading the finished image back
     /// reports.
+    #[must_use]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
     /// How long the image comes out.
-    pub fn len(&self) -> u64 {
+    #[must_use]
+    pub const fn len(&self) -> u64 {
         self.len
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
@@ -195,6 +211,12 @@ pub struct Image<'a, W: Write> {
 
 impl<W: Write> Image<'_, W> {
     /// Writes the next file the layout holds.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Mismatch`]
+    /// - [`Error::WrongSize`]
+    /// - [`Error::Write`]
     pub fn file(&mut self, bytes: &[u8]) -> Result<()> {
         let layout = self.layout;
         let file = loop {
@@ -223,6 +245,11 @@ impl<W: Write> Image<'_, W> {
 
     /// Finishes the image, giving back the SHA-1 of everything written, which
     /// is what says later on whether this is the same image.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Mismatch`]
+    /// - [`Error::Write`]
     pub fn finish(mut self) -> Result<String> {
         let left = self.layout.entries[self.next..]
             .iter()

@@ -67,7 +67,7 @@ pub struct Member {
     ///
     /// Recorded because unpack takes the wrapper off members before writing
     /// the member out.
-    #[serde(default, skip_serializing_if = "not_compressed")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub yaz0_compressed: bool,
     /// The id the game asks for this member by.
     ///
@@ -97,16 +97,13 @@ pub struct Member {
     pub id: Option<u16>,
 }
 
-fn not_compressed(yaz0_compressed: &bool) -> bool {
-    !yaz0_compressed
-}
-
 impl Member {
     /// A member the sidecar never named, which is one somebody put in the
     /// directory themselves. Main memory is where a file with nothing saying
     /// otherwise belongs, and an id it was never stored under is one the
     /// rebuild works out.
-    pub fn new(path: String) -> Self {
+    #[must_use]
+    pub const fn new(path: String) -> Self {
         Self {
             path,
             preload: Preload::Mram,
@@ -117,7 +114,8 @@ impl Member {
 }
 
 impl Sidecar {
-    pub fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
+    #[must_use]
+    pub const fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
         Self {
             root,
             yaz0_compressed,
@@ -131,6 +129,7 @@ impl Sidecar {
     /// Nothing here is guessed: one that never existed has no root name to
     /// recover, no wrapping it arrived under and no members it used to hold.
     /// The files in the directory become members on their own terms.
+    #[must_use]
     pub fn fresh() -> Self {
         Self::new(ROOT.to_string(), false, Vec::new())
     }
@@ -141,11 +140,22 @@ impl Sidecar {
     /// bools, an enum, options, a vec of the same), which `toml` only ever
     /// fails to serialize over a NaN float or a non-string map key, neither
     /// of which this has, so there is no `Result` to hand back.
+    ///
+    /// # Panics
+    ///
+    /// Never, in practice: the `expect` above only trips on a NaN float or
+    /// non-string map key, and `Sidecar` has neither.
+    #[must_use]
     pub fn to_toml(&self) -> String {
         toml::to_string_pretty(self).expect("a Sidecar always serializes")
     }
 
     /// Reads a sidecar back out of the TOML text a project kept it as.
+    ///
+    /// # Errors
+    ///
+    /// Errors if `text` is not valid TOML, or does not match a `Sidecar`'s
+    /// shape.
     pub fn from_toml(text: &str) -> crate::Result<Self> {
         Ok(toml::from_str(text)?)
     }

@@ -11,17 +11,17 @@ use tpmt_bytes::Reader;
 
 use crate::{Error, Result};
 
-pub(crate) const MAGIC: &[u8; 4] = b"CISO";
-pub(crate) const HEADER_LEN: u64 = 0x8000;
-pub(crate) const BLOCK_SIZE_FIELD: usize = 0x04;
-pub(crate) const MAP_OFFSET: usize = 0x08;
-pub(crate) const MAP_LEN: usize = HEADER_LEN as usize - MAP_OFFSET;
-pub(crate) const MIN_BLOCK_SIZE: u32 = 0x8000;
-pub(crate) const UNUSED: u8 = 0;
-pub(crate) const USED: u8 = 1;
+pub const MAGIC: &[u8; 4] = b"CISO";
+pub const HEADER_LEN: u64 = 0x8000;
+pub const BLOCK_SIZE_FIELD: usize = 0x04;
+pub const MAP_OFFSET: usize = 0x08;
+pub const MAP_LEN: usize = HEADER_LEN as usize - MAP_OFFSET;
+pub const MIN_BLOCK_SIZE: u32 = 0x8000;
+pub const UNUSED: u8 = 0;
+pub const USED: u8 = 1;
 
 /// Which blocks of the image the container kept, and where each one landed.
-pub(crate) struct Map {
+pub struct Map {
     block_size: u64,
     /// For each block of the image, its position in the file counted in blocks
     /// after the header, or `None` if it was not stored.
@@ -72,7 +72,7 @@ impl Map {
     }
 
     /// The length of the image inside, holes included.
-    pub(crate) fn image_len(&self) -> u64 {
+    pub(crate) const fn image_len(&self) -> u64 {
         self.blocks.len() as u64 * self.block_size
     }
 

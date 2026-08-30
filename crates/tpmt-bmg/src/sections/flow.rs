@@ -71,9 +71,9 @@ pub enum Node {
 }
 
 impl Node {
-    pub fn id(&self) -> NodeId {
+    pub const fn id(&self) -> NodeId {
         match self {
-            Node::Text { id, .. } | Node::Branch { id, .. } | Node::Event { id, .. } => *id,
+            Self::Text { id, .. } | Self::Branch { id, .. } | Self::Event { id, .. } => *id,
         }
     }
 }
@@ -184,7 +184,9 @@ fn edge(entry: u16) -> Option<NodeId> {
 /// means the file is corrupt. Node records are then read in order, each
 /// resolving its own branch or event edges out of the table as it goes.
 /// FLI1 is then read straight into [`Root`]s.
-pub(crate) fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
+// `flw1`/`fli1` mirror the file format's own FLW1/FLI1 section names.
+#[allow(clippy::similar_names)]
+pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     let flw = Reader::new(flw1);
     let node_count = flw.u16_at(flw1_header::NODE_COUNT)? as usize;
     let table_count = flw.u16_at(flw1_header::TABLE_COUNT)? as usize;
@@ -289,6 +291,8 @@ pub(crate) fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
 }
 
 #[cfg(test)]
+// `flw1`/`fli1` mirror the file format's own FLW1/FLI1 section names.
+#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
 

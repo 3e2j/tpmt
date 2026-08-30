@@ -19,7 +19,7 @@ use crate::Error;
 /// under a name nobody is looking at, and the last step is a rename. A rename
 /// is only atomic within one filesystem, and on Windows fails outright across
 /// volumes, so this stays beside its target rather than in a temp directory.
-pub(crate) struct Staged {
+pub struct Staged {
     path: PathBuf,
     target: PathBuf,
     directory: bool,
@@ -107,7 +107,7 @@ impl Staged {
 ///
 /// Everything read this way is one of the project's own files, which are game
 /// assets rather than disc images: the largest is a few tens of megabytes.
-pub(crate) fn read(path: &Path) -> Result<Vec<u8>, Error> {
+pub fn read(path: &Path) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     let read = |source| Error::Read {
         path: path.to_path_buf(),
@@ -121,7 +121,7 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>, Error> {
 }
 
 /// What a directory holds, by name.
-pub(crate) fn listing(path: &Path) -> Result<Vec<String>, Error> {
+pub fn listing(path: &Path) -> Result<Vec<String>, Error> {
     let failed = |source| Error::Read {
         path: path.to_path_buf(),
         source,
@@ -140,14 +140,14 @@ pub(crate) fn listing(path: &Path) -> Result<Vec<String>, Error> {
     Ok(names)
 }
 
-pub(crate) fn create_dir(path: &Path) -> Result<(), Error> {
+pub fn create_dir(path: &Path) -> Result<(), Error> {
     fs::create_dir_all(path).map_err(|source| Error::Write {
         path: path.to_path_buf(),
         source,
     })
 }
 
-pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub fn write(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         create_dir(parent)?;
     }

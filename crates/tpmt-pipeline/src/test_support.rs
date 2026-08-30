@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub(crate) struct Scratch(pub(crate) PathBuf);
+pub struct Scratch(pub(crate) PathBuf);
 
 impl Scratch {
     pub(crate) fn new(name: &str) -> Self {

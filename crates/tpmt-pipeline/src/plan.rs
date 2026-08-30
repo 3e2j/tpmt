@@ -35,7 +35,7 @@ use crate::manifest::{FILES, SYS};
 use crate::sidecars::arc::read_sidecar;
 
 /// One finished game file, ready to go on a disc or into a mod.
-pub(crate) struct Output {
+pub struct Output {
     /// What the disc knows it by: `sys/main.dol`, or somewhere under `files/`.
     pub(crate) path: String,
     pub(crate) size: u64,
@@ -43,7 +43,7 @@ pub(crate) struct Output {
 }
 
 /// Where a finished file's bytes come from.
-pub(crate) enum Source {
+pub enum Source {
     /// Untouched, so it is copied off the source disc exactly as it was.
     Disc { offset: u64 },
     /// A file somebody edited, which is already the bytes that go on the disc.
@@ -69,14 +69,14 @@ impl Output {
 
     /// Whether this is something a person changed, which is the whole of what a
     /// mod holds.
-    pub(crate) fn is_changed(&self) -> bool {
+    pub(crate) const fn is_changed(&self) -> bool {
         !matches!(self.source, Source::Disc { .. })
     }
 }
 
 /// What a build produces, in no particular order: a disc layout has an order of
 /// its own, and a mod has no use for one.
-pub(crate) struct Plan {
+pub struct Plan {
     /// Everything the disc will hold, directories included.
     pub(crate) items: Vec<Item>,
     /// Where each of those files comes from, in step with the items above.
@@ -84,11 +84,7 @@ pub(crate) struct Plan {
 }
 
 /// Works out what every file on the built disc is going to be.
-pub(crate) fn plan(
-    project: &Path,
-    disc: &Disc,
-    vanilla: &HashMap<String, String>,
-) -> Result<Plan, Error> {
+pub fn plan(project: &Path, disc: &Disc, vanilla: &HashMap<String, String>) -> Result<Plan, Error> {
     let (nodes, hashes) = hashed_leaves(project)?;
     let leaves: Vec<&String> = nodes.iter().flat_map(Node::leaves).collect();
 
@@ -265,10 +261,7 @@ pub enum ChangeKind {
 /// The same walk-and-hash `plan` opens with, without the disc: a status has
 /// nothing to read off it and nothing to repack, since all it needs is which
 /// files changed, not what a build would produce from them.
-pub(crate) fn changes(
-    project: &Path,
-    vanilla: &HashMap<String, String>,
-) -> Result<Vec<Change>, Error> {
+pub fn changes(project: &Path, vanilla: &HashMap<String, String>) -> Result<Vec<Change>, Error> {
     let (_, hashes) = hashed_leaves(project)?;
 
     let mut changes: Vec<Change> = hashes
@@ -276,11 +269,11 @@ pub(crate) fn changes(
         .filter_map(|(path, digest)| match vanilla.get(path.as_str()) {
             Some(vanilla_digest) if vanilla_digest == digest => None,
             Some(_) => Some(Change {
-                path: path.to_string(),
+                path: path.clone(),
                 kind: ChangeKind::Modified,
             }),
             None => Some(Change {
-                path: path.to_string(),
+                path: path.clone(),
                 kind: ChangeKind::Added,
             }),
         })
@@ -367,9 +360,10 @@ fn repack(project: &Path, path: &str, existed: bool) -> Result<Vec<u8>, Error> {
         ..Default::default()
     })
     .map_err(archive)?;
-    match sidecar.yaz0_compressed {
-        true => crate::compress(&built, Path::new(path)),
-        false => Ok(built),
+    if sidecar.yaz0_compressed {
+        crate::compress(&built, Path::new(path))
+    } else {
+        Ok(built)
     }
 }
 
@@ -429,17 +423,16 @@ fn read_member_bytes(
         // A member unpacked into a directory is a nested archive. One that is
         // still a file is bytes however it is named, since a `.arc` the archive
         // crate could not open was never taken apart.
-        let bytes = match inside.is_dir() {
-            true => repack(
+        let bytes = if inside.is_dir() {
+            repack(
                 project,
                 &at,
                 existed && named.contains(member.path.as_str()),
-            )?,
-            // The wrapper the sidecar recorded during unpack goes back on here.
-            false => match member.yaz0_compressed {
-                true => crate::compress(&read(&inside)?, Path::new(path))?,
-                false => read(&inside)?,
-            },
+            )?
+        } else if member.yaz0_compressed {
+            crate::compress(&read(&inside)?, Path::new(path))?
+        } else {
+            read(&inside)?
         };
         data.push(bytes);
     }
@@ -521,13 +514,15 @@ fn member_names(
             continue;
         }
         let path = format!("{at}/{name}");
-        let member = match inside.is_empty() {
-            true => name.clone(),
-            false => format!("{inside}/{name}"),
+        let member = if inside.is_empty() {
+            name.clone()
+        } else {
+            format!("{inside}/{name}")
         };
-        match directory && !crate::is_archive(&name) {
-            true => member_names(project, &path, &member, names)?,
-            false => names.push(member),
+        if directory && !crate::is_archive(&name) {
+            member_names(project, &path, &member, names)?;
+        } else {
+            names.push(member);
         }
     }
     Ok(())
@@ -539,12 +534,13 @@ fn member_names(
 /// Sidecars are gathered along with everything else. They are not members, but
 /// editing one changes what the archive rebuilds into just as editing a member
 /// does, so change detection has to see them.
-pub(crate) fn gather(project: &Path, at: &str, leaves: &mut Vec<String>) -> Result<(), Error> {
+pub fn gather(project: &Path, at: &str, leaves: &mut Vec<String>) -> Result<(), Error> {
     for (path, directory) in listing(&project.join(at))? {
         let path = format!("{at}/{path}");
-        match directory {
-            true => gather(project, &path, leaves)?,
-            false => leaves.push(path),
+        if directory {
+            gather(project, &path, leaves)?;
+        } else {
+            leaves.push(path);
         }
     }
     Ok(())
@@ -581,7 +577,7 @@ fn length(path: &Path) -> Result<u64, Error> {
 
 /// The disc file a project path belongs to: itself, or the archive holding it,
 /// since an archive is one file on the disc however deep it was unpacked.
-pub(crate) fn owner(path: &str) -> &str {
+pub fn owner(path: &str) -> &str {
     let mut at = 0;
     for part in path.split('/') {
         at += part.len();
@@ -595,7 +591,7 @@ pub(crate) fn owner(path: &str) -> &str {
 
 /// What change detection compares. Taken at unpack over the bytes as they were
 /// written into the project, and again at build over what is there now.
-pub(crate) fn hash(bytes: &[u8]) -> String {
+pub fn hash(bytes: &[u8]) -> String {
     let mut hash = Sha1::new();
     hash.update(bytes);
     format!("{:x}", hash.finalize())

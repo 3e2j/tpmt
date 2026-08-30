@@ -39,6 +39,9 @@ panic = "deny"
 panic_in_result_fn = "deny"
 exit = "deny"
 unchecked_time_subtraction = "deny"
+# Widening casts (u8 as u32, etc.) can't lose information. Truncating casts
+# stay denied via cast_possible_truncation/cast_possible_wrap.
+cast_lossless = "allow"
 # Warn on incompletes
 unimplemented = "warn"
 todo = "warn"

@@ -48,7 +48,7 @@
 //!   walked in each direction: what unpack writes out is exactly what build
 //!   folds back in, so nothing about assembling the game lives anywhere else.
 //!
-//! Paths mirror the disc, and decoded files chain extensions (zel_00.bmg.json).
+//! Paths mirror the disc, and decoded files chain extensions (`zel_00.bmg.json`).
 //!
 //! # External quirks to know
 //!
@@ -151,6 +151,11 @@ pub(crate) struct FileHash {
 /// Checks only that `.tpmt` exists as a directory, not what is inside it,
 /// since every project has had one since `unpack` first ran, whether or not
 /// this build has started writing `.tpmt/tpmt.toml` yet.
+///
+/// # Errors
+///
+/// - [`Error::Read`]
+/// - [`Error::NoProjectFound`]
 pub fn discover(start: &Path) -> Result<PathBuf, Error> {
     let mut at = start.canonicalize().map_err(|source| Error::Read {
         path: start.to_path_buf(),
@@ -170,6 +175,7 @@ pub fn discover(start: &Path) -> Result<PathBuf, Error> {
 /// Whether `dir` is itself a project root, judged the same way `discover`
 /// recognises one while walking upward: by the store directory every project
 /// has and nothing else creates.
+#[must_use]
 pub fn is_project(dir: &Path) -> bool {
     dir.join(store::STORE).is_dir()
 }
@@ -177,6 +183,13 @@ pub fn is_project(dir: &Path) -> bool {
 /// Unpacks a disc image into a project directory, creating it if it does not
 /// exist. An existing project is replaced only if `overwrite` is set;
 /// anything else already there is refused.
+///
+/// # Errors
+///
+/// - [`Error::ForeignDirectory`]
+/// - [`Error::ProjectExists`]
+/// - [`Error::UnsupportedDisc`], or bubbled from [`Disc::open`]
+/// - [`Error::Read`] / [`Error::Write`]
 pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> {
     // Checked before the disc is even opened: whether this directory is safe
     // to write into does not depend on what is in the ISO, so there is no
@@ -237,6 +250,12 @@ pub fn unpack(iso: &Path, project: &Path, overwrite: bool) -> Result<(), Error> 
 /// Nothing here touches the source disc: a status only compares the
 /// project's own files against the hashes taken at unpack, so it still works
 /// with the disc missing or moved.
+///
+/// # Errors
+///
+/// - [`Error::NotAProject`]
+/// - [`Error::UnreadableProject`]
+/// - [`Error::CorruptStore`]
 pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
     Manifest::read(project)?;
     let vanilla = Store::new(project).hashes()?;
@@ -249,6 +268,12 @@ pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
 /// directory (every vanilla leaf under it put back together). Neither has to
 /// exist on disk right now: a file already deleted from the project is as
 /// revertable as one somebody edited.
+///
+/// # Errors
+///
+/// - [`Error::OutsideProject`]
+/// - [`Error::NotTracked`]
+/// - anything bubbled from reading the project's manifest or store
 pub fn revert_plan(project: &Path, target: &Path) -> Result<RevertPlan, Error> {
     let path = revert::resolve(project, target)?;
     revert::plan(project, &path)
@@ -259,6 +284,10 @@ pub fn revert_plan(project: &Path, target: &Path) -> Result<RevertPlan, Error> {
 /// `restore_sidecar_entry` only matters when the plan found one: it decides
 /// whether the archive member being restored also gets its own entry in the
 /// sidecar put back, without touching any other member's.
+///
+/// # Errors
+///
+/// - [`Error::Read`] / [`Error::Write`] / [`Error::NotOnDisc`]
 pub fn revert(project: &Path, plan: &RevertPlan, restore_sidecar_entry: bool) -> Result<(), Error> {
     revert::apply(project, plan, restore_sidecar_entry)
 }
@@ -268,6 +297,13 @@ pub fn revert(project: &Path, plan: &RevertPlan, restore_sidecar_entry: bool) ->
 /// Nothing but game files, at the paths they go back to. Anything else in here
 /// would be handed to whatever applies this as though it were a file the disc
 /// holds, so a mod says what it has to say by what it contains and where.
+///
+/// # Errors
+///
+/// - [`Error::SourceMissing`] / [`Error::SourceChanged`]
+/// - anything bubbled from reading the source disc, writing the output, or
+///   re-encoding a changed file
+///   ([`Error::Compress`]/[`Error::Archive`]/[`Error::Bmg`])
 pub fn build(project: &Path, out: Option<&Path>) -> Result<PathBuf, Error> {
     let (metadata, disc, vanilla) = open(project)?;
     let plan = plan::plan(project, &disc, &vanilla)?;
@@ -320,6 +356,10 @@ fn preamble(metadata: &Metadata, disc: &Disc, at: &std::path::Path) -> Result<()
 /// The same files a mod would hold, plus every one nobody touched, laid out as
 /// a disc. Written straight through in one pass, since the layout hands them
 /// over in the order they go on.
+///
+/// # Errors
+///
+/// Same as [`build`], plus [`Error::Disc`] (bubbled from [`Layout::plan`]).
 pub fn image(project: &Path, out: Option<&Path>) -> Result<PathBuf, Error> {
     let (metadata, disc, vanilla) = open(project)?;
     let plan = plan::plan(project, &disc, &vanilla)?;
@@ -383,10 +423,7 @@ fn open(
 /// A named path is taken whole, including the last component, so `-o test.iso`
 /// produces a test.iso rather than a test.iso holding something else.
 fn target(project: &Path, out: Option<&Path>, name: String) -> PathBuf {
-    match out {
-        Some(out) => out.to_path_buf(),
-        None => project.join(OUT).join(name),
-    }
+    out.map_or_else(|| project.join(OUT).join(name), Path::to_path_buf)
 }
 
 /// What a build names its output after, which is the print rather than the
@@ -397,6 +434,7 @@ fn print(metadata: &Metadata) -> String {
 
 /// Which format crate a file's bytes belong to. Nothing outside this
 /// type refers to a format crate by name.
+#[derive(Clone, Copy)]
 enum Format {
     /// A RARC archive. Not a file on its own: unpacked into a directory of
     /// its own members rather than parsed and written through.
@@ -422,9 +460,9 @@ impl Format {
     /// `None` means there is nothing to convert: the bytes go through
     /// unchanged. `Some` carries the editable bytes and the extension a
     /// project chains onto the file's own to hold them.
-    fn decode(&self, bytes: &[u8], path: &Path) -> Result<Option<(&'static str, Vec<u8>)>, Error> {
+    fn decode(self, bytes: &[u8], path: &Path) -> Result<Option<(&'static str, Vec<u8>)>, Error> {
         match self {
-            Format::Bmg => match tpmt_bmg::unpack(bytes) {
+            Self::Bmg => match tpmt_bmg::unpack(bytes) {
                 Ok(bmg) => Ok(Some((
                     tpmt_bmg::editable::json::EXTENSION,
                     tpmt_bmg::editable::json::encode(&bmg),
@@ -435,8 +473,8 @@ impl Format {
                     source,
                 }),
             },
-            Format::Archive => unreachable!("archives are unpacked before reaching this"),
-            Format::Other => Ok(None),
+            Self::Archive => unreachable!("archives are unpacked before reaching this"),
+            Self::Other => Ok(None),
         }
     }
 }
@@ -517,9 +555,10 @@ fn unpack_archive(
     hashes: &mut Vec<FileHash>,
 ) -> Result<(), Error> {
     let yaz0_compressed = tpmt_compress::is_yaz0(bytes);
-    let contents = match yaz0_compressed {
-        true => Cow::Owned(decompress(bytes, path)?),
-        false => Cow::Borrowed(bytes),
+    let contents = if yaz0_compressed {
+        Cow::Owned(decompress(bytes, path)?)
+    } else {
+        Cow::Borrowed(bytes)
     };
 
     let unpacked = match tpmt_arc::unpack(&contents) {
@@ -557,13 +596,11 @@ fn unpack_archive(
         let mut yaz0_compressed = false;
         let data = match format {
             Format::Archive => Cow::Borrowed(file.data),
-            _ => {
-                yaz0_compressed = tpmt_compress::is_yaz0(file.data);
-                match yaz0_compressed {
-                    true => Cow::Owned(decompress(file.data, &member)?),
-                    false => Cow::Borrowed(file.data),
-                }
+            _ if tpmt_compress::is_yaz0(file.data) => {
+                yaz0_compressed = true;
+                Cow::Owned(decompress(file.data, &member)?)
             }
+            _ => Cow::Borrowed(file.data),
         };
         // Handle unpack for nested archive or files
         unpack_format(format, &data, &member, &inside, hashes)?;

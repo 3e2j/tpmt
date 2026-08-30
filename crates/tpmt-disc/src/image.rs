@@ -23,7 +23,7 @@ enum Layout {
 /// has no such call: its positional read moves the position as a side effect,
 /// so concurrent reads would land on top of each other and a lock is the price
 /// of the same guarantee.
-pub(crate) struct Handle {
+pub struct Handle {
     /// Length of the image, which is not the length of the file when the file
     /// is a container.
     pub(crate) len: u64,
@@ -52,7 +52,7 @@ impl Handle {
     }
 
     #[cfg(unix)]
-    fn raw(file: File, len: u64) -> Self {
+    const fn raw(file: File, len: u64) -> Self {
         Self {
             len,
             layout: Layout::Raw,
@@ -106,7 +106,7 @@ impl Handle {
     }
 }
 
-pub(crate) fn read_at(handle: &Handle, offset: u64, len: u64) -> Result<Vec<u8>> {
+pub fn read_at(handle: &Handle, offset: u64, len: u64) -> Result<Vec<u8>> {
     // Checked before the buffer is allocated, not by the read itself. Lengths
     // come out of the file table, and a corrupt one asks for up to 4 GB before
     // the read that would have refused it ever runs.

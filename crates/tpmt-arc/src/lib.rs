@@ -235,9 +235,10 @@ mod entry {
 /// Worked out the same way at both ends, so that [`unpack`] can tell an archive
 /// storing this from one storing something else.
 fn next_free_id(entry_count: usize, highest: Option<u16>, synced: bool) -> Result<u16> {
-    match synced {
-        true => u16::try_from(entry_count),
-        false => u16::try_from(highest.map_or(0, |id| u32::from(id) + 1)),
+    if synced {
+        u16::try_from(entry_count)
+    } else {
+        u16::try_from(highest.map_or(0, |id| u32::from(id) + 1))
     }
     .map_err(|_| Error::Oversized)
 }

@@ -22,7 +22,7 @@ use crate::fs::{read, write};
 use crate::{Error, FileHash};
 
 /// Everything generated about a project, out of the way of what is edited.
-pub(crate) const STORE: &str = ".tpmt";
+pub const STORE: &str = ".tpmt";
 const SOURCE_FILE: &str = "source.toml";
 const HASHES_FILE: &str = "hashes";
 
@@ -32,14 +32,14 @@ const HASHES_FILE: &str = "hashes";
 /// bytes off the original disc, so the original disc has to be findable and has
 /// to still be the one the project was unpacked from.
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Source {
+pub struct Source {
     pub(crate) path: PathBuf,
     /// Over the image, so a container and a raw dump of the same disc agree.
     pub(crate) sha1: String,
 }
 
 /// One project's store.
-pub(crate) struct Store {
+pub struct Store {
     root: PathBuf,
 }
 

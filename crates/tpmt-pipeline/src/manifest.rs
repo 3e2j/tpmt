@@ -13,12 +13,12 @@ use tpmt_disc::{Bi2, Boot, Metadata};
 use crate::Error;
 use crate::fs::{read, write};
 
-pub(crate) const PROJECT_FILE: &str = "tpmt.toml";
+pub const PROJECT_FILE: &str = "tpmt.toml";
 /// The game's own files, and the two preamble pieces, mirroring the disc.
-pub(crate) const FILES: &str = "files";
-pub(crate) const SYS: &str = "sys";
+pub const FILES: &str = "files";
+pub const SYS: &str = "sys";
 /// Where finished mods and images land, which is somewhere a person looks.
-pub(crate) const OUT: &str = "out";
+pub const OUT: &str = "out";
 
 /// The manifest: what a build needs that is not a file in the project.
 ///
@@ -26,7 +26,7 @@ pub(crate) const OUT: &str = "out";
 /// they are kept as their values instead, which also puts the title and the
 /// region somewhere a person can edit them.
 #[derive(Serialize, Deserialize)]
-pub(crate) struct Manifest {
+pub struct Manifest {
     boot: Boot,
     bi2: Bi2,
 }

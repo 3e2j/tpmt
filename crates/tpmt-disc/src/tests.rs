@@ -239,34 +239,34 @@ fn rejects_a_file_table_that_lies() {
     /// One edit that turns a good disc into a broken one.
     type Corruption = fn(&mut Vec<u8>);
 
+    // Where `a.bin` sits in the name pool, for the cases that rewrite it.
+    const NAME: usize = (FST_OFFSET + 72 + NAME_A as u64) as usize;
+
     let corrupt = |edit: Corruption| {
         let mut data = disc();
         edit(&mut data);
         open(&data).and_then(|disc| disc.entries()).unwrap_err()
     };
 
-    // Where `a.bin` sits in the name pool, for the cases that rewrite it.
-    const NAME: usize = (FST_OFFSET + 72 + NAME_A as u64) as usize;
-
     let cases: [(&str, Corruption); 6] = [
         // The root says how long the table is, so one that is not a directory
         // leaves the walk unbounded.
         ("the root is not a directory", |data| {
-            put32(data, FST_OFFSET, 0)
+            put32(data, FST_OFFSET, 0);
         }),
         // Ending at or before the entry announcing it, and past the table.
         ("a subtree that ends behind itself", |data| {
-            put_fst(data, 2, true, NAME_SUB, 0, 2)
+            put_fst(data, 2, true, NAME_SUB, 0, 2);
         }),
         ("a subtree that outlives the table", |data| {
-            put_fst(data, 2, true, NAME_SUB, 0, ENTRY_COUNT + 1)
+            put_fst(data, 2, true, NAME_SUB, 0, ENTRY_COUNT + 1);
         }),
         // Names that are a path rather than one component of one.
         ("a name that climbs out", |data| {
-            data[NAME..][..5].copy_from_slice(b"../x\0")
+            data[NAME..][..5].copy_from_slice(b"../x\0");
         }),
         ("a name that is the directory", |data| {
-            data[NAME..][..2].copy_from_slice(b".\0")
+            data[NAME..][..2].copy_from_slice(b".\0");
         }),
         // A lead byte with nothing that can follow it.
         ("a name that is not Shift-JIS", |data| data[NAME] = 0x93),

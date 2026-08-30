@@ -19,49 +19,49 @@ use crate::{Disc, Entry, Error, Result};
 
 // Boot header. The magic is what makes this a GameCube disc rather than
 // anything else that happens to be 1.4 GB.
-pub(crate) const MAGIC: u32 = 0xC233_9F3D;
-pub(crate) const MAGIC_OFFSET: usize = 0x1C;
-pub(crate) const WII_MAGIC: u32 = 0x5D1C_9EA3;
-pub(crate) const WII_MAGIC_OFFSET: usize = 0x18;
-pub(crate) const BOOT_LEN: u64 = 0x440;
+pub const MAGIC: u32 = 0xC233_9F3D;
+pub const MAGIC_OFFSET: usize = 0x1C;
+pub const WII_MAGIC: u32 = 0x5D1C_9EA3;
+pub const WII_MAGIC_OFFSET: usize = 0x18;
+pub const BOOT_LEN: u64 = 0x440;
 
-pub(crate) const ID_OFFSET: usize = 0x00;
-pub(crate) const ID_LEN: usize = 4;
-pub(crate) const MAKER_OFFSET: usize = 0x04;
-pub(crate) const MAKER_LEN: usize = 2;
-pub(crate) const DISC_NUMBER_OFFSET: usize = 0x06;
-pub(crate) const REVISION_OFFSET: usize = 0x07;
-pub(crate) const AUDIO_STREAMING_OFFSET: usize = 0x08;
-pub(crate) const STREAM_BUFFER_SIZE_OFFSET: usize = 0x09;
-pub(crate) const TITLE_OFFSET: usize = 0x20;
-pub(crate) const TITLE_LEN: usize = 0x40;
+pub const ID_OFFSET: usize = 0x00;
+pub const ID_LEN: usize = 4;
+pub const MAKER_OFFSET: usize = 0x04;
+pub const MAKER_LEN: usize = 2;
+pub const DISC_NUMBER_OFFSET: usize = 0x06;
+pub const REVISION_OFFSET: usize = 0x07;
+pub const AUDIO_STREAMING_OFFSET: usize = 0x08;
+pub const STREAM_BUFFER_SIZE_OFFSET: usize = 0x09;
+pub const TITLE_OFFSET: usize = 0x20;
+pub const TITLE_LEN: usize = 0x40;
 /// Where the values a project keeps stop and the derived numbers start.
 const AUTHORED_LEN: usize = TITLE_OFFSET + TITLE_LEN;
 
 // The layout, all of it worked out again by a build rather than kept. `DVDBB2`
 // in the SDK covers the six from 0x420 on.
-pub(crate) const DEBUG_MONITOR_FIELD: usize = 0x400;
-pub(crate) const DEBUG_MONITOR_ADDRESS_FIELD: usize = 0x404;
-pub(crate) const DOL_OFFSET_FIELD: usize = 0x420;
-pub(crate) const FST_OFFSET_FIELD: usize = 0x424;
-pub(crate) const FST_SIZE_FIELD: usize = 0x428;
-pub(crate) const FST_MAX_SIZE_FIELD: usize = 0x42C;
-pub(crate) const FST_ADDRESS_FIELD: usize = 0x430;
-pub(crate) const USER_POSITION_FIELD: usize = 0x434;
-pub(crate) const USER_LENGTH_FIELD: usize = 0x438;
+pub const DEBUG_MONITOR_FIELD: usize = 0x400;
+pub const DEBUG_MONITOR_ADDRESS_FIELD: usize = 0x404;
+pub const DOL_OFFSET_FIELD: usize = 0x420;
+pub const FST_OFFSET_FIELD: usize = 0x424;
+pub const FST_SIZE_FIELD: usize = 0x428;
+pub const FST_MAX_SIZE_FIELD: usize = 0x42C;
+pub const FST_ADDRESS_FIELD: usize = 0x430;
+pub const USER_POSITION_FIELD: usize = 0x434;
+pub const USER_LENGTH_FIELD: usize = 0x438;
 
 /// Where the debug monitor would be loaded. Nothing on a retail disc reads it.
-pub(crate) const DEBUG_MONITOR_ADDRESS: u32 = 0x8028_0060;
+pub const DEBUG_MONITOR_ADDRESS: u32 = 0x8028_0060;
 /// The file table is loaded as high as it fits under here, and the arena ends
 /// where it starts.
 const FST_TOP: u32 = 0x8040_0000;
-/// The end of a GameCube disc's user area.
-pub(crate) const USER_AREA_END: u32 = 0x5705_8000;
+/// The end of a `GameCube` disc's user area.
+pub const USER_AREA_END: u32 = 0x5705_8000;
 /// User data starts on one of these, past the file table.
 const USER_ALIGN: u32 = 0x8000;
 /// The executable and the file table each start on one of these, past whatever
 /// the layout put in front of them.
-pub(crate) const PREAMBLE_ALIGN: u64 = 0x100;
+pub const PREAMBLE_ALIGN: u64 = 0x100;
 
 /// The stretches of the boot header that hold nothing. Everything outside
 /// them is either kept or checked, so a disc with bytes in here is one this
@@ -70,20 +70,20 @@ const BOOT_RESERVED: [(usize, usize); 4] =
     [(0x0A, 0x1C), (0x60, 0x400), (0x408, 0x420), (0x43C, 0x440)];
 
 // Disc metadata, then the apploader, at fixed positions after the boot header.
-pub(crate) const BI2_OFFSET: u64 = 0x440;
-pub(crate) const BI2_LEN: u64 = 0x2000;
-pub(crate) const APPLOADER_OFFSET: u64 = 0x2440;
-pub(crate) const APPLOADER_HEADER_LEN: u64 = 0x20;
-pub(crate) const APPLOADER_SIZE_FIELD: usize = 0x14;
-pub(crate) const APPLOADER_TRAILER_FIELD: usize = 0x18;
+pub const BI2_OFFSET: u64 = 0x440;
+pub const BI2_LEN: u64 = 0x2000;
+pub const APPLOADER_OFFSET: u64 = 0x2440;
+pub const APPLOADER_HEADER_LEN: u64 = 0x20;
+pub const APPLOADER_SIZE_FIELD: usize = 0x14;
+pub const APPLOADER_TRAILER_FIELD: usize = 0x18;
 
-pub(crate) const BI2_SIMULATED_MEMORY_SIZE: usize = 0x04;
-pub(crate) const BI2_DEBUG_FLAG: usize = 0x0C;
-pub(crate) const BI2_COUNTRY: usize = 0x18;
-pub(crate) const BI2_UNKNOWN_1C: usize = 0x1C;
-pub(crate) const BI2_UNKNOWN_20: usize = 0x20;
+pub const BI2_SIMULATED_MEMORY_SIZE: usize = 0x04;
+pub const BI2_DEBUG_FLAG: usize = 0x0C;
+pub const BI2_COUNTRY: usize = 0x18;
+pub const BI2_UNKNOWN_1C: usize = 0x1C;
+pub const BI2_UNKNOWN_20: usize = 0x20;
 /// `__PADSpec`, which `OSInit` reads straight out of here.
-pub(crate) const BI2_PAD_SPEC: usize = 0x24;
+pub const BI2_PAD_SPEC: usize = 0x24;
 
 /// Everything bi2 does not use: the debug monitor size, the argument offset,
 /// the two track fields, and then eight kilobytes of nothing.
@@ -96,8 +96,8 @@ const BI2_RESERVED: [(usize, usize); 4] = [
 
 /// Where the two preamble files land in a project. A build looks for them by
 /// these names, so they are spelled once.
-pub(crate) const APPLOADER_PATH: &str = "sys/apploader.img";
-pub(crate) const DOL_PATH: &str = "sys/main.dol";
+pub const APPLOADER_PATH: &str = "sys/apploader.img";
+pub const DOL_PATH: &str = "sys/main.dol";
 /// The two preamble pieces, which are not files a project holds: they are kept
 /// as their values and built again. Named here because a mod that carries one
 /// has to call it what a disc calls it.
@@ -106,10 +106,10 @@ pub const BI2_PATH: &str = "sys/bi2.bin";
 
 // Executable. Its length is not stored anywhere, so it is whatever the furthest
 // section reaches.
-pub(crate) const DOL_HEADER_LEN: u64 = 0x100;
-pub(crate) const DOL_SECTIONS: usize = 18;
-pub(crate) const DOL_SECTION_OFFSETS: usize = 0x00;
-pub(crate) const DOL_SECTION_SIZES: usize = 0x90;
+pub const DOL_HEADER_LEN: u64 = 0x100;
+pub const DOL_SECTIONS: usize = 18;
+pub const DOL_SECTION_OFFSETS: usize = 0x00;
+pub const DOL_SECTION_SIZES: usize = 0x90;
 
 /// What the preamble records that a build cannot work out for itself.
 ///
@@ -159,7 +159,7 @@ pub struct Bi2 {
 ///
 /// Called before the rest of the preamble is read, so a file that is not a disc
 /// says so rather than failing on a short read somewhere inside it.
-pub(crate) fn identify(boot: &[u8]) -> Result<()> {
+pub fn identify(boot: &[u8]) -> Result<()> {
     let reader = Reader::new(boot);
     if reader.u32_at(MAGIC_OFFSET)? == MAGIC {
         return Ok(());
@@ -167,14 +167,15 @@ pub(crate) fn identify(boot: &[u8]) -> Result<()> {
 
     // Both magics sit in the same header and only one is ever set, so a Wii
     // disc can be declined by name rather than as a mystery.
-    match reader.u32_at(WII_MAGIC_OFFSET)? == WII_MAGIC {
-        true => Err(Error::WiiDisc),
-        false => Err(Error::NotADisc),
+    if reader.u32_at(WII_MAGIC_OFFSET)? == WII_MAGIC {
+        Err(Error::WiiDisc)
+    } else {
+        Err(Error::NotADisc)
     }
 }
 
 /// Reads the boot header, having already been told it is one by `identify`.
-pub(crate) fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
+pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
     let reader = Reader::new(bytes);
 
     for (from, to) in BOOT_RESERVED {
@@ -265,12 +266,12 @@ fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
 
 /// The file table is loaded as high as it goes, on a 32 byte boundary because
 /// `DVDChangeDisk` asserts on that.
-fn fst_address(fst_len: u32) -> u32 {
+const fn fst_address(fst_len: u32) -> u32 {
     FST_TOP.saturating_sub(fst_len) & !31
 }
 
 /// User data starts on the first boundary past the file table.
-pub(crate) fn user_position(fst_offset: u32, fst_len: u32) -> u32 {
+pub fn user_position(fst_offset: u32, fst_len: u32) -> u32 {
     fst_offset
         .saturating_add(fst_len)
         .checked_next_multiple_of(USER_ALIGN)
@@ -279,7 +280,7 @@ pub(crate) fn user_position(fst_offset: u32, fst_len: u32) -> u32 {
 
 /// Reads the disc metadata, which is six fields and then eight kilobytes of
 /// nothing.
-pub(crate) fn bi2(bytes: &[u8]) -> Result<Bi2> {
+pub fn bi2(bytes: &[u8]) -> Result<Bi2> {
     let reader = Reader::new(bytes);
 
     for (from, to) in BI2_RESERVED {
@@ -305,7 +306,7 @@ pub(crate) fn bi2(bytes: &[u8]) -> Result<Bi2> {
 }
 
 /// The four positions a layout works out, which the boot header restates.
-pub(crate) struct BootLayout {
+pub struct BootLayout {
     pub(crate) apploader_len: u32,
     pub(crate) dol_offset: u32,
     pub(crate) fst_offset: u32,
@@ -317,7 +318,7 @@ pub(crate) struct BootLayout {
 /// Seven kept values and the magic. Everything else is a run of zeros, or a
 /// number that follows from where the layout put the three things the header
 /// points at.
-pub(crate) fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
+pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
     let &BootLayout {
         apploader_len,
         dol_offset,
@@ -357,6 +358,13 @@ pub(crate) fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
 ///
 /// Which also makes this its own comparison: what comes back is the original
 /// unless a value somebody edited is in it.
+///
+/// # Errors
+///
+/// - [`Error::Unwritable`] if `original` is not `0x440` bytes, or an edited
+///   field doesn't fit its slot (a game id or maker code of the wrong
+///   length, a title that isn't Shift-JIS, or one that overruns its 64 byte
+///   field).
 pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
     if original.len() != BOOT_LEN as usize {
         return Err(Error::Unwritable("a boot header is 0x440 bytes"));
@@ -403,6 +411,7 @@ fn authored(out: &mut Writer, boot: &Boot) -> Result<()> {
 }
 
 /// Writes the disc metadata back out: six fields in eight kilobytes of nothing.
+#[must_use]
 pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
     let mut out = Writer::with_capacity(BI2_LEN as usize);
 
@@ -430,17 +439,19 @@ fn pad_to(out: &mut Writer, offset: usize) {
 /// requires it to still be the width of its field.
 fn exactly(text: &str, len: usize, what: &'static str) -> Result<Vec<u8>> {
     let bytes = encode(text, what)?;
-    match bytes.len() == len {
-        true => Ok(bytes),
-        false => Err(Error::Unwritable(what)),
+    if bytes.len() == len {
+        Ok(bytes)
+    } else {
+        Err(Error::Unwritable(what))
     }
 }
 
 fn encode(text: &str, what: &'static str) -> Result<Vec<u8>> {
     let (bytes, _, unmappable) = encoding_rs::SHIFT_JIS.encode(text);
-    match unmappable {
-        true => Err(Error::Unwritable(what)),
-        false => Ok(bytes.into_owned()),
+    if unmappable {
+        Err(Error::Unwritable(what))
+    } else {
+        Ok(bytes.into_owned())
     }
 }
 
@@ -448,14 +459,15 @@ fn encode(text: &str, what: &'static str) -> Result<Vec<u8>> {
 /// table and the archives.
 fn text(raw: &[u8], what: &'static str) -> Result<String> {
     let (text, _, malformed) = encoding_rs::SHIFT_JIS.decode(raw);
-    match malformed {
-        true => Err(Error::CorruptHeader(what)),
-        false => Ok(text.into_owned()),
+    if malformed {
+        Err(Error::CorruptHeader(what))
+    } else {
+        Ok(text.into_owned())
     }
 }
 
 /// Where the file table sits, out of the boot header.
-pub(crate) fn fst_range(boot: &[u8]) -> Result<(u64, u64)> {
+pub fn fst_range(boot: &[u8]) -> Result<(u64, u64)> {
     let reader = Reader::new(boot);
     Ok((
         reader.u32_at(FST_OFFSET_FIELD)? as u64,
@@ -465,7 +477,7 @@ pub(crate) fn fst_range(boot: &[u8]) -> Result<(u64, u64)> {
 
 /// The apploader states its own length in two parts, neither of which counts
 /// its header.
-pub(crate) fn apploader_len(header: &[u8]) -> Result<u64> {
+pub fn apploader_len(header: &[u8]) -> Result<u64> {
     let reader = Reader::new(header);
     let size = reader.u32_at(APPLOADER_SIZE_FIELD)? as u64;
     let trailer = reader.u32_at(APPLOADER_TRAILER_FIELD)? as u64;
@@ -477,7 +489,7 @@ pub(crate) fn apploader_len(header: &[u8]) -> Result<u64> {
 ///
 /// The other three are not files. The boot header and the disc metadata are a
 /// few values each, kept as `Metadata`. `fst` derives the file table.
-pub(crate) fn entries(disc: &Disc) -> Result<Vec<Entry>> {
+pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
     let boot = disc.read(0, BOOT_LEN)?;
     let dol_offset = Reader::new(&boot).u32_at(DOL_OFFSET_FIELD)? as u64;
     let (fst_offset, _) = fst_range(&boot)?;

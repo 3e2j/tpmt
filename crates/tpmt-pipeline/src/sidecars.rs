@@ -5,7 +5,7 @@
 //! editable form is. What's here per format is only what a format crate has
 //! no way to know: where it sits in a project, and what a missing one means.
 
-pub(crate) mod arc {
+pub mod arc {
     //! Where an archive's sidecar sits in a project, and what a missing one
     //! means. Reading and writing it is [`tpmt_arc::editable::sidecar::Sidecar`]'s own.
 
@@ -25,7 +25,7 @@ pub(crate) mod arc {
     /// loaded into and the wrapper the archive arrived under. Only a caller
     /// that knows the disc never had this archive can say the missing file is
     /// nothing to worry about.
-    pub(crate) fn read_sidecar(directory: &Path) -> Result<Sidecar, Error> {
+    pub fn read_sidecar(directory: &Path) -> Result<Sidecar, Error> {
         let path = directory.join(SIDECAR);
         if !path.exists() {
             return Err(Error::LostSidecar(path));
@@ -38,7 +38,7 @@ pub(crate) mod arc {
     /// Writes the sidecar, giving back the bytes it wrote, since change
     /// detection hashes what went into the project rather than reading it
     /// back.
-    pub(crate) fn write_sidecar(sidecar: &Sidecar, directory: &Path) -> Result<Vec<u8>, Error> {
+    pub fn write_sidecar(sidecar: &Sidecar, directory: &Path) -> Result<Vec<u8>, Error> {
         let text = sidecar.to_toml();
         write(&directory.join(SIDECAR), text.as_bytes())?;
         Ok(text.into_bytes())

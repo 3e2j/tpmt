@@ -92,7 +92,7 @@ mod mid1_header {
 /// All three sections are read together because one message is spread over all
 /// of them: its record in INF1, the text that record points at in DAT1, and
 /// the id sitting at the same position in MID1.
-pub(crate) fn read_messages(
+pub fn read_messages(
     inf1: &[u8],
     dat1: &[u8],
     mid1: Option<&[u8]>,
