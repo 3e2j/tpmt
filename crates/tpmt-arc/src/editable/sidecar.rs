@@ -106,7 +106,7 @@ impl Member {
     /// directory themselves. Main memory is where a file with nothing saying
     /// otherwise belongs, and an id it was never stored under is one the
     /// rebuild works out.
-    pub fn new(path: String) -> Self {
+    pub const fn new(path: String) -> Self {
         Self {
             path,
             preload: Preload::Mram,
@@ -117,7 +117,7 @@ impl Member {
 }
 
 impl Sidecar {
-    pub fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
+    pub const fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
         Self {
             root,
             yaz0_compressed,

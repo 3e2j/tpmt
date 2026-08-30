@@ -145,11 +145,11 @@ impl Layout {
     }
 
     /// How long the image comes out.
-    pub fn len(&self) -> u64 {
+    pub const fn len(&self) -> u64 {
         self.len
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 

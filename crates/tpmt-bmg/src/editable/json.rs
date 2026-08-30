@@ -150,7 +150,7 @@ pub fn from_json(value: &Value) -> Result<Bmg> {
     })
 }
 
-fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
+const fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
     JsonMid1 {
         ordered: mid1.ordered,
         form: mid1.form,
@@ -158,7 +158,7 @@ fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
     }
 }
 
-fn mid1_from_json(json: JsonMid1) -> Mid1Header {
+const fn mid1_from_json(json: JsonMid1) -> Mid1Header {
     Mid1Header {
         ordered: json.ordered,
         form: json.form,

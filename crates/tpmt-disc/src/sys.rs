@@ -265,7 +265,7 @@ fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
 
 /// The file table is loaded as high as it goes, on a 32 byte boundary because
 /// `DVDChangeDisk` asserts on that.
-fn fst_address(fst_len: u32) -> u32 {
+const fn fst_address(fst_len: u32) -> u32 {
     FST_TOP.saturating_sub(fst_len) & !31
 }
 

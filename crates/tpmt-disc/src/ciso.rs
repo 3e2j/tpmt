@@ -72,7 +72,7 @@ impl Map {
     }
 
     /// The length of the image inside, holes included.
-    pub(crate) fn image_len(&self) -> u64 {
+    pub(crate) const fn image_len(&self) -> u64 {
         self.blocks.len() as u64 * self.block_size
     }
 

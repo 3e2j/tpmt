@@ -35,28 +35,28 @@ pub struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     #[must_use]
-    pub fn new(data: &'a [u8]) -> Self {
+    pub const fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
     #[must_use]
-    pub fn pos(&self) -> usize {
+    pub const fn pos(&self) -> usize {
         self.pos
     }
 
     /// Moves the cursor. Landing past the end is not an error until something
     /// is actually read from there.
-    pub fn seek(&mut self, pos: usize) {
+    pub const fn seek(&mut self, pos: usize) {
         self.pos = pos;
     }
 
@@ -213,12 +213,12 @@ impl Writer {
     /// How much has been written, which is also the position the next append
     /// lands at. Reserving a field to backpatch means keeping this first.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.data.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 

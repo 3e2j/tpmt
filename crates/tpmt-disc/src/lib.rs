@@ -213,7 +213,7 @@ impl Disc {
     }
 
     /// What the preamble records that a build cannot work out again.
-    pub fn metadata(&self) -> &Metadata {
+    pub const fn metadata(&self) -> &Metadata {
         &self.metadata
     }
 
@@ -232,11 +232,11 @@ impl Disc {
 
     /// The length of the image, which is not the length of the file it came out
     /// of when that file is a container.
-    pub fn len(&self) -> u64 {
+    pub const fn len(&self) -> u64 {
         self.handle.len
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.handle.len == 0
     }
 

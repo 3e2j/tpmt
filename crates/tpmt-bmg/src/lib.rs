@@ -99,7 +99,7 @@ pub enum Encoding {
 impl Encoding {
     /// Reads the header byte. An unknown one is Shift-JIS, the same guess the
     /// game makes rather than a reason to refuse the file.
-    pub fn from_byte(byte: u8) -> Encoding {
+    pub const fn from_byte(byte: u8) -> Encoding {
         match byte {
             0x00 => Encoding::Legacy,
             0x01 => Encoding::Windows1252,
@@ -109,12 +109,12 @@ impl Encoding {
         }
     }
 
-    pub fn byte(self) -> u8 {
+    pub const fn byte(self) -> u8 {
         self as u8
     }
 
     /// The name the editable form spells it as.
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Encoding::Legacy => "legacy-bmg",
             Encoding::Windows1252 => "windows-1252",

@@ -52,7 +52,7 @@ impl Handle {
     }
 
     #[cfg(unix)]
-    fn raw(file: File, len: u64) -> Self {
+    const fn raw(file: File, len: u64) -> Self {
         Self {
             len,
             layout: Layout::Raw,

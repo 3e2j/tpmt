@@ -53,7 +53,7 @@ impl LazyMatch {
         slack: 0,
     };
 
-    fn pick(extensive: bool) -> Self {
+    const fn pick(extensive: bool) -> Self {
         if extensive {
             Self::EXTENSIVE
         } else {

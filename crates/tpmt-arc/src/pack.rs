@@ -381,7 +381,7 @@ struct SectionOffsets {
 }
 
 impl SectionOffsets {
-    fn of(tree: &DirTree, string_pool_len: usize) -> SectionOffsets {
+    const fn of(tree: &DirTree, string_pool_len: usize) -> SectionOffsets {
         let nodes_at = data_header::AT + data_header::LEN;
         let entries_at = (nodes_at + tree.order.len() * node::LEN).next_multiple_of(ALIGN);
         let string_pool_at = (entries_at + tree.entry_count * entry::LEN).next_multiple_of(ALIGN);
