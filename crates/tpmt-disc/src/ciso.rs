@@ -15,6 +15,8 @@ pub const MAGIC: &[u8; 4] = b"CISO";
 pub const HEADER_LEN: u64 = 0x8000;
 pub const BLOCK_SIZE_FIELD: usize = 0x04;
 pub const MAP_OFFSET: usize = 0x08;
+// HEADER_LEN (0x8000) is a compile-time constant well within usize range.
+#[allow(clippy::cast_possible_truncation)]
 pub const MAP_LEN: usize = HEADER_LEN as usize - MAP_OFFSET;
 pub const MIN_BLOCK_SIZE: u32 = 0x8000;
 pub const UNUSED: u8 = 0;
@@ -80,6 +82,10 @@ impl Map {
     /// landed in runs on for. `None` is a block nobody stored.
     pub(crate) fn locate(&self, offset: u64) -> (Option<u64>, u64) {
         let within = offset % self.block_size;
+        // `offset` is always < `image_len()` == `blocks.len() as u64 *
+        // block_size` (the only caller checks that bound before a read ever
+        // reaches here), so this quotient can't exceed `blocks.len()`.
+        #[allow(clippy::cast_possible_truncation)]
         let index = (offset / self.block_size) as usize;
         let stored = self.blocks.get(index).copied().flatten();
         (

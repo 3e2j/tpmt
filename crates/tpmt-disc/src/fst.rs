@@ -166,10 +166,15 @@ pub fn build(items: &[&Item]) -> Result<Table> {
     let mut pool = 0;
     let mut walked = HashSet::new();
     push(&children, ROOT, 0, &mut nodes, &mut pool, &mut walked)?;
-    nodes[0].kind = Kind::Directory {
-        parent: 0,
-        end: nodes.len() as u32,
-    };
+    // A table with anywhere near u32::MAX entries would need billions of
+    // files in the project tree, which nothing here builds toward.
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        nodes[0].kind = Kind::Directory {
+            parent: 0,
+            end: nodes.len() as u32,
+        };
+    }
 
     // A directory that never came up in the walk is one whose own directory is
     // not in the tree, so its contents would have been dropped silently.
@@ -254,7 +259,12 @@ fn push<'a>(
         if name_offset > NAME_MASK {
             return Err(Error::TooManyNames);
         }
-        *pool += child.name.len() as u32 + 1;
+        // A single name reaching anywhere near u32::MAX bytes isn't something
+        // any real path component does.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            *pool += child.name.len() as u32 + 1;
+        }
 
         let at = nodes.len();
         match child.item {
@@ -265,13 +275,18 @@ fn push<'a>(
                     name_offset,
                     kind: Kind::Directory { parent, end: 0 },
                 });
-                push(children, path, at as u32, nodes, pool, walked)?;
+                // Same reasoning as above: a node index or subtree end
+                // reaching u32::MAX would need billions of entries.
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    push(children, path, at as u32, nodes, pool, walked)?;
 
-                // Where the subtree ends, which is only known now it is over.
-                nodes[at].kind = Kind::Directory {
-                    parent,
-                    end: nodes.len() as u32,
-                };
+                    // Where the subtree ends, only known now it is over.
+                    nodes[at].kind = Kind::Directory {
+                        parent,
+                        end: nodes.len() as u32,
+                    };
+                }
             }
             Item::File { path, size } => nodes.push(Node {
                 path: path.clone(),
@@ -279,6 +294,7 @@ fn push<'a>(
                 name_offset,
                 // Sizes are checked against the end of the user area before a
                 // table is ever built, so none of them is wider than a field.
+                #[allow(clippy::cast_possible_truncation)]
                 kind: Kind::File { size: *size as u32 },
             }),
         }

@@ -584,11 +584,11 @@ fn the_preamble_is_written_the_way_it_was_read() {
         },
     )
     .unwrap();
-    assert_eq!(boot, data[..sys::BOOT_LEN as usize]);
+    assert_eq!(boot, data[..sys::BOOT_LEN]);
 
     let bi2 = sys::bi2_bin(&metadata.bi2);
     let at = sys::BI2_OFFSET as usize;
-    assert_eq!(bi2, data[at..at + sys::BI2_LEN as usize]);
+    assert_eq!(bi2, data[at..at + sys::BI2_LEN]);
 }
 
 /// The whole point of the writer: what goes on comes back off. Nothing about
@@ -676,7 +676,7 @@ fn everything_lands_where_the_layout_rules_put_it() {
     );
     let fst = (offset(1) + DOL_LEN).next_multiple_of(sys::PREAMBLE_ALIGN);
     assert_eq!(
-        sys::fst_range(&built.read(0, sys::BOOT_LEN).unwrap())
+        sys::fst_range(&built.read(0, sys::BOOT_LEN as u64).unwrap())
             .unwrap()
             .0,
         fst

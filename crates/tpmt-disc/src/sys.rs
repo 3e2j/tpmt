@@ -23,7 +23,7 @@ pub const MAGIC: u32 = 0xC233_9F3D;
 pub const MAGIC_OFFSET: usize = 0x1C;
 pub const WII_MAGIC: u32 = 0x5D1C_9EA3;
 pub const WII_MAGIC_OFFSET: usize = 0x18;
-pub const BOOT_LEN: u64 = 0x440;
+pub const BOOT_LEN: usize = 0x440;
 
 pub const ID_OFFSET: usize = 0x00;
 pub const ID_LEN: usize = 4;
@@ -71,7 +71,7 @@ const BOOT_RESERVED: [(usize, usize); 4] =
 
 // Disc metadata, then the apploader, at fixed positions after the boot header.
 pub const BI2_OFFSET: u64 = 0x440;
-pub const BI2_LEN: u64 = 0x2000;
+pub const BI2_LEN: usize = 0x2000;
 pub const APPLOADER_OFFSET: u64 = 0x2440;
 pub const APPLOADER_HEADER_LEN: u64 = 0x20;
 pub const APPLOADER_SIZE_FIELD: usize = 0x14;
@@ -91,7 +91,7 @@ const BI2_RESERVED: [(usize, usize); 4] = [
     (0x00, 0x04),
     (0x08, 0x0C),
     (0x10, 0x18),
-    (0x28, BI2_LEN as usize),
+    (0x28, BI2_LEN),
 ];
 
 /// Where the two preamble files land in a project. A build looks for them by
@@ -155,7 +155,7 @@ pub struct Bi2 {
     pub pad_spec: u32,
 }
 
-/// Refuses anything that is not a GameCube disc image.
+/// Refuses anything that is not a `GameCube` disc image.
 ///
 /// Called before the rest of the preamble is read, so a file that is not a disc
 /// says so rather than failing on a short read somewhere inside it.
@@ -225,15 +225,17 @@ fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
     let fst_offset = reader.u32_at(FST_OFFSET_FIELD)?;
     let fst_len = reader.u32_at(FST_SIZE_FIELD)?;
     let user = user_position(fst_offset, fst_len);
+    // Two real u32 fields off the disc, summed, so a corrupt header can
+    // genuinely claim more than a u32 field can hold — and the field this is
+    // compared against is a real u32 on disk either way, so a failure here is
+    // itself proof the header doesn't match this rule.
+    let apploader_len = u32::try_from(apploader_len)
+        .map_err(|_| Error::CorruptHeader("the apploader is too long for its own header"))?;
 
     let derived = [
         // The mastering put the apploader's length here, whatever it meant by
         // it, and nothing on a retail disc reads it.
-        (
-            DEBUG_MONITOR_FIELD,
-            apploader_len as u32,
-            "the debug monitor offset",
-        ),
+        (DEBUG_MONITOR_FIELD, apploader_len, "the debug monitor offset"),
         (
             DEBUG_MONITOR_ADDRESS_FIELD,
             DEBUG_MONITOR_ADDRESS,
@@ -326,7 +328,7 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
         fst_len,
     } = layout;
 
-    let mut out = Writer::with_capacity(BOOT_LEN as usize);
+    let mut out = Writer::with_capacity(BOOT_LEN);
     authored(&mut out, boot)?;
 
     pad_to(&mut out, DEBUG_MONITOR_FIELD);
@@ -344,7 +346,7 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
     out.u32(user);
     out.u32(USER_AREA_END.saturating_sub(user));
 
-    pad_to(&mut out, BOOT_LEN as usize);
+    pad_to(&mut out, BOOT_LEN);
     Ok(out.finish())
 }
 
@@ -366,11 +368,11 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
 ///   length, a title that isn't Shift-JIS, or one that overruns its 64 byte
 ///   field).
 pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
-    if original.len() != BOOT_LEN as usize {
+    if original.len() != BOOT_LEN {
         return Err(Error::Unwritable("a boot header is 0x440 bytes"));
     }
 
-    let mut out = Writer::with_capacity(BOOT_LEN as usize);
+    let mut out = Writer::with_capacity(BOOT_LEN);
     authored(&mut out, boot)?;
     out.bytes(&original[AUTHORED_LEN..]);
     Ok(out.finish())
@@ -413,7 +415,7 @@ fn authored(out: &mut Writer, boot: &Boot) -> Result<()> {
 /// Writes the disc metadata back out: six fields in eight kilobytes of nothing.
 #[must_use]
 pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
-    let mut out = Writer::with_capacity(BI2_LEN as usize);
+    let mut out = Writer::with_capacity(BI2_LEN);
 
     pad_to(&mut out, BI2_SIMULATED_MEMORY_SIZE);
     out.u32(bi2.simulated_memory_size);
@@ -425,7 +427,7 @@ pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
     out.u32(bi2.unknown_20);
     out.u32(bi2.pad_spec);
 
-    pad_to(&mut out, BI2_LEN as usize);
+    pad_to(&mut out, BI2_LEN);
     out.finish()
 }
 
@@ -490,7 +492,7 @@ pub fn apploader_len(header: &[u8]) -> Result<u64> {
 /// The other three are not files. The boot header and the disc metadata are a
 /// few values each, kept as `Metadata`. `fst` derives the file table.
 pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
-    let boot = disc.read(0, BOOT_LEN)?;
+    let boot = disc.read(0, BOOT_LEN as u64)?;
     let dol_offset = Reader::new(&boot).u32_at(DOL_OFFSET_FIELD)? as u64;
     let (fst_offset, _) = fst_range(&boot)?;
 

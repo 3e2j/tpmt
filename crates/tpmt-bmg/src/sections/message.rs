@@ -97,15 +97,14 @@ pub fn read_messages(
     dat1: &[u8],
     mid1: Option<&[u8]>,
 ) -> Result<(Vec<Message>, u16, Option<Mid1Header>)> {
-    let mut reader = Reader::new(inf1);
+    let reader = Reader::new(inf1);
     let count = reader.u16_at(inf1_header::COUNT)? as usize;
     // Text offset into DAT1 + attribute bytes
     let record_len = reader.u16_at(inf1_header::RECORD_LEN)?;
     let attributes_len = record_len.checked_sub(4).ok_or(Error::Corrupt(
         "an INF1 record is narrower than its own text offset",
     ))?;
-    // Skip header (to records)
-    reader.seek(inf1_header::LEN);
+    let records = reader.slice_at(inf1_header::LEN, count * record_len as usize)?;
 
     // `shift_bytes` is guaranteed zero by `read_mid1`, so a MID1 entry is
     // always the id whole; see `Mid1Header::shift_bytes`.
@@ -113,13 +112,16 @@ pub fn read_messages(
     let mid1 = mid1.map(Reader::new);
 
     let mut messages = Vec::with_capacity(count);
-    for i in 0..count {
-        let dat_offset = reader.u32()? as usize;
-        let attributes = reader.take(attributes_len as usize)?.to_vec();
+    // A message's id is its position, counted in the id's own width rather
+    // than narrowed out of a `usize` index.
+    for (id, record) in (0..).zip(records.chunks_exact(record_len as usize)) {
+        let mut record = Reader::new(record);
+        let dat_offset = record.u32()? as usize;
+        let attributes = record.take(attributes_len as usize)?.to_vec();
 
         let public_id = match &mid1 {
             Some(mid1) => {
-                let entry = mid1.u32_at(mid1_header::LEN + i * 4)?;
+                let entry = mid1.u32_at(mid1_header::LEN + id as usize * 4)?;
                 u16::try_from(entry)
                     .map_err(|_| Error::Corrupt("a MID1 id does not fit in 16 bits"))?
             }
@@ -128,7 +130,7 @@ pub fn read_messages(
 
         messages.push(Message {
             public_id,
-            id: MessageId(i as u32),
+            id: MessageId(id),
             attributes,
             text: read_text(dat1, dat_offset)?,
         });

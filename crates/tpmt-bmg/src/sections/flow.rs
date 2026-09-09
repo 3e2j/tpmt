@@ -191,7 +191,8 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     let node_count = flw.u16_at(flw1_header::NODE_COUNT)? as usize;
     let table_count = flw.u16_at(flw1_header::TABLE_COUNT)? as usize;
 
-    let table_at = flw1_header::LEN + node_count * node_record::LEN;
+    let records = flw.slice_at(flw1_header::LEN, node_count * node_record::LEN)?;
+    let table_at = flw1_header::LEN + records.len();
     let mut table = Vec::with_capacity(table_count);
     for i in 0..table_count {
         table.push(flw.u16_at(table_at + i * 2)?);
@@ -218,10 +219,12 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     }
 
     let mut nodes = Vec::with_capacity(node_count);
-    for i in 0..node_count {
-        let record = flw.slice_at(flw1_header::LEN + i * node_record::LEN, node_record::LEN)?;
+    // A node's id is its position, counted in the id's own width rather than
+    // narrowed out of a `usize` index.
+    let (records, _) = records.as_chunks::<{ node_record::LEN }>();
+    for (id, record) in (0..).zip(records) {
         let rec = Reader::new(record);
-        let id = NodeId(i as u32);
+        let id = NodeId(id);
 
         match record[node_record::TYPE] {
             node_record::TEXT => {
@@ -264,7 +267,7 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
                     next: edge(entry),
                 });
             }
-            _ if i == node_count - 1 => {
+            _ if id.0 as usize == node_count - 1 => {
                 // The one padding record a file is allowed, there only to
                 // round an odd node count up to even. Not a node.
             }
@@ -278,14 +281,18 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
 
     let fli = Reader::new(fli1);
     let root_count = fli.u16_at(fli1_header::COUNT)? as usize;
-    let mut roots = Vec::with_capacity(root_count);
-    for i in 0..root_count {
-        let at = fli1_header::LEN + i * fli1_entry::LEN;
-        roots.push(Root {
-            public_id: fli.u16_at(at + fli1_entry::FLOW_ID)?,
-            node: NodeId(fli.u16_at(at + fli1_entry::NODE)? as u32),
-        });
-    }
+    let entries = fli.slice_at(fli1_header::LEN, root_count * fli1_entry::LEN)?;
+    let (entries, _) = entries.as_chunks::<{ fli1_entry::LEN }>();
+    let roots = entries
+        .iter()
+        .map(|entry| {
+            let entry = Reader::new(entry);
+            Ok(Root {
+                public_id: entry.u16_at(fli1_entry::FLOW_ID)?,
+                node: NodeId(entry.u16_at(fli1_entry::NODE)? as u32),
+            })
+        })
+        .collect::<Result<_>>()?;
 
     Ok(Flow { nodes, roots })
 }

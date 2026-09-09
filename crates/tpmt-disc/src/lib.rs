@@ -1,4 +1,4 @@
-//! Reading and writing GameCube disc images.
+//! Reading and writing `GameCube` disc images.
 //!
 //! Raw disc dumps, distributed as `.iso`, or other variants, and CISO
 //! containers, which hold one with the empty blocks left out.
@@ -208,13 +208,13 @@ impl Disc {
         let len = file.metadata().map_err(open)?.len();
 
         let handle = Handle::open(file, len)?;
-        let boot = read_at(&handle, 0, sys::BOOT_LEN)?;
+        let boot = read_at(&handle, 0, sys::BOOT_LEN as u64)?;
         sys::identify(&boot)?;
 
         // The apploader's length is one of the values the header is checked
         // against, so it has to be in hand before the header can be read.
         let apploader = read_at(&handle, sys::APPLOADER_OFFSET, sys::APPLOADER_HEADER_LEN)?;
-        let bi2 = read_at(&handle, sys::BI2_OFFSET, sys::BI2_LEN)?;
+        let bi2 = read_at(&handle, sys::BI2_OFFSET, sys::BI2_LEN as u64)?;
         let metadata = Metadata {
             boot: sys::boot(&boot, sys::apploader_len(&apploader)?)?,
             bi2: sys::bi2(&bi2)?,
@@ -237,7 +237,7 @@ impl Disc {
     ///
     /// Returns [`Error::Read`].
     pub fn boot_bin(&self) -> Result<Vec<u8>> {
-        self.read(0, sys::BOOT_LEN)
+        self.read(0, sys::BOOT_LEN as u64)
     }
 
     /// The disc metadata exactly as this disc holds it.
@@ -246,7 +246,7 @@ impl Disc {
     ///
     /// Returns [`Error::Read`].
     pub fn bi2_bin(&self) -> Result<Vec<u8>> {
-        self.read(sys::BI2_OFFSET, sys::BI2_LEN)
+        self.read(sys::BI2_OFFSET, sys::BI2_LEN as u64)
     }
 
     /// The length of the image, which is not the length of the file it came out
@@ -309,7 +309,7 @@ impl Disc {
     }
 
     fn file_entries(&self) -> Result<Vec<Entry>> {
-        let boot = self.read(0, sys::BOOT_LEN)?;
+        let boot = self.read(0, sys::BOOT_LEN as u64)?;
         let (offset, size) = sys::fst_range(&boot)?;
         fst::walk(&self.read(offset, size)?)
     }

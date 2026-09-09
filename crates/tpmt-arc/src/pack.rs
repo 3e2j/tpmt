@@ -63,7 +63,7 @@ impl DirTree {
         let mut node_of = vec![0u32; dirs.len()];
         let mut stack = vec![0];
         while let Some(dir) = stack.pop() {
-            node_of[dir] = order.len() as u32;
+            node_of[dir] = u32::try_from(order.len()).map_err(|_| Error::Oversized)?;
             order.push(dir);
             for child in dirs[dir].children.iter().rev() {
                 if let Entry::Dir(sub) = child {
@@ -78,7 +78,7 @@ impl DirTree {
         let mut first_entry = Vec::with_capacity(order.len());
         let mut entry_count: usize = 0;
         for &dir in &order {
-            first_entry.push(entry_count as u32);
+            first_entry.push(u32::try_from(entry_count).map_err(|_| Error::Oversized)?);
             entry_count += dirs[dir].children.len() + 2;
         }
 
@@ -204,8 +204,8 @@ pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
 
     // Every length is known by now, so the whole archive is one allocation.
     let mut out = Writer::with_capacity(sections.data_at + placed.data_size);
-    write_headers(&mut out, &tree, &sections, next_free, placed.synced);
-    write_nodes(&mut out, &tree, &string_pool);
+    write_headers(&mut out, &tree, &sections, next_free, placed.synced)?;
+    write_nodes(&mut out, &tree, &string_pool)?;
     write_entries(&mut out, archive, &tree, &string_pool, &placed)?;
     out.bytes(&string_pool.bytes);
     out.zeros(sections.string_pool_size - string_pool.bytes.len());
@@ -214,9 +214,18 @@ pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
     // The four fields that need the finished file's length.
     let size = u32::try_from(out.len()).map_err(|_| Error::Oversized)?;
     out.u32_at(top_header::FILE_SIZE, size);
-    out.u32_at(top_header::TOTAL_DATA_SIZE, size - sections.data_at as u32);
-    out.u32_at(top_header::MRAM_SIZE, placed.mram as u32);
-    out.u32_at(top_header::ARAM_SIZE, placed.aram as u32);
+    out.u32_at(
+        top_header::TOTAL_DATA_SIZE,
+        size - u32::try_from(sections.data_at).map_err(|_| Error::Oversized)?,
+    );
+    out.u32_at(
+        top_header::MRAM_SIZE,
+        u32::try_from(placed.mram).map_err(|_| Error::Oversized)?,
+    );
+    out.u32_at(
+        top_header::ARAM_SIZE,
+        u32::try_from(placed.aram).map_err(|_| Error::Oversized)?,
+    );
     Ok(out.finish())
 }
 
@@ -413,40 +422,50 @@ fn write_headers(
     sections: &SectionOffsets,
     next_free: u16,
     synced: bool,
-) {
+) -> Result<()> {
     let header = data_header::AT;
     out.bytes(top_header::MAGIC);
     out.zeros(sections.nodes_at - top_header::MAGIC.len());
-    out.u32_at(top_header::DATA_HEADER_PTR, header as u32);
+    out.u32_at(
+        top_header::DATA_HEADER_PTR,
+        u32::try_from(header).map_err(|_| Error::Oversized)?,
+    );
     out.u32_at(
         top_header::FILE_DATA_PTR,
-        (sections.data_at - header) as u32,
+        u32::try_from(sections.data_at - header).map_err(|_| Error::Oversized)?,
     );
 
-    out.u32_at(header + data_header::NODE_COUNT, tree.order.len() as u32);
+    out.u32_at(
+        header + data_header::NODE_COUNT,
+        u32::try_from(tree.order.len()).map_err(|_| Error::Oversized)?,
+    );
     out.u32_at(
         header + data_header::NODE_LIST_PTR,
-        (sections.nodes_at - header) as u32,
+        u32::try_from(sections.nodes_at - header).map_err(|_| Error::Oversized)?,
     );
-    out.u32_at(header + data_header::ENTRY_COUNT, tree.entry_count as u32);
+    out.u32_at(
+        header + data_header::ENTRY_COUNT,
+        u32::try_from(tree.entry_count).map_err(|_| Error::Oversized)?,
+    );
     out.u32_at(
         header + data_header::ENTRY_LIST_PTR,
-        (sections.entries_at - header) as u32,
+        u32::try_from(sections.entries_at - header).map_err(|_| Error::Oversized)?,
     );
     out.u32_at(
         header + data_header::STRING_POOL_SIZE,
-        sections.string_pool_size as u32,
+        u32::try_from(sections.string_pool_size).map_err(|_| Error::Oversized)?,
     );
     out.u32_at(
         header + data_header::STRING_POOL_PTR,
-        (sections.string_pool_at - header) as u32,
+        u32::try_from(sections.string_pool_at - header).map_err(|_| Error::Oversized)?,
     );
     out.u16_at(header + data_header::NEXT_FREE_ID, next_free);
     out.u8_at(header + data_header::SYNCED_IDS, synced as u8);
+    Ok(())
 }
 
 /// One record per directory, in node order, naming the run of entries it holds.
-fn write_nodes(out: &mut Writer, tree: &DirTree, string_pool: &StringPool) {
+fn write_nodes(out: &mut Writer, tree: &DirTree, string_pool: &StringPool) -> Result<()> {
     for (node, &dir) in tree.order.iter().enumerate() {
         // The fourcc: the name ASCII-uppercased, truncated to four, space
         // padded. The root is `ROOT` whatever its name is.
@@ -461,10 +480,11 @@ fn write_nodes(out: &mut Writer, tree: &DirTree, string_pool: &StringPool) {
         }
         out.u32(string_pool.dir_name_ats[dir]);
         out.u16(name_hash(&tree.dirs[dir].name));
-        out.u16((tree.dirs[dir].children.len() + 2) as u16);
+        out.u16(u16::try_from(tree.dirs[dir].children.len() + 2).map_err(|_| Error::Oversized)?);
         out.u32(tree.first_entry[node]);
     }
     out.align(ALIGN);
+    Ok(())
 }
 
 /// The entries, node by node: a directory's children in order, then its own
@@ -508,7 +528,12 @@ fn write_entries(
 
         // `.` points at the directory's own node, `..` at its parent's, and
         // the root's `..` at nothing. Both names are at the front of the pool.
-        dir_entry(out, b".", DOT_IN_STRING_POOL, node as u32);
+        dir_entry(
+            out,
+            b".",
+            DOT_IN_STRING_POOL,
+            u32::try_from(node).map_err(|_| Error::Oversized)?,
+        );
         let parent = match node {
             0 => u32::MAX,
             _ => tree.node_of[tree.dirs[dir].parent],

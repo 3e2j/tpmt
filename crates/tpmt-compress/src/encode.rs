@@ -328,7 +328,11 @@ mod tests {
         (0..len)
             .map(|_| {
                 state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
-                (state >> 16) as u8
+                // Intentional truncation: taking the PRNG's middle byte, not narrowing a value.
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    (state >> 16) as u8
+                }
             })
             .collect()
     }

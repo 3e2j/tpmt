@@ -885,6 +885,11 @@ mod tests {
         );
     }
 
+    /// A section or file length as the wire writes it.
+    fn be32(len: usize) -> [u8; 4] {
+        u32::try_from(len).unwrap().to_be_bytes()
+    }
+
     /// The bytes of a one-message BMG file: a header naming its two sections,
     /// an INF1 with a single record, and a DAT1 holding the text it points at.
     fn minimal_bmg() -> Vec<u8> {
@@ -898,15 +903,15 @@ mod tests {
 
         let mut sections = Vec::new();
         sections.extend(b"INF1");
-        sections.extend((8 + inf1_body.len() as u32).to_be_bytes());
+        sections.extend(be32(8 + inf1_body.len()));
         sections.extend(&inf1_body);
         sections.extend(b"DAT1");
-        sections.extend((8 + dat1_body.len() as u32).to_be_bytes());
+        sections.extend(be32(8 + dat1_body.len()));
         sections.extend(&dat1_body);
 
         let mut bmg = Vec::new();
         bmg.extend(*b"MESGbmg1");
-        bmg.extend((0x20u32 + sections.len() as u32).to_be_bytes());
+        bmg.extend(be32(0x20 + sections.len()));
         bmg.extend(2u32.to_be_bytes()); // section count
         bmg.push(0x03); // Shift-JIS
         bmg.resize(0x20, 0);

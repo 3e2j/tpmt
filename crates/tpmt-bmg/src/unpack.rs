@@ -158,7 +158,7 @@ mod tests {
         let mut out = Vec::new();
         out.extend_from_slice(header::MAGIC);
         out.extend_from_slice(&size.to_be_bytes());
-        out.extend_from_slice(&(magics.len() as u32).to_be_bytes());
+        out.extend_from_slice(&u32::try_from(magics.len()).unwrap().to_be_bytes());
         out.push(Encoding::ShiftJis.byte());
         out.resize(header::LEN, 0);
         for magic in magics {

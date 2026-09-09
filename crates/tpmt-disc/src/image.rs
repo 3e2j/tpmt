@@ -78,6 +78,9 @@ impl Handle {
         let mut done = 0;
         while done < buf.len() {
             let (at, run) = map.locate(offset + done as u64);
+            // The `min()` against `buf.len() - done` (already a `usize`)
+            // means the result can never exceed it.
+            #[allow(clippy::cast_possible_truncation)]
             let take = run.min((buf.len() - done) as u64) as usize;
             let part = &mut buf[done..done + take];
 
@@ -122,7 +125,15 @@ pub fn read_at(handle: &Handle, offset: u64, len: u64) -> Result<Vec<u8>> {
         });
     }
 
-    let mut buf = vec![0u8; len as usize];
+    let size = usize::try_from(len).map_err(|_| Error::Read {
+        offset,
+        len,
+        source: io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the read is too long for this platform to hold in memory",
+        ),
+    })?;
+    let mut buf = vec![0u8; size];
     handle
         .read(&mut buf, offset)
         .map_err(|source| Error::Read {

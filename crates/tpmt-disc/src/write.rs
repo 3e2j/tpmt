@@ -93,6 +93,11 @@ impl Layout {
 
         // Packed from the start of the user area in table order, each file on a
         // 4 byte boundary. Nothing is left between them.
+        //
+        // `fst_offset` and `fst_len` are both checked against `end` (which is
+        // itself a `u32` widened to `u64`) just above, so neither exceeds a
+        // `u32`.
+        #[allow(clippy::cast_possible_truncation)]
         let mut at = u64::from(sys::user_position(fst_offset as u32, fst_len as u32));
         let mut entries = vec![
             Entry::File {
@@ -124,10 +129,18 @@ impl Layout {
             }
 
             let field = offsets.next().expect("every file reserved an offset");
+            // `offset <= last`, and `last > end` returned above, so `offset`
+            // fits a `u32` the same way `last` does.
+            #[allow(clippy::cast_possible_truncation)]
             table.bytes.u32_at(*field, *offset as u32);
         }
         entries.append(&mut table.entries);
 
+        // `apploader` and `dol` are both `<= total <= end` (checked above);
+        // `dol_offset <= fst_offset` (each only grows by addition and
+        // `next_multiple_of`), and `fst_offset <= end` (checked above via
+        // `fst_offset + fst_len`). None of the four exceeds a `u32`.
+        #[allow(clippy::cast_possible_truncation)]
         let boot = sys::boot_bin(
             &metadata.boot,
             &sys::BootLayout {
@@ -289,6 +302,9 @@ impl<W: Write> Image<'_, W> {
         const NOTHING: [u8; 0x1000] = [0; 0x1000];
 
         while self.at < offset {
+            // The `min()` against `NOTHING.len()` (already a `usize`) means
+            // the result can never exceed it.
+            #[allow(clippy::cast_possible_truncation)]
             let take = (offset - self.at).min(NOTHING.len() as u64) as usize;
             self.put(&NOTHING[..take])?;
         }
