@@ -4,13 +4,14 @@
 use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, ciso, fst, sys};
 
 // The preamble positions are fixed by the format, the rest is packed in behind
-// it so a test image is kilobytes rather than 1.4 GB.
-const APPLOADER_LEN: u64 = 0x40;
-const DOL_OFFSET: u64 = 0x2480;
-const DOL_LEN: u64 = 0x230;
-const FST_OFFSET: u64 = 0x2700;
-const DATA_OFFSET: u64 = 0x2800;
-const IMAGE_LEN: u64 = 0x2830;
+// it so a test image is kilobytes rather than 1.4 GB. `u32`, as the fields
+// holding them are.
+const APPLOADER_LEN: u32 = 0x40;
+const DOL_OFFSET: u32 = 0x2480;
+const DOL_LEN: u32 = 0x230;
+const FST_OFFSET: u32 = 0x2700;
+const DATA_OFFSET: u32 = 0x2800;
+const IMAGE_LEN: u32 = 0x2830;
 
 // Positions in the name pool of `\0a.bin\0sub\0b.bin\0empty\0c.bin\0`.
 const NAME_ROOT: u32 = 0x00;
@@ -37,15 +38,19 @@ const USER_LENGTH: u32 = 0x5705_0000;
 /// here.
 const SYS_ENTRIES: usize = 2;
 
-fn put32(data: &mut [u8], at: u64, value: u32) {
-    let at = at as usize;
+/// A disc position as an index into a fixture, which is a few kilobytes.
+fn index(position: u64) -> usize {
+    usize::try_from(position).expect("a fixture fits in memory")
+}
+
+fn put32(data: &mut [u8], at: usize, value: u32) {
     data[at..at + 4].copy_from_slice(&value.to_be_bytes());
 }
 
 /// Writes one file table record. The last two fields mean different things
 /// either side of the directory flag, so a caller sets them directly.
-fn put_fst(data: &mut [u8], index: u32, dir: bool, name: u32, target: u32, end_or_size: u32) {
-    let at = FST_OFFSET + u64::from(index) * fst::ENTRY_LEN as u64;
+fn put_fst(data: &mut [u8], entry: usize, dir: bool, name: u32, target: u32, end_or_size: u32) {
+    let at = FST_OFFSET as usize + entry * fst::ENTRY_LEN;
     let flag = if dir { fst::DIRECTORY_FLAG } else { 0 };
     put32(data, at, flag | name);
     put32(data, at + 4, target);
@@ -73,9 +78,9 @@ fn disc() -> Vec<u8> {
     data[sys::AUDIO_STREAMING_OFFSET] = 1;
     data[sys::STREAM_BUFFER_SIZE_OFFSET] = 10;
     data[sys::TITLE_OFFSET..sys::TITLE_OFFSET + 5].copy_from_slice(b"title");
-    put32(&mut data, sys::MAGIC_OFFSET as u64, sys::MAGIC);
+    put32(&mut data, sys::MAGIC_OFFSET, sys::MAGIC);
 
-    let bi2 = |field: usize| sys::BI2_OFFSET + field as u64;
+    let bi2 = |field: usize| index(sys::BI2_OFFSET) + field;
     put32(&mut data, bi2(sys::BI2_SIMULATED_MEMORY_SIZE), 0x0180_0000);
     put32(&mut data, bi2(sys::BI2_DEBUG_FLAG), 2);
     put32(&mut data, bi2(sys::BI2_COUNTRY), 1);
@@ -83,70 +88,48 @@ fn disc() -> Vec<u8> {
     put32(&mut data, bi2(sys::BI2_UNKNOWN_20), 5);
     put32(&mut data, bi2(sys::BI2_PAD_SPEC), 6);
 
-    put32(&mut data, sys::DOL_OFFSET_FIELD as u64, DOL_OFFSET as u32);
-    put32(&mut data, sys::FST_OFFSET_FIELD as u64, FST_OFFSET as u32);
+    put32(&mut data, sys::DOL_OFFSET_FIELD, DOL_OFFSET);
+    put32(&mut data, sys::FST_OFFSET_FIELD, FST_OFFSET);
     let fst_len = ENTRY_COUNT as usize * fst::ENTRY_LEN + NAME_POOL.len();
     assert_eq!(
-        fst_len as u32, FST_LEN,
+        fst_len, FST_LEN as usize,
         "the derived values below assume this"
     );
-    put32(&mut data, sys::FST_SIZE_FIELD as u64, FST_LEN);
-    put32(&mut data, sys::FST_MAX_SIZE_FIELD as u64, FST_LEN);
+    put32(&mut data, sys::FST_SIZE_FIELD, FST_LEN);
+    put32(&mut data, sys::FST_MAX_SIZE_FIELD, FST_LEN);
 
     // The layout values, which the reader checks rather than keeps.
+    put32(&mut data, sys::DEBUG_MONITOR_FIELD, APPLOADER_LEN);
     put32(
         &mut data,
-        sys::DEBUG_MONITOR_FIELD as u64,
-        APPLOADER_LEN as u32,
-    );
-    put32(
-        &mut data,
-        sys::DEBUG_MONITOR_ADDRESS_FIELD as u64,
+        sys::DEBUG_MONITOR_ADDRESS_FIELD,
         sys::DEBUG_MONITOR_ADDRESS,
     );
-    put32(&mut data, sys::FST_ADDRESS_FIELD as u64, FST_ADDRESS);
-    put32(&mut data, sys::USER_POSITION_FIELD as u64, USER_POSITION);
-    put32(&mut data, sys::USER_LENGTH_FIELD as u64, USER_LENGTH);
+    put32(&mut data, sys::FST_ADDRESS_FIELD, FST_ADDRESS);
+    put32(&mut data, sys::USER_POSITION_FIELD, USER_POSITION);
+    put32(&mut data, sys::USER_LENGTH_FIELD, USER_LENGTH);
 
     // 0x20 of header, then the two halves the apploader reports.
-    put32(
-        &mut data,
-        sys::APPLOADER_OFFSET + sys::APPLOADER_SIZE_FIELD as u64,
-        0x10,
-    );
-    put32(
-        &mut data,
-        sys::APPLOADER_OFFSET + sys::APPLOADER_TRAILER_FIELD as u64,
-        0x10,
-    );
+    let apploader = index(sys::APPLOADER_OFFSET);
+    put32(&mut data, apploader + sys::APPLOADER_SIZE_FIELD, 0x10);
+    put32(&mut data, apploader + sys::APPLOADER_TRAILER_FIELD, 0x10);
 
     // Two sections, the later one nearer the front, so a length taken from the
     // last section rather than the furthest would come out short.
-    put32(
-        &mut data,
-        DOL_OFFSET + sys::DOL_SECTION_OFFSETS as u64,
-        0x200,
-    );
-    put32(&mut data, DOL_OFFSET + sys::DOL_SECTION_SIZES as u64, 0x30);
-    put32(
-        &mut data,
-        DOL_OFFSET + sys::DOL_SECTION_OFFSETS as u64 + 8,
-        0x100,
-    );
-    put32(
-        &mut data,
-        DOL_OFFSET + sys::DOL_SECTION_SIZES as u64 + 8,
-        0x40,
-    );
+    let dol = DOL_OFFSET as usize;
+    put32(&mut data, dol + sys::DOL_SECTION_OFFSETS, 0x200);
+    put32(&mut data, dol + sys::DOL_SECTION_SIZES, 0x30);
+    put32(&mut data, dol + sys::DOL_SECTION_OFFSETS + 8, 0x100);
+    put32(&mut data, dol + sys::DOL_SECTION_SIZES + 8, 0x40);
 
     put_fst(&mut data, 0, true, NAME_ROOT, 0, ENTRY_COUNT);
-    put_fst(&mut data, 1, false, NAME_A, DATA_OFFSET as u32, 4);
+    put_fst(&mut data, 1, false, NAME_A, DATA_OFFSET, 4);
     put_fst(&mut data, 2, true, NAME_SUB, 0, 4);
-    put_fst(&mut data, 3, false, NAME_B, DATA_OFFSET as u32 + 0x10, 5);
+    put_fst(&mut data, 3, false, NAME_B, DATA_OFFSET + 0x10, 5);
     put_fst(&mut data, 4, true, NAME_EMPTY, 0, 5);
-    put_fst(&mut data, 5, false, NAME_C, DATA_OFFSET as u32 + 0x20, 6);
+    put_fst(&mut data, 5, false, NAME_C, DATA_OFFSET + 0x20, 6);
 
-    let pool = (FST_OFFSET + ENTRY_COUNT as u64 * fst::ENTRY_LEN as u64) as usize;
+    let pool = FST_OFFSET as usize + ENTRY_COUNT as usize * fst::ENTRY_LEN;
     data[pool..pool + NAME_POOL.len()].copy_from_slice(NAME_POOL);
 
     data
@@ -166,6 +149,14 @@ fn open(data: &[u8]) -> Result<Disc> {
     let disc = Disc::open(&path);
     let _ = std::fs::remove_file(&path);
     disc
+}
+
+/// Where a file's bytes sit: its offset and size. A directory has none.
+fn span(entry: &Entry) -> Option<(u64, u64)> {
+    match entry {
+        Entry::File { offset, size, .. } => Some((*offset, *size)),
+        Entry::Directory { .. } => None,
+    }
 }
 
 fn paths(disc: &Disc) -> Vec<String> {
@@ -214,9 +205,9 @@ fn preamble_lengths_come_out_of_their_own_headers() {
 
     let sizes: Vec<(&str, u64)> = entries[..SYS_ENTRIES]
         .iter()
-        .map(|entry| match entry {
-            Entry::File { path, size, .. } => (path.as_str(), *size),
-            Entry::Directory { .. } => unreachable!("the preamble is all files"),
+        .map(|entry| {
+            let (_, size) = span(entry).expect("the preamble is all files");
+            (entry.path(), size)
         })
         .collect();
 
@@ -224,10 +215,10 @@ fn preamble_lengths_come_out_of_their_own_headers() {
         sizes,
         [
             // 0x20 of header the two reported halves do not count.
-            ("sys/apploader.img", APPLOADER_LEN),
+            ("sys/apploader.img", APPLOADER_LEN as u64),
             // The furthest section reaches 0x200 + 0x30, not the 0x100 + 0x40 of
             // the one declared last.
-            ("sys/main.dol", DOL_LEN),
+            ("sys/main.dol", DOL_LEN as u64),
         ]
     );
 }
@@ -240,7 +231,7 @@ fn rejects_a_file_table_that_lies() {
     type Corruption = fn(&mut Vec<u8>);
 
     // Where `a.bin` sits in the name pool, for the cases that rewrite it.
-    const NAME: usize = (FST_OFFSET + 72 + NAME_A as u64) as usize;
+    const NAME: usize = (FST_OFFSET + 72 + NAME_A) as usize;
 
     let corrupt = |edit: Corruption| {
         let mut data = disc();
@@ -252,7 +243,7 @@ fn rejects_a_file_table_that_lies() {
         // The root says how long the table is, so one that is not a directory
         // leaves the walk unbounded.
         ("the root is not a directory", |data| {
-            put32(data, FST_OFFSET, 0);
+            put32(data, FST_OFFSET as usize, 0);
         }),
         // Ending at or before the entry announcing it, and past the table.
         ("a subtree that ends behind itself", |data| {
@@ -286,7 +277,7 @@ fn rejects_a_file_table_that_lies() {
 fn a_name_is_read_before_it_is_judged() {
     let mut data = disc();
     // Over `a.bin\0`, which has room to spare.
-    data[(FST_OFFSET + 72 + NAME_A as u64) as usize..][..5].copy_from_slice(b"\x83\x5Cin\0");
+    data[(FST_OFFSET + 72 + NAME_A) as usize..][..5].copy_from_slice(b"\x83\x5Cin\0");
 
     let disc = open(&data).unwrap();
     assert_eq!(paths(&disc)[SYS_ENTRIES], "files/ソin");
@@ -297,13 +288,11 @@ fn a_name_is_read_before_it_is_judged() {
 #[test]
 fn refuses_to_read_past_the_end_of_the_image() {
     let mut data = disc();
-    put_fst(&mut data, 1, false, NAME_A, DATA_OFFSET as u32, u32::MAX);
+    put_fst(&mut data, 1, false, NAME_A, DATA_OFFSET, u32::MAX);
     let disc = open(&data).unwrap();
 
     let entries = disc.entries().expect("the table itself is still fine");
-    let Entry::File { offset, size, .. } = entries[SYS_ENTRIES] else {
-        unreachable!("a.bin is a file")
-    };
+    let (offset, size) = span(&entries[SYS_ENTRIES]).expect("a.bin is a file");
     assert!(matches!(disc.read(offset, size), Err(Error::Read { .. })));
 }
 
@@ -349,10 +338,10 @@ fn says_what_it_is_looking_at() {
     assert_eq!(meta.bi2.unknown_1c, 4);
     assert_eq!(meta.bi2.unknown_20, 5);
     assert_eq!(meta.bi2.pad_spec, 6);
-    assert_eq!(disc.len(), IMAGE_LEN);
+    assert_eq!(disc.len(), IMAGE_LEN as u64);
 
     let mut wii = disc_without_magic();
-    put32(&mut wii, sys::WII_MAGIC_OFFSET as u64, sys::WII_MAGIC);
+    put32(&mut wii, sys::WII_MAGIC_OFFSET, sys::WII_MAGIC);
     assert!(matches!(open(&wii), Err(Error::WiiDisc)));
 
     assert!(matches!(open(&disc_without_magic()), Err(Error::NotADisc)));
@@ -416,7 +405,7 @@ fn refuses_a_layout_it_would_not_reproduce() {
 
     for at in fields {
         let mut data = disc();
-        put32(&mut data, at as u64, 0xDEAD_BEEF);
+        put32(&mut data, at, 0xDEAD_BEEF);
         assert!(
             matches!(
                 open(&data).err(),
@@ -432,16 +421,16 @@ fn refuses_a_layout_it_would_not_reproduce() {
 
 /// Wraps an image in a CISO, leaving out every block that is all zeros, which is
 /// what the real thing does to the fill.
-fn ciso_file(image: &[u8], block_size: usize) -> Vec<u8> {
-    let mut out = vec![0u8; ciso::HEADER_LEN as usize];
+fn ciso_file(image: &[u8], block_size: u32) -> Vec<u8> {
+    let mut out = vec![0u8; index(ciso::HEADER_LEN)];
     out[..4].copy_from_slice(ciso::MAGIC);
-    out[ciso::BLOCK_SIZE_FIELD..][..4].copy_from_slice(&(block_size as u32).to_le_bytes());
+    out[ciso::BLOCK_SIZE_FIELD..][..4].copy_from_slice(&block_size.to_le_bytes());
 
-    for (index, block) in image.chunks(block_size).enumerate() {
+    for (number, block) in image.chunks(block_size as usize).enumerate() {
         if block.iter().all(|&b| b == 0) {
             continue;
         }
-        out[ciso::MAP_OFFSET + index] = ciso::USED;
+        out[ciso::MAP_OFFSET + number] = ciso::USED;
         out.extend_from_slice(block);
     }
     out
@@ -452,16 +441,16 @@ fn ciso_file(image: &[u8], block_size: usize) -> Vec<u8> {
 /// block number instead of counting the blocks actually stored.
 #[test]
 fn a_container_reads_as_the_image_inside_it() {
-    const BLOCK: u64 = ciso::MIN_BLOCK_SIZE as u64;
+    const BLOCK: u32 = ciso::MIN_BLOCK_SIZE;
 
     let mut image = disc();
     image.resize(BLOCK as usize * 3, 0);
     image[BLOCK as usize * 2..][..8].copy_from_slice(b"edgecase");
 
-    let container = ciso_file(&image, BLOCK as usize);
+    let container = ciso_file(&image, BLOCK);
     assert_eq!(
         container.len() as u64,
-        ciso::HEADER_LEN + BLOCK * 2,
+        ciso::HEADER_LEN + BLOCK as u64 * 2,
         "the empty block was stored anyway"
     );
 
@@ -471,22 +460,22 @@ fn a_container_reads_as_the_image_inside_it() {
     assert_eq!(paths(&packed), paths(&raw));
 
     // Out of the hole and into the block behind it.
-    let (at, len) = (BLOCK * 2 - 4, 12);
+    let (at, len) = (BLOCK as u64 * 2 - 4, 12);
     assert_eq!(packed.read(at, len).unwrap(), raw.read(at, len).unwrap());
 }
 
 #[test]
 fn rejects_a_container_that_is_not_one() {
     let image = disc();
-    let block = ciso::MIN_BLOCK_SIZE as usize;
+    let block = ciso::MIN_BLOCK_SIZE;
 
     let mut small = ciso_file(&image, block);
-    small[ciso::BLOCK_SIZE_FIELD..][..4].copy_from_slice(&(block as u32 / 2).to_le_bytes());
+    small[ciso::BLOCK_SIZE_FIELD..][..4].copy_from_slice(&(block / 2).to_le_bytes());
     assert!(matches!(open(&small), Err(Error::CorruptHeader(_))));
 
     // The map says a block is there and the file it would be in stops short.
     let mut short = ciso_file(&image, block);
-    short.truncate(ciso::HEADER_LEN as usize);
+    short.truncate(index(ciso::HEADER_LEN));
     assert!(matches!(open(&short), Err(Error::CorruptHeader(_))));
 
     let mut nonsense = ciso_file(&image, block);
@@ -496,7 +485,7 @@ fn rejects_a_container_that_is_not_one() {
 
 fn disc_without_magic() -> Vec<u8> {
     let mut data = disc();
-    put32(&mut data, sys::MAGIC_OFFSET as u64, 0);
+    put32(&mut data, sys::MAGIC_OFFSET, 0);
     data
 }
 
@@ -510,10 +499,10 @@ type Project<'a> = [(&'a str, Option<&'a [u8]>)];
 /// own headers still say what they are.
 fn preamble() -> (Vec<u8>, Vec<u8>) {
     let data = disc();
-    let at = |offset: u64, len: u64| data[offset as usize..][..len as usize].to_vec();
+    let at = |offset: usize, len: u32| data[offset..][..len as usize].to_vec();
     (
-        at(sys::APPLOADER_OFFSET, APPLOADER_LEN),
-        at(DOL_OFFSET, DOL_LEN),
+        at(index(sys::APPLOADER_OFFSET), APPLOADER_LEN),
+        at(DOL_OFFSET as usize, DOL_LEN),
     )
 }
 
@@ -531,10 +520,9 @@ fn project<'a>(
     project
 }
 
-/// Lays a project out and writes it, handing over each file in the order the
-/// layout asked for it.
-fn build(metadata: &Metadata, project: &Project) -> Result<Vec<u8>> {
-    let items: Vec<Item> = project
+/// The project as the layout takes it: paths and sizes, no bytes.
+fn items(project: &Project) -> Vec<Item> {
+    project
         .iter()
         .map(|(path, data)| {
             let path = path.to_string();
@@ -546,9 +534,14 @@ fn build(metadata: &Metadata, project: &Project) -> Result<Vec<u8>> {
                 None => Item::Directory { path },
             }
         })
-        .collect();
+        .collect()
+}
 
-    let layout = Layout::plan(metadata, &items)?;
+/// Lays a project out and writes it, handing over each file in the order the
+/// layout asked for it. A project the layout refuses is tested through
+/// [`Layout::plan`] itself.
+fn build(metadata: &Metadata, project: &Project) -> Vec<u8> {
+    let layout = Layout::plan(metadata, &items(project)).unwrap();
     let mut out = Vec::new();
     let mut image = layout.write(&mut out);
     for entry in layout.entries() {
@@ -559,12 +552,18 @@ fn build(metadata: &Metadata, project: &Project) -> Result<Vec<u8>> {
             .iter()
             .find(|(at, _)| at == path)
             .expect("the layout only holds what it was given");
-        image.file(data.expect("a directory is never a file"))?;
+        image
+            .file(data.expect("a directory is never a file"))
+            .unwrap();
     }
 
-    assert_eq!(image.finish()?.len(), 40, "a SHA-1 is 40 hex digits");
+    assert_eq!(
+        image.finish().unwrap().len(),
+        40,
+        "a SHA-1 is 40 hex digits"
+    );
     assert_eq!(out.len() as u64, layout.len());
-    Ok(out)
+    out
 }
 
 /// Both files come back out of a handful of values and a layout, so the fixture
@@ -577,9 +576,9 @@ fn the_preamble_is_written_the_way_it_was_read() {
     let boot = sys::boot_bin(
         &metadata.boot,
         &sys::BootLayout {
-            apploader_len: APPLOADER_LEN as u32,
-            dol_offset: DOL_OFFSET as u32,
-            fst_offset: FST_OFFSET as u32,
+            apploader_len: APPLOADER_LEN,
+            dol_offset: DOL_OFFSET,
+            fst_offset: FST_OFFSET,
             fst_len: FST_LEN,
         },
     )
@@ -587,7 +586,7 @@ fn the_preamble_is_written_the_way_it_was_read() {
     assert_eq!(boot, data[..sys::BOOT_LEN]);
 
     let bi2 = sys::bi2_bin(&metadata.bi2);
-    let at = sys::BI2_OFFSET as usize;
+    let at = index(sys::BI2_OFFSET);
     assert_eq!(bi2, data[at..at + sys::BI2_LEN]);
 }
 
@@ -612,7 +611,7 @@ fn a_built_image_reads_back_as_the_project_it_came_from() {
         ("files/ZA", Some(b"za".as_slice())),
     ];
 
-    let image = build(&metadata, &project(&apploader, &dol, files)).unwrap();
+    let image = build(&metadata, &project(&apploader, &dol, files));
     let built = open(&image).unwrap();
 
     assert_eq!(
@@ -658,13 +657,13 @@ fn everything_lands_where_the_layout_rules_put_it() {
         ("files/b.bin", Some(b"bb".as_slice())),
     ];
 
-    let image = build(&metadata, &project(&apploader, &dol, files)).unwrap();
+    let image = build(&metadata, &project(&apploader, &dol, files));
     let built = open(&image).unwrap();
     let entries = built.entries().unwrap();
 
-    let offset = |at: usize| match entries[at] {
-        Entry::File { offset, .. } => offset,
-        Entry::Directory { .. } => unreachable!("every entry here is a file"),
+    let offset = |at: usize| {
+        let (offset, _) = span(&entries[at]).expect("every entry here is a file");
+        offset
     };
 
     // The apploader is where the format fixes it, the executable on the first
@@ -672,9 +671,9 @@ fn everything_lands_where_the_layout_rules_put_it() {
     assert_eq!(offset(0), sys::APPLOADER_OFFSET);
     assert_eq!(
         offset(1),
-        (sys::APPLOADER_OFFSET + APPLOADER_LEN).next_multiple_of(sys::PREAMBLE_ALIGN)
+        (sys::APPLOADER_OFFSET + APPLOADER_LEN as u64).next_multiple_of(sys::PREAMBLE_ALIGN)
     );
-    let fst = (offset(1) + DOL_LEN).next_multiple_of(sys::PREAMBLE_ALIGN);
+    let fst = (offset(1) + DOL_LEN as u64).next_multiple_of(sys::PREAMBLE_ALIGN);
     assert_eq!(
         sys::fst_range(&built.read(0, sys::BOOT_LEN as u64).unwrap())
             .unwrap()
@@ -701,31 +700,24 @@ fn refuses_a_project_it_cannot_lay_out() {
     let (apploader, dol) = preamble();
     let bytes = Some(b"x".as_slice());
 
-    let missing = build(&metadata, &[(sys::DOL_PATH, Some(&dol))]);
-    assert!(matches!(missing, Err(Error::MissingEntry(_))));
+    let plan = |project: &Project| Layout::plan(&metadata, &items(project)).err();
 
-    let stray = build(
-        &metadata,
-        &project(&apploader, &dol, &[("sys/extra.bin", bytes)]),
-    );
-    assert!(matches!(stray, Err(Error::UnknownEntry(_))));
+    let missing = plan(&[(sys::DOL_PATH, Some(&dol))]);
+    assert!(matches!(missing, Some(Error::MissingEntry(_))));
 
-    let orphan = build(
-        &metadata,
-        &project(&apploader, &dol, &[("files/gone/x.bin", bytes)]),
-    );
-    assert!(matches!(orphan, Err(Error::Orphan(_))));
+    let stray = plan(&project(&apploader, &dol, &[("sys/extra.bin", bytes)]));
+    assert!(matches!(stray, Some(Error::UnknownEntry(_))));
+
+    let orphan = plan(&project(&apploader, &dol, &[("files/gone/x.bin", bytes)]));
+    assert!(matches!(orphan, Some(Error::Orphan(_))));
 
     // The game reads names without case, so these would shadow each other.
-    let clash = build(
-        &metadata,
-        &project(
-            &apploader,
-            &dol,
-            &[("files/a.bin", bytes), ("files/A.BIN", bytes)],
-        ),
-    );
-    assert!(matches!(clash, Err(Error::NameClash(..))));
+    let clash = plan(&project(
+        &apploader,
+        &dol,
+        &[("files/a.bin", bytes), ("files/A.BIN", bytes)],
+    ));
+    assert!(matches!(clash, Some(Error::NameClash(..))));
 }
 
 /// The layout reserves a file's room from the length it was given, so bytes

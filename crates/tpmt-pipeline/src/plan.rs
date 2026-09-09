@@ -582,7 +582,8 @@ pub fn owner(path: &str) -> &str {
     for part in path.split('/') {
         at += part.len();
         if crate::is_archive(part) {
-            return &path[..at];
+            // `at` closes a whole component, so it is on a character boundary.
+            return path.get(..at).unwrap_or(path);
         }
         at += 1;
     }

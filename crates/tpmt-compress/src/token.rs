@@ -48,11 +48,31 @@ pub mod backref {
     /// apart from each other.
     #[derive(Clone, Copy)]
     pub struct Backreference {
-        pub distance: u16,
-        pub length: u16,
+        distance: u16,
+        length: u16,
     }
 
     impl Backreference {
+        /// A match of `length` bytes found `distance` bytes back, or `None`
+        /// if the wire format has no room for it.
+        pub fn new(distance: usize, length: usize) -> Option<Self> {
+            let distance = u16::try_from(distance)
+                .ok()
+                .filter(|distance| (1..=MAX_DISTANCE).contains(distance))?;
+            let length = u16::try_from(length)
+                .ok()
+                .filter(|length| (MIN_LENGTH..=MAX_LENGTH).contains(length))?;
+            Some(Self { distance, length })
+        }
+
+        pub const fn distance(self) -> u16 {
+            self.distance
+        }
+
+        pub const fn length(self) -> u16 {
+            self.length
+        }
+
         pub fn read(reader: &mut tpmt_bytes::Reader) -> crate::Result<Self> {
             let pair = reader.u16()?;
             // The stored distance is one short of the real one, so a distance
@@ -74,7 +94,9 @@ pub mod backref {
                 out.extend_from_slice(&(nibble << 12 | distance).to_be_bytes());
             } else {
                 out.extend_from_slice(&distance.to_be_bytes()); // Empty nibble + distance
-                // `length <= MAX_LENGTH`, which is `0xFF` past `MIN_EXTENDED_LENGTH`.
+                // Only `new` and `read` build one, and both keep `length <=
+                // MAX_LENGTH`, which is `0xFF` past `MIN_EXTENDED_LENGTH`.
+                #[allow(clippy::expect_used)]
                 out.push(
                     u8::try_from(self.length - MIN_EXTENDED_LENGTH).expect("within MAX_LENGTH"),
                 );

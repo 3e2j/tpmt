@@ -39,7 +39,10 @@ pub mod arc {
     /// detection hashes what went into the project rather than reading it
     /// back.
     pub fn write_sidecar(sidecar: &Sidecar, directory: &Path) -> Result<Vec<u8>, Error> {
-        let text = sidecar.to_toml();
+        let path = directory.join(SIDECAR);
+        let text = sidecar
+            .to_toml()
+            .map_err(|source| Error::Archive { path, source })?;
         write(&directory.join(SIDECAR), text.as_bytes())?;
         Ok(text.into_bytes())
     }

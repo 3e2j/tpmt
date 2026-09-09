@@ -60,6 +60,9 @@ pub enum Error {
 
     #[error("not a BMG translation document: {0}")]
     InvalidJson(#[from] serde_json::Error),
+
+    #[error("the message file could not be written as a translation document: {0}")]
+    UnwritableJson(serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

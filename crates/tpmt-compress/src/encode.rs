@@ -84,7 +84,7 @@ fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
     out.extend_from_slice(&decompressed_size.to_be_bytes());
     out.extend_from_slice(&[0u8; 8]);
 
-    let mut chains = Chains::new(input.len());
+    let mut chains = Chains::new(decompressed_size);
     let mut lookahead = Lookahead::default();
     let mut pos = 0;
     let mut group_was_full = false;
@@ -111,7 +111,7 @@ fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
             };
 
             matched.write(&mut body);
-            pos += matched.length as usize;
+            pos += matched.length() as usize;
         }
 
         out.push(flags);
@@ -183,7 +183,7 @@ fn chase_lazy_match(
         let Some(next) = chains.longest_match(data, pos + steps + 1) else {
             break;
         };
-        if next.length as usize <= best.length as usize + strategy.slack {
+        if next.length() as usize <= best.length() as usize + strategy.slack {
             break;
         }
         best = next;
@@ -222,17 +222,17 @@ struct Chains {
     /// Previous position sharing a position's prefix.
     prev: Vec<u32>,
     /// First position not yet filed. Positions go in in order and once each.
-    unfiled: usize,
+    unfiled: u32,
     /// The chain within the window, reused so the search does not allocate
     /// per byte.
     in_window: Vec<u32>,
 }
 
 impl Chains {
-    fn new(len: usize) -> Self {
+    fn new(len: u32) -> Self {
         Self {
             head: vec![NO_POSITION; HASH_SIZE],
-            prev: vec![NO_POSITION; len],
+            prev: vec![NO_POSITION; len as usize],
             unfiled: 0,
             in_window: Vec::with_capacity(MAX_DISTANCE as usize),
         }
@@ -250,13 +250,11 @@ impl Chains {
     /// no full-length prefix and are left out.
     fn fill(&mut self, data: &[u8], end: usize) {
         let end = end.min(data.len().saturating_sub(MIN_LENGTH as usize - 1));
-        while self.unfiled < end {
+        while (self.unfiled as usize) < end {
             let at = self.unfiled;
-            let bucket = Self::hash(data, at);
-            self.prev[at] = self.head[bucket];
-            // `at < data.len()`, and `encode_with` already rejected input longer
-            // than `u32::MAX` before `Chains` was built.
-            self.head[bucket] = u32::try_from(at).expect("input length fits u32");
+            let bucket = Self::hash(data, at as usize);
+            self.prev[at as usize] = self.head[bucket];
+            self.head[bucket] = at;
             self.unfiled += 1;
         }
     }
@@ -288,7 +286,7 @@ impl Chains {
         // the final filesize. The chain runs newest first, hence the reverse.
         for &candidate in self.in_window.iter().rev() {
             let start = candidate as usize;
-            let best_len = best.map_or(0, |matched: Backreference| matched.length as usize);
+            let best_len = best.map_or(0, |matched| matched.length() as usize);
 
             // The byte right after `best_len` must also match, or the candidate
             // can't beat it. Checked early before doing the full compare below.
@@ -300,11 +298,11 @@ impl Chains {
             while length < ceiling && data[start + length] == data[pos + length] {
                 length += 1;
             }
-            if length >= MIN_LENGTH as usize && length > best_len {
-                best = Some(Backreference {
-                    distance: u16::try_from(pos - start).expect("within MAX_DISTANCE"),
-                    length: u16::try_from(length).expect("within MAX_LENGTH"),
-                });
+            // `new` turns down anything under `MIN_LENGTH`.
+            if length > best_len
+                && let Some(found) = Backreference::new(pos - start, length)
+            {
+                best = Some(found);
                 // Nothing scanned after this can beat it, so the first candidate
                 // to reach the cap wins outright and the walk can stop here.
                 if length == ceiling {

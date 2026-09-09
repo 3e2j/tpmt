@@ -44,13 +44,14 @@ pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
         } else {
             Token::BackReference(Backreference::read(&mut reader)?)
         };
-        let Backreference { distance, length } = match token {
+        let backref = match token {
             Token::Literal(byte) => {
                 out.push(byte);
                 continue;
             }
             Token::BackReference(backref) => backref,
         };
+        let (distance, length) = (backref.distance(), backref.length());
 
         let start = out
             .len()

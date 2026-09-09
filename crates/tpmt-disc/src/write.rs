@@ -42,12 +42,6 @@ impl Layout {
     /// - [`Error::MissingEntry`]
     /// - [`Error::TooLarge`]
     /// - anything bubbled from [`fst::build`] or [`sys::boot_bin`]
-    ///
-    /// # Panics
-    ///
-    /// Panics if [`fst::build`] reserves fewer offsets than `items` has
-    /// files. That's an invariant [`fst::build`] is trusted to hold, not
-    /// something a caller can trigger.
     pub fn plan(metadata: &Metadata, items: &[Item]) -> Result<Self> {
         let mut apploader = None;
         let mut dol = None;
@@ -80,10 +74,10 @@ impl Layout {
             return Err(Error::TooLarge { len: total, end });
         }
 
-        let mut table = fst::build(&files)?;
+        let fst::Table { mut bytes, slots } = fst::build(&files)?;
         let dol_offset = (sys::APPLOADER_OFFSET + apploader).next_multiple_of(sys::PREAMBLE_ALIGN);
         let fst_offset = (dol_offset + dol).next_multiple_of(sys::PREAMBLE_ALIGN);
-        let fst_len = table.bytes.len() as u64;
+        let fst_len = bytes.len() as u64;
         if fst_offset + fst_len > end {
             return Err(Error::TooLarge {
                 len: fst_offset + fst_len,
@@ -111,30 +105,34 @@ impl Layout {
                 size: dol,
             },
         ];
-        let mut offsets = table.offsets.iter();
 
         // Where the last file ends, which is where the image does. The position
         // above runs on past it to the next boundary.
         let mut last = at;
 
-        for entry in &mut table.entries {
-            let Entry::File { offset, size, .. } = entry else {
-                continue;
-            };
-            *offset = at;
-            last = at + *size;
-            at = last.next_multiple_of(FILE_ALIGN);
-            if last > end {
-                return Err(Error::TooLarge { len: last, end });
-            }
+        for slot in slots {
+            entries.push(match slot {
+                fst::Slot::Directory { path } => Entry::Directory { path },
+                fst::Slot::File {
+                    path,
+                    size,
+                    offset_field,
+                } => {
+                    let offset = at;
+                    last = at + size;
+                    at = last.next_multiple_of(FILE_ALIGN);
+                    if last > end {
+                        return Err(Error::TooLarge { len: last, end });
+                    }
 
-            let field = offsets.next().expect("every file reserved an offset");
-            // `offset <= last`, and `last > end` returned above, so `offset`
-            // fits a `u32` the same way `last` does.
-            #[allow(clippy::cast_possible_truncation)]
-            table.bytes.u32_at(*field, *offset as u32);
+                    // `offset <= last`, and `last > end` returned above, so
+                    // `offset` fits a `u32` the same way `last` does.
+                    #[allow(clippy::cast_possible_truncation)]
+                    bytes.u32_at(offset_field, offset as u32);
+                    Entry::File { path, offset, size }
+                }
+            });
         }
-        entries.append(&mut table.entries);
 
         // `apploader` and `dol` are both `<= total <= end` (checked above);
         // `dol_offset <= fst_offset` (each only grows by addition and
@@ -155,7 +153,7 @@ impl Layout {
             generated: vec![
                 (0, boot),
                 (sys::BI2_OFFSET, sys::bi2_bin(&metadata.bi2)),
-                (fst_offset, table.bytes.finish()),
+                (fst_offset, bytes.finish()),
             ],
             len: last,
         })

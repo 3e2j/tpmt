@@ -136,18 +136,15 @@ impl Sidecar {
 
     /// The TOML text a project keeps this as.
     ///
-    /// Every field on a sidecar is a plain serializable shape (strings,
-    /// bools, an enum, options, a vec of the same), which `toml` only ever
-    /// fails to serialize over a NaN float or a non-string map key, neither
-    /// of which this has, so there is no `Result` to hand back.
+    /// # Errors
     ///
-    /// # Panics
-    ///
-    /// Never, in practice: the `expect` above only trips on a NaN float or
-    /// non-string map key, and `Sidecar` has neither.
-    #[must_use]
-    pub fn to_toml(&self) -> String {
-        toml::to_string_pretty(self).expect("a Sidecar always serializes")
+    /// [`Error::UnwritableSidecar`](crate::Error::UnwritableSidecar). Every
+    /// field on a sidecar is a plain serializable shape (strings, bools, an
+    /// enum, options, a vec of the same), which `toml` only ever fails to
+    /// serialize over a NaN float or a non-string map key, neither of which
+    /// this has.
+    pub fn to_toml(&self) -> crate::Result<String> {
+        Ok(toml::to_string_pretty(self)?)
     }
 
     /// Reads a sidecar back out of the TOML text a project kept it as.
@@ -191,7 +188,7 @@ mod tests {
     /// about wrapping.
     #[test]
     fn round_trips_through_toml() {
-        let text = example().to_toml();
+        let text = example().to_toml().unwrap();
         assert_eq!(
             text,
             "root = \"archive\"\n\

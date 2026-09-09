@@ -87,6 +87,9 @@ pub enum Error {
 
     #[error("the sidecar is not readable: {0}")]
     Sidecar(#[from] toml::de::Error),
+
+    #[error("the sidecar could not be written: {0}")]
+    UnwritableSidecar(#[from] toml::ser::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

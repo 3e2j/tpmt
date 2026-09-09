@@ -87,12 +87,8 @@ pub const BI2_PAD_SPEC: usize = 0x24;
 
 /// Everything bi2 does not use: the debug monitor size, the argument offset,
 /// the two track fields, and then eight kilobytes of nothing.
-const BI2_RESERVED: [(usize, usize); 4] = [
-    (0x00, 0x04),
-    (0x08, 0x0C),
-    (0x10, 0x18),
-    (0x28, BI2_LEN),
-];
+const BI2_RESERVED: [(usize, usize); 4] =
+    [(0x00, 0x04), (0x08, 0x0C), (0x10, 0x18), (0x28, BI2_LEN)];
 
 /// Where the two preamble files land in a project. A build looks for them by
 /// these names, so they are spelled once.
@@ -235,7 +231,11 @@ fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
     let derived = [
         // The mastering put the apploader's length here, whatever it meant by
         // it, and nothing on a retail disc reads it.
-        (DEBUG_MONITOR_FIELD, apploader_len, "the debug monitor offset"),
+        (
+            DEBUG_MONITOR_FIELD,
+            apploader_len,
+            "the debug monitor offset",
+        ),
         (
             DEBUG_MONITOR_ADDRESS_FIELD,
             DEBUG_MONITOR_ADDRESS,

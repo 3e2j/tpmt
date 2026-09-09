@@ -439,6 +439,24 @@ enum Format {
     /// A RARC archive. Not a file on its own: unpacked into a directory of
     /// its own members rather than parsed and written through.
     Archive,
+    /// A file that stays one, written through as it is or as its editable
+    /// form.
+    File(FileFormat),
+}
+
+impl Format {
+    fn of(path: &str) -> Self {
+        match path.rsplit_once('.').map(|(_, extension)| extension) {
+            Some("arc") => Self::Archive,
+            Some("bmg") => Self::File(FileFormat::Bmg),
+            _ => Self::File(FileFormat::Other),
+        }
+    }
+}
+
+/// The format of a file that is written into the project as one.
+#[derive(Clone, Copy)]
+enum FileFormat {
     /// A BMG message file.
     Bmg,
     /// Nothing here has an opinion about this one, so its bytes go straight
@@ -446,15 +464,7 @@ enum Format {
     Other,
 }
 
-impl Format {
-    fn of(path: &str) -> Self {
-        match path.rsplit_once('.').map(|(_, extension)| extension) {
-            Some("arc") => Self::Archive,
-            Some("bmg") => Self::Bmg,
-            _ => Self::Other,
-        }
-    }
-
+impl FileFormat {
     /// Decodes `bytes` into this format's editable form, when it has one.
     ///
     /// `None` means there is nothing to convert: the bytes go through
@@ -462,18 +472,16 @@ impl Format {
     /// project chains onto the file's own to hold them.
     fn decode(self, bytes: &[u8], path: &Path) -> Result<Option<(&'static str, Vec<u8>)>, Error> {
         match self {
-            Self::Bmg => match tpmt_bmg::unpack(bytes) {
-                Ok(bmg) => Ok(Some((
-                    tpmt_bmg::editable::json::EXTENSION,
-                    tpmt_bmg::editable::json::encode(&bmg),
-                ))),
+            Self::Bmg => match tpmt_bmg::unpack(bytes)
+                .and_then(|bmg| tpmt_bmg::editable::json::encode(&bmg))
+            {
+                Ok(json) => Ok(Some((tpmt_bmg::editable::json::EXTENSION, json))),
                 Err(tpmt_bmg::Error::NotBmg) => Ok(None),
                 Err(source) => Err(Error::Bmg {
                     path: path.to_path_buf(),
                     source,
                 }),
             },
-            Self::Archive => unreachable!("archives are unpacked before reaching this"),
             Self::Other => Ok(None),
         }
     }
@@ -491,7 +499,7 @@ fn unpack_format(
 ) -> Result<(), Error> {
     match format {
         Format::Archive => unpack_archive(bytes, path, at, hashes),
-        format => unpack_file(format, bytes, path, at, hashes),
+        Format::File(format) => unpack_file(format, bytes, path, at, hashes),
     }
 }
 
@@ -595,12 +603,11 @@ fn unpack_archive(
         // than through the decompression below: it does that unwrapping itself.
         let mut yaz0_compressed = false;
         let data = match format {
-            Format::Archive => Cow::Borrowed(file.data),
-            _ if tpmt_compress::is_yaz0(file.data) => {
+            Format::File(_) if tpmt_compress::is_yaz0(file.data) => {
                 yaz0_compressed = true;
                 Cow::Owned(decompress(file.data, &member)?)
             }
-            _ => Cow::Borrowed(file.data),
+            Format::Archive | Format::File(_) => Cow::Borrowed(file.data),
         };
         // Handle unpack for nested archive or files
         unpack_format(format, &data, &member, &inside, hashes)?;
@@ -644,7 +651,7 @@ pub(crate) fn compress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
 /// own extension (`zel_00.bmg` becomes `zel_00.bmg.json`); anything else goes
 /// through as the bytes it already had.
 fn unpack_file(
-    format: Format,
+    format: FileFormat,
     bytes: &[u8],
     path: &Path,
     at: &str,
@@ -933,10 +940,10 @@ mod tests {
         let scratch = Scratch::new("converted");
         let bmg = minimal_bmg();
         let at = scratch.0.join("message.bmg");
-        let (extension, expected) = Format::Bmg.decode(&bmg, &at).unwrap().unwrap();
+        let (extension, expected) = FileFormat::Bmg.decode(&bmg, &at).unwrap().unwrap();
 
         let mut hashes = Vec::new();
-        unpack_file(Format::Bmg, &bmg, &at, "files/message.bmg", &mut hashes).unwrap();
+        unpack_file(FileFormat::Bmg, &bmg, &at, "files/message.bmg", &mut hashes).unwrap();
 
         assert!(!at.exists());
         assert_eq!(crate::fs::read(&chained(&at, extension)).unwrap(), expected);

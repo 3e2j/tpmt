@@ -40,6 +40,11 @@ pub struct RevertPlan {
 pub struct SidecarEntry {
     /// The sidecar's own project path, for prompting.
     pub path: String,
+    /// The unpacked archive the sidecar sits at the root of.
+    archive: String,
+    /// The member's path inside the archive, which is how the sidecar
+    /// names it.
+    member: String,
 }
 
 /// Converts `target`, an absolute filesystem path, to the project-relative
@@ -115,24 +120,15 @@ pub fn plan(project: &Path, path: &str) -> Result<RevertPlan, Error> {
     })
 }
 
-/// The archive `path` would cascade its revert into: the closest `.arc`
-/// ancestor directory, not counting `path`'s own final component even when
-/// that happens to end in `.arc` itself, since a foreign, non-RARC archive
-/// kept whole is a leaf, not a container.
-fn nearest_archive(path: &str) -> Option<String> {
+/// The archive `path` would cascade its revert into, and `path` inside it:
+/// the closest `.arc` ancestor directory, not counting `path`'s own final
+/// component even when that happens to end in `.arc` itself, since a
+/// foreign, non-RARC archive kept whole is a leaf, not a container.
+fn nearest_archive(path: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = path.split('/').collect();
-    let mut nearest = None;
-    let mut at = String::new();
-    for part in &parts[..parts.len() - 1] {
-        if !at.is_empty() {
-            at.push('/');
-        }
-        at.push_str(part);
-        if crate::is_archive(part) {
-            nearest = Some(at.clone());
-        }
-    }
-    nearest
+    let (_, ancestors) = parts.split_last()?;
+    let archive = ancestors.iter().rposition(|part| crate::is_archive(part))?;
+    Some((parts[..=archive].join("/"), parts[archive + 1..].join("/")))
 }
 
 /// Whether reverting `path` can also cascade into its archive's sidecar.
@@ -152,7 +148,7 @@ fn sidecar_entry(
     vanilla: &HashMap<String, String>,
     path: &str,
 ) -> Option<SidecarEntry> {
-    let archive = nearest_archive(path)?;
+    let (archive, member) = nearest_archive(path)?;
     let sidecar = format!("{archive}/{SIDECAR}");
     // Reverting the sidecar itself is not a cascade into it, and one the
     // disc never had, or one already gone from the project, has nothing to
@@ -160,7 +156,11 @@ fn sidecar_entry(
     if path == sidecar || !vanilla.contains_key(&sidecar) || !project.join(&sidecar).exists() {
         return None;
     }
-    Some(SidecarEntry { path: sidecar })
+    Some(SidecarEntry {
+        path: sidecar,
+        archive,
+        member,
+    })
 }
 
 /// Carries out a plan `plan` already worked out, restoring every leaf it
@@ -213,12 +213,7 @@ pub fn apply(
             data.push((*target, crate::fs::read(&scratch.path().join(target))?));
         }
         let cascade = if restore_sidecar_entry {
-            sidecar_update(
-                project,
-                scratch.path(),
-                revert.arc_sidecar_entry.as_ref(),
-                &revert.path,
-            )?
+            sidecar_update(project, scratch.path(), revert.arc_sidecar_entry.as_ref())?
         } else {
             None
         };
@@ -242,37 +237,29 @@ fn sidecar_update(
     project: &Path,
     scratch: &Path,
     entry: Option<&SidecarEntry>,
-    member: &str,
 ) -> Result<Option<(String, Sidecar)>, Error> {
     let Some(entry) = entry else { return Ok(None) };
-    let archive = entry
-        .path
-        .strip_suffix(&format!("/{SIDECAR}"))
-        .expect("a sidecar entry's path always ends in the sidecar's own name");
-    let relative = member
-        .strip_prefix(&format!("{archive}/"))
-        .expect("a member with a sidecar entry always sits under that entry's archive");
 
-    let vanilla = read_sidecar(&scratch.join(archive))?;
+    let vanilla = read_sidecar(&scratch.join(&entry.archive))?;
     let Some(original) = vanilla
         .members
         .iter()
-        .find(|member| member.path == relative)
+        .find(|member| member.path == entry.member)
     else {
         return Ok(None);
     };
 
-    let mut current = read_sidecar(&project.join(archive))?;
+    let mut current = read_sidecar(&project.join(&entry.archive))?;
     let Some(member) = current
         .members
         .iter_mut()
-        .find(|member| member.path == relative)
+        .find(|member| member.path == entry.member)
     else {
         return Ok(None);
     };
     *member = original.clone();
 
-    Ok(Some((archive.to_string(), current)))
+    Ok(Some((entry.archive.clone(), current)))
 }
 
 /// A scratch directory to unpack a vanilla archive into, gone again once

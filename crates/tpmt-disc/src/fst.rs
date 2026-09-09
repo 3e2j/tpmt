@@ -103,11 +103,22 @@ pub struct Table {
     /// The table itself. Every file's data offset is still zero, since the
     /// layout is worked out from how long this came to.
     pub(crate) bytes: Writer,
-    /// What it holds, in table order, at offsets nothing has assigned yet.
-    pub(crate) entries: Vec<Entry>,
-    /// Where each file's data offset goes, in the order the files appear in
-    /// `entries`.
-    pub(crate) offsets: Vec<usize>,
+    /// What it holds, in table order.
+    pub(crate) slots: Vec<Slot>,
+}
+
+/// An [`Entry`] short of the one thing the layout decides: where a file's
+/// bytes go.
+pub enum Slot {
+    File {
+        path: String,
+        size: u64,
+        /// Where in [`Table::bytes`] the data offset is written once known.
+        offset_field: usize,
+    },
+    Directory {
+        path: String,
+    },
 }
 
 /// Builds the file table for a project tree.
@@ -193,49 +204,43 @@ pub fn build(items: &[&Item]) -> Result<Table> {
 fn emit(nodes: Vec<Node>) -> Table {
     let pool: usize = nodes.iter().skip(1).map(|node| node.name.len() + 1).sum();
     let mut bytes = Writer::with_capacity(nodes.len() * ENTRY_LEN + pool);
-    let mut entries = Vec::with_capacity(nodes.len() - 1);
-    let mut offsets = Vec::new();
+    let mut names = Vec::with_capacity(pool);
+    let mut slots = Vec::with_capacity(nodes.len() - 1);
 
-    for node in &nodes {
-        match node.kind {
+    for (index, node) in nodes.into_iter().enumerate() {
+        let slot = match node.kind {
             Kind::Directory { parent, end } => {
                 bytes.u32(DIRECTORY_TYPE | node.name_offset);
                 bytes.u32(parent);
                 bytes.u32(end);
+                Slot::Directory { path: node.path }
             }
             Kind::File { size } => {
                 bytes.u32(node.name_offset);
-                offsets.push(bytes.len());
+                let offset_field = bytes.len();
                 bytes.u32(0);
                 bytes.u32(size);
+                Slot::File {
+                    path: node.path,
+                    size: size as u64,
+                    offset_field,
+                }
             }
+        };
+
+        // The root is the table itself rather than something in it, so it is
+        // not one of the entries a disc reports, and it is not named: the pool
+        // opens with the first entry's name, which is what the root's own
+        // offset of 0 lands on.
+        if index > 0 {
+            names.extend_from_slice(&node.name);
+            names.push(0);
+            slots.push(slot);
         }
     }
-    // The root is not named here, so the pool opens with the first entry's
-    // name, which is what the root's own offset of 0 lands on.
-    for node in nodes.iter().skip(1) {
-        bytes.bytes(&node.name);
-        bytes.u8(0);
-    }
+    bytes.bytes(&names);
 
-    // The root is the table itself rather than something in it, so it is not
-    // one of the entries a disc reports.
-    for node in nodes.into_iter().skip(1) {
-        entries.push(match node.kind {
-            Kind::Directory { .. } => Entry::Directory { path: node.path },
-            Kind::File { size } => Entry::File {
-                path: node.path,
-                offset: 0,
-                size: size as u64,
-            },
-        });
-    }
-
-    Table {
-        bytes,
-        entries,
-        offsets,
-    }
+    Table { bytes, slots }
 }
 
 /// Walks one directory, appending its contents and then whatever they hold.

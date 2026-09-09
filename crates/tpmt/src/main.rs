@@ -214,7 +214,9 @@ fn confirm_revert(plan: &RevertPlan, yes: bool) -> Result<Option<bool>, Error> {
             })
             .unwrap_or_default();
         let cascade = plan.arc_sidecar_entry.is_some();
-        return Ok(ask(&format!("Revert {only} back to vanilla?{suffix} [y/N] "))?.then_some(cascade));
+        return Ok(
+            ask(&format!("Revert {only} back to vanilla?{suffix} [y/N] "))?.then_some(cascade),
+        );
     }
 
     println!(

@@ -11,7 +11,6 @@
 //! literal `\` or `<` is escaped with a leading `\`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::sections::flow::{Flow, Node, NodeId, Root};
 use crate::{Bmg, Encoding, Error, Message, MessageId, Mid1Header, Result, TextSegment};
@@ -23,13 +22,31 @@ pub const EXTENSION: &str = "json";
 /// Encodes a `Bmg` as the bytes of its JSON translation layer, ready to write
 /// to a file. Pretty printed: this is a file a modder reads and edits by hand.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Never, in practice: [`to_json`] only ever produces a `Value` built from
-/// this module's own types, which `serde_json` always serializes.
-#[must_use]
-pub fn encode(bmg: &Bmg) -> Vec<u8> {
-    serde_json::to_vec_pretty(&to_json(bmg)).expect("a BMG translation document always serializes")
+/// [`Error::UnwritableJson`]. `JsonBmg` is a plain serializable shape
+/// (strings, numbers, options, vecs of the same), so in practice it never
+/// comes up.
+pub fn encode(bmg: &Bmg) -> Result<Vec<u8>> {
+    let json = JsonBmg {
+        encoding: bmg.encoding.as_str().to_string(),
+        attribute_len: bmg.attribute_len,
+        mid1: bmg.mid1.map(mid1_to_json),
+        messages: bmg
+            .messages
+            .iter()
+            .map(|m| message_to_json(m, bmg.encoding))
+            .collect(),
+        flow: bmg.flow.as_ref().map(flow_to_json),
+        strings: bmg.strings.as_ref().map(|strings| {
+            strings
+                .iter()
+                .map(|s| decode_text(s, bmg.encoding))
+                .collect()
+        }),
+        extra: bmg.extra.iter().map(unknown_section_to_json).collect(),
+    };
+    serde_json::to_vec_pretty(&json).map_err(Error::UnwritableJson)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -102,44 +119,15 @@ struct JsonMessage {
     text: String,
 }
 
-/// Turns a `Bmg` into its JSON translation layer.
-///
-/// # Panics
-///
-/// Never, in practice: `JsonBmg` is a plain serializable shape (strings,
-/// numbers, options, vecs of the same), which `serde_json` always
-/// serializes to a `Value`.
-pub fn to_json(bmg: &Bmg) -> Value {
-    let json = JsonBmg {
-        encoding: bmg.encoding.as_str().to_string(),
-        attribute_len: bmg.attribute_len,
-        mid1: bmg.mid1.map(mid1_to_json),
-        messages: bmg
-            .messages
-            .iter()
-            .map(|m| message_to_json(m, bmg.encoding))
-            .collect(),
-        flow: bmg.flow.as_ref().map(flow_to_json),
-        strings: bmg.strings.as_ref().map(|strings| {
-            strings
-                .iter()
-                .map(|s| decode_text(s, bmg.encoding))
-                .collect()
-        }),
-        extra: bmg.extra.iter().map(unknown_section_to_json).collect(),
-    };
-    serde_json::to_value(json).expect("a JsonBmg always serializes")
-}
-
-/// Turns a translation layer document back into a `Bmg`.
+/// Turns the bytes of a translation layer document back into a `Bmg`.
 ///
 /// # Errors
 ///
 /// - [`Error::InvalidJson`]
 /// - [`Error::Corrupt`] if a field fails to decode further: an unknown
 ///   encoding name, a bad hex string, or text ending mid escape or mid tag.
-pub fn from_json(value: &Value) -> Result<Bmg> {
-    let json: JsonBmg = serde_json::from_value(value.clone())?;
+pub fn decode(bytes: &[u8]) -> Result<Bmg> {
+    let json: JsonBmg = serde_json::from_slice(bytes)?;
     let encoding = encoding_from_str(&json.encoding)?;
     Ok(Bmg {
         encoding,
@@ -431,16 +419,23 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn from_hex(s: &str) -> Result<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    let (pairs, odd) = s.as_bytes().as_chunks::<2>();
+    if !odd.is_empty() {
         return Err(Error::Corrupt("a hex string has an odd number of digits"));
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|_| Error::Corrupt("a hex string contains a non-hex digit"))
-        })
+    pairs
+        .iter()
+        .map(|&[high, low]| Ok(nibble(high)? << 4 | nibble(low)?))
         .collect()
+}
+
+const fn nibble(digit: u8) -> Result<u8> {
+    match digit {
+        b'0'..=b'9' => Ok(digit - b'0'),
+        b'a'..=b'f' => Ok(digit - b'a' + 10),
+        b'A'..=b'F' => Ok(digit - b'A' + 10),
+        _ => Err(Error::Corrupt("a hex string contains a non-hex digit")),
+    }
 }
 
 #[cfg(test)]
@@ -513,8 +508,8 @@ mod tests {
             extra: Vec::new(),
         };
 
-        let json = crate::editable::json::to_json(&bmg);
-        let round_tripped = crate::editable::json::from_json(&json).unwrap();
+        let json = encode(&bmg).unwrap();
+        let round_tripped = decode(&json).unwrap();
 
         assert_eq!(round_tripped, bmg);
     }
@@ -576,8 +571,8 @@ mod tests {
             }],
         };
 
-        let json = crate::editable::json::to_json(&bmg);
-        let round_tripped = crate::editable::json::from_json(&json).unwrap();
+        let json = encode(&bmg).unwrap();
+        let round_tripped = decode(&json).unwrap();
 
         assert_eq!(round_tripped, bmg);
     }
