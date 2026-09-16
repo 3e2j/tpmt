@@ -94,13 +94,34 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
         return Err(Error::Corrupt("more entries than the archive could hold"));
     }
 
+    let file_data_at = header.saturating_add(reader.u32_at(top_header::FILE_DATA_PTR)? as usize);
+    // The three fields below are never read again once this passes: nothing
+    // downstream needs a stated size, only the actual bytes.
+    if reader.u32_at(top_header::TOTAL_DATA_SIZE)? as usize
+        != data.len().saturating_sub(file_data_at)
+    {
+        return Err(Error::Corrupt(
+            "the stated data size does not match the file",
+        ));
+    }
+    let mram_size = reader.u32_at(top_header::MRAM_SIZE)? as usize;
+    let aram_size = reader.u32_at(top_header::ARAM_SIZE)? as usize;
+    if mram_size
+        .checked_add(aram_size)
+        .is_none_or(|preloaded| preloaded > data.len() - file_data_at)
+    {
+        return Err(Error::Corrupt(
+            "the preload sizes are larger than the data section",
+        ));
+    }
+
     let opened = ArchiveReader {
         nodes_at,
         node_count,
         entries_at,
         entry_count,
         string_pool_at: relative(data_header::STRING_POOL_PTR)?,
-        file_data_at: header.saturating_add(reader.u32_at(top_header::FILE_DATA_PTR)? as usize),
+        file_data_at,
         reader,
     };
     // The root is node 0, and its name is the one thing read outside the walk.
@@ -426,6 +447,22 @@ mod tests {
     fn rejects_a_file_marked_for_no_memory() {
         let mut data = archive();
         data[ENTRIES + entry::FLAGS_AND_NAME] = 0x01;
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn rejects_a_wrong_total_data_size() {
+        let mut w = Writer::from(archive());
+        w.u32_at(top_header::TOTAL_DATA_SIZE, 0);
+        let data = w.finish();
+        assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn rejects_preload_sizes_bigger_than_the_data_section() {
+        let mut w = Writer::from(archive());
+        w.u32_at(top_header::MRAM_SIZE, u32::MAX);
+        let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 }
