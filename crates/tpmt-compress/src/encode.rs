@@ -87,42 +87,40 @@ fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
     let mut chains = Chains::new(decompressed_size);
     let mut lookahead = Lookahead::default();
     let mut pos = 0;
-    let mut group_was_full = false;
+
+    let mut flags: Flags = 0;
+    let mut body = Vec::new();
+    let mut items = 0;
 
     while pos < input.len() {
-        let mut flags: Flags = 0;
-        let mut body = Vec::new();
-        let mut items = 0;
-
-        for flag_bit in 0..GROUP_SIZE {
-            if pos >= input.len() {
-                break;
+        match next_token(&mut chains, &mut lookahead, input, pos, strategy) {
+            Token::Literal(byte) => {
+                flags |= TOP_FLAG_BIT >> items;
+                body.push(byte);
+                pos += 1;
             }
-            items += 1;
-
-            let matched = match next_token(&mut chains, &mut lookahead, input, pos, strategy) {
-                Token::Literal(byte) => {
-                    flags |= TOP_FLAG_BIT >> flag_bit;
-                    body.push(byte);
-                    pos += 1;
-                    continue;
-                }
-                Token::BackReference(matched) => matched,
-            };
-
-            matched.write(&mut body);
-            pos += matched.length() as usize;
+            Token::BackReference(matched) => {
+                matched.write(&mut body);
+                pos += matched.length() as usize;
+            }
         }
 
-        out.push(flags);
-        out.append(&mut body);
-        group_was_full = items == GROUP_SIZE;
+        items += 1;
+        if items == GROUP_SIZE {
+            out.push(flags);
+            out.append(&mut body);
+            flags = 0;
+            items = 0;
+        }
     }
 
-    // Nintendo parity: when the last group comes out full, their encoder still
-    // writes the code byte for the next group, empty as it is.
-    if group_was_full {
-        out.push(0);
+    // Flushes the un-full final group.
+    // As a quirk, on an exact multiple of 8, flags/body are already blank here
+    // (from the reset above), but not empty, so this writes a trailing zero byte.
+    // This is never read back by the decoder, but kept for Nintendo parity.
+    if !input.is_empty() {
+        out.push(flags);
+        out.append(&mut body);
     }
 
     Ok(out)
