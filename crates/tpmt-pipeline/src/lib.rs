@@ -649,7 +649,11 @@ pub(crate) fn compress(bytes: &[u8], path: &Path) -> Result<Vec<u8>, Error> {
 ///
 /// A format with an editable form gets that instead, chained onto the file's
 /// own extension (`zel_00.bmg` becomes `zel_00.bmg.json`); anything else goes
-/// through as the bytes it already had.
+/// through as the bytes it already had. The vanilla hash is taken over
+/// whatever was actually written, at the path it was written to: a status or
+/// a build walks the project tree it finds on disk, so a hash of bytes that
+/// never landed there, or filed under a path nothing occupies, could never
+/// match again even unedited.
 fn unpack_file(
     format: FileFormat,
     bytes: &[u8],
@@ -657,14 +661,21 @@ fn unpack_file(
     at: &str,
     hashes: &mut Vec<FileHash>,
 ) -> Result<(), Error> {
-    match format.decode(bytes, path)? {
-        Some((extension, editable)) => fs::write(&chained(path, extension), &editable)?,
-        None => fs::write(path, bytes)?,
-    }
-    hashes.push(FileHash {
-        path: at.to_string(),
-        digest: plan::hash(bytes),
-    });
+    let hash = if let Some((extension, editable)) = format.decode(bytes, path)? {
+        let digest = plan::hash(&editable);
+        fs::write(&chained(path, extension), &editable)?;
+        FileHash {
+            path: format!("{at}.{extension}"),
+            digest,
+        }
+    } else {
+        fs::write(path, bytes)?;
+        FileHash {
+            path: at.to_string(),
+            digest: plan::hash(bytes),
+        }
+    };
+    hashes.push(hash);
     Ok(())
 }
 

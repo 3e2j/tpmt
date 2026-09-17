@@ -1208,6 +1208,61 @@ mod tests {
         assert!(changes.windows(2).all(|pair| pair[0].path < pair[1].path));
     }
 
+    /// A section or file length as the wire writes it.
+    fn be32(len: usize) -> [u8; 4] {
+        u32::try_from(len).unwrap().to_be_bytes()
+    }
+
+    /// The bytes of a one-message BMG file: a header naming its two sections,
+    /// an INF1 with a single record, and a DAT1 holding the text it points at.
+    fn minimal_bmg() -> Vec<u8> {
+        let mut inf1_body = Vec::new();
+        inf1_body.extend(1u16.to_be_bytes());
+        inf1_body.extend(4u16.to_be_bytes());
+        inf1_body.extend([0u8; 4]);
+        inf1_body.extend(0u32.to_be_bytes());
+
+        let dat1_body = b"Hi\0".to_vec();
+
+        let mut sections = Vec::new();
+        sections.extend(b"INF1");
+        sections.extend(be32(8 + inf1_body.len()));
+        sections.extend(&inf1_body);
+        sections.extend(b"DAT1");
+        sections.extend(be32(8 + dat1_body.len()));
+        sections.extend(&dat1_body);
+
+        let mut bmg = Vec::new();
+        bmg.extend(*b"MESGbmg1");
+        bmg.extend(be32(0x20 + sections.len()));
+        bmg.extend(2u32.to_be_bytes());
+        bmg.push(0x03);
+        bmg.resize(0x20, 0);
+        bmg.extend(&sections);
+        bmg
+    }
+
+    /// A BMG is written into the project at its chained `.json` extension, so
+    /// the vanilla hash taken at unpack has to be keyed there too, over the
+    /// JSON that actually landed rather than the disc's raw bytes: otherwise
+    /// the real path looks added (nothing was ever hashed under it) and the
+    /// disc's own path looks deleted (nothing on disk answers to it), and an
+    /// untouched project reports changes it never made.
+    #[test]
+    fn an_untouched_bmg_reports_no_changes() {
+        let scratch = Scratch::new("bmgstatus");
+        let bmg = minimal_bmg();
+        let iso = imaged(&scratch, &[("files/message.bmg", &bmg)]);
+
+        let project = scratch.0.join("project");
+        crate::unpack(&iso, &project, false).unwrap();
+        let vanilla = crate::store::Store::new(&project).hashes().unwrap();
+
+        let changes = changes(&project, &vanilla).unwrap();
+        let paths: Vec<&str> = changes.iter().map(|change| change.path.as_str()).collect();
+        assert!(paths.is_empty(), "{paths:?}");
+    }
+
     /// The sidecar is not a member, but it decides what the archive rebuilds
     /// into, so editing it alone has to count as touching the archive.
     #[test]
