@@ -52,7 +52,7 @@ enum Command {
     Build {
         /// Project to pack, defaults to the current directory
         dir: Option<PathBuf>,
-        /// Where to write the mod, defaults to out/ inside the project
+        /// Where to write the mod, defaults to build/ inside the project
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -60,7 +60,7 @@ enum Command {
     Image {
         /// Project to pack, defaults to the current directory
         dir: Option<PathBuf>,
-        /// Where to write the image, defaults to out/ inside the project
+        /// Where to write the image, defaults to build/ inside the project
         #[arg(short, long)]
         output: Option<PathBuf>,
     },

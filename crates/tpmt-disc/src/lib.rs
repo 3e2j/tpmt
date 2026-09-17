@@ -297,6 +297,8 @@ impl Disc {
     /// Everything the disc holds: the preamble under `sys/`, then the game's
     /// own files and directories under `files/`, in file table order.
     ///
+    /// Directories are entries too, empty ones included.
+    ///
     /// # Errors
     ///
     /// - [`Error::Read`]

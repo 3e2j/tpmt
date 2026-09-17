@@ -6,10 +6,9 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Every format the toolkit understands. Dispatch is a match on extension here.
-# This crate is the conveyor belt: it only moves files through unpack/build.
-# Organising a format's editable files, sidecars included, is that format
-# crate's own call to make.
+# Every format the toolkit understands. This crate is the conveyor belt: it
+# only moves files through unpack/build. Organising a format's editable
+# files, sidecars included, is that format crate's own call to make.
 tpmt-arc.workspace = true
 tpmt-bmg.workspace = true
 tpmt-compress.workspace = true
@@ -18,9 +17,10 @@ tpmt-disc.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 sha1.workspace = true # change detection against the vanilla digests
-# tpmt.toml. Six crates, and serde was already here for the format crates. A
+# disc.toml. Six crates, and serde was already here for the format crates. A
 # project file a person edits by hand is not worth a parser of our own.
 serde.workspace = true
+serde_json.workspace = true # mod.json specifically
 toml.workspace = true
 
 [lints]

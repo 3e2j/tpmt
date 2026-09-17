@@ -45,6 +45,11 @@ pub struct Sidecar {
     /// worth keeping.
     pub root: String,
     /// Whether a Yaz0 wrapper came off this archive on the way in.
+    ///
+    /// Only ever true for an archive loose on the disc. A nested archive's
+    /// wrapper is a fact about it as a member, so it lives on its
+    /// [`Member`] entry in the parent, and the nested archive arrives here
+    /// already bare. A rebuild wraps in one place or the other, never both.
     #[serde(default)]
     pub yaz0_compressed: bool,
     /// Every member, in the order the archive stored them.
