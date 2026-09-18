@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use tpmt_pipeline::{Change, ChangeKind, RevertPlan};
+use tpmt_pipeline::{Change, ChangeKind};
 
 // A bad invocation already exits 2 through clap, so this is only for work that
 // was asked for correctly and then failed.
@@ -101,7 +101,7 @@ fn run(command: Command) -> Result<(), Error> {
                 }
             }
 
-            tpmt_pipeline::unpack(&iso, &project, true)?;
+            tpmt_pipeline::unpack(&iso, &project)?;
             println!("unpacked {} into {}", iso.display(), project.display());
             Ok(())
         }
@@ -173,69 +173,18 @@ fn print_status(changes: &[Change]) {
 /// Reverts `target`, an absolute filesystem path, asking first unless `yes`
 /// was given.
 fn revert(project: &Path, target: &Path, yes: bool) -> Result<(), Error> {
-    let plan = tpmt_pipeline::revert_plan(project, target)?;
-
-    let Some(cascade) = confirm_revert(&plan, yes)? else {
+    if !yes
+        && !ask(&format!(
+            "Revert {} back to vanilla? [y/N] ",
+            target.display()
+        ))?
+    {
         return Ok(());
-    };
+    }
 
-    tpmt_pipeline::revert(project, &plan, cascade)?;
-    match plan.restore.as_slice() {
-        [one] => println!("Reverted {one}"),
-        many => println!("Reverted {} files under {}", many.len(), plan.path),
-    }
-    if !plan.skip.is_empty() {
-        println!("Left {} untracked file(s) alone", plan.skip.len());
-    }
+    tpmt_pipeline::revert(project, target)?;
+    println!("Reverted {}", target.display());
     Ok(())
-}
-
-/// Asks before a revert goes ahead, `None` meaning the user said no.
-///
-/// A single archive member gets one combined prompt covering its own bytes
-/// and, if there is one, the sidecar entry restorable alongside it, since
-/// the two are one decision to make, not two. A directory or archive gets
-/// one prompt for the whole batch, emphasised with a count and, when short
-/// enough to read at a glance, the list itself.
-fn confirm_revert(plan: &RevertPlan, yes: bool) -> Result<Option<bool>, Error> {
-    if yes {
-        return Ok(Some(plan.arc_sidecar_entry.is_some()));
-    }
-
-    if let [only] = plan.restore.as_slice() {
-        let suffix = plan
-            .arc_sidecar_entry
-            .as_ref()
-            .map(|entry| {
-                format!(
-                    "\nthis will also restore its entry in {}, leaving other members untouched.",
-                    entry.path
-                )
-            })
-            .unwrap_or_default();
-        let cascade = plan.arc_sidecar_entry.is_some();
-        return Ok(
-            ask(&format!("Revert {only} back to vanilla?{suffix} [y/N] "))?.then_some(cascade),
-        );
-    }
-
-    println!(
-        "This will revert {} files under {}:",
-        plan.restore.len(),
-        plan.path
-    );
-    if plan.restore.len() <= 20 {
-        for path in &plan.restore {
-            println!("  {path}");
-        }
-    }
-    if !plan.skip.is_empty() {
-        println!(
-            "{} untracked file(s) under this path will be left alone",
-            plan.skip.len()
-        );
-    }
-    Ok(ask("proceed? [y/N] ")?.then_some(false))
 }
 
 fn ask(prompt: &str) -> Result<bool, Error> {
