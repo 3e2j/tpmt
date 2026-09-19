@@ -60,6 +60,8 @@ use crate::{Error, Result};
 pub const BASE_DIR: &str = "base";
 /// Where [`Staging`] writes a fresh unpack before promoting it to [`BASE_DIR`].
 const BASE_TMP_DIR: &str = "base.tmp";
+/// Where the previous [`BASE_DIR`] sits during a promote.
+const BASE_OLD_DIR: &str = "base.old";
 /// The disc preamble values a build cannot derive, under [`BASE_DIR`].
 pub const DISC_TOML: &str = "disc.toml";
 /// Which loose files arrived Yaz0 wrapped, under [`BASE_DIR`]: see [`Yaz0`].
@@ -73,10 +75,24 @@ const RES_DIR: &str = "res";
 const SCRIPTS_DIR: &str = "scripts";
 const MOD_JSON: &str = "mod.json";
 
+// Build output
+const BUILD_DIR: &str = "build";
+
 // TPMT specifics
 const STORE_DIR: &str = ".tpmt";
 const HASHES_TOML: &str = "hashes.toml";
 const SOURCE_TOML: &str = "source.toml";
+
+/// Every top-level name this crate writes. A directory holding nothing but
+/// these is ours, however far an unpack got before it failed.
+const OWNED: [&str; 6] = [
+    BASE_DIR,
+    BASE_TMP_DIR,
+    BASE_OLD_DIR,
+    MOD_DIR,
+    BUILD_DIR,
+    STORE_DIR,
+];
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
 /// because a file never records its own wrapper: the container holding it
@@ -139,14 +155,17 @@ pub fn discover(start: &Path) -> Result<PathBuf> {
 }
 
 /// Refuses to unpack into a directory holding something this crate did not
-/// write. A project, an empty directory, or no directory at all is fine.
+/// write. A project, an empty directory, no directory at all, or one holding
+/// only [`OWNED`] names (an unpack that failed part way) is fine.
 pub fn refuse_foreign(project: &Path) -> Result<()> {
     if is_project(project) || !project.is_dir() {
         return Ok(());
     }
-    let mut entries = fs::read_dir(project).map_err(io_at(project))?;
-    if entries.next().is_some() {
-        return Err(Error::ForeignDirectory(project.to_path_buf()));
+    for entry in fs::read_dir(project).map_err(io_at(project))? {
+        let entry = entry.map_err(io_at(project))?;
+        if !OWNED.iter().any(|name| entry.file_name() == *name) {
+            return Err(Error::ForeignDirectory(project.to_path_buf()));
+        }
     }
     Ok(())
 }
@@ -157,6 +176,7 @@ pub fn refuse_foreign(project: &Path) -> Result<()> {
 /// Dropping one unpromoted removes whatever it wrote, so a failed unpack
 /// leaves the project as it found it.
 pub struct Staging {
+    project: PathBuf,
     dir: PathBuf,
 }
 
@@ -167,7 +187,10 @@ impl Staging {
         let dir = project.join(BASE_TMP_DIR);
         remove_dir_all_if_exists(&dir)?;
         create_dir_all(&dir)?;
-        Ok(Self { dir })
+        Ok(Self {
+            project: project.to_path_buf(),
+            dir,
+        })
     }
 
     /// Where the unpack writes `base/`'s contents.
@@ -177,11 +200,11 @@ impl Staging {
     }
 
     /// Swaps the staged tree in as `base/`. The old `base/` is moved aside
-    /// first so no point in the swap has neither.
+    /// rather than deleted first, so a failure between the two renames
+    /// leaves it recoverable as [`BASE_OLD_DIR`].
     pub fn promote(self) -> Result<()> {
-        let project = self.dir.parent().unwrap_or(&self.dir);
-        let base = project.join(BASE_DIR);
-        let old = project.join(format!("{BASE_DIR}.old"));
+        let base = self.project.join(BASE_DIR);
+        let old = self.project.join(BASE_OLD_DIR);
 
         remove_dir_all_if_exists(&old)?;
         if base.exists() {
@@ -339,6 +362,18 @@ mod tests {
         fs::create_dir_all(dir.join(STORE_DIR)).unwrap();
     }
 
+    /// The workspace disallows `fs::read` because an ISO may not fit in
+    /// memory. A test file does.
+    fn read(path: &Path) -> Vec<u8> {
+        use std::io::Read;
+        let mut data = Vec::new();
+        fs::File::open(path)
+            .unwrap()
+            .read_to_end(&mut data)
+            .unwrap();
+        data
+    }
+
     #[test]
     fn finds_the_root_from_itself() {
         let scratch = Scratch::new("self");
@@ -397,6 +432,18 @@ mod tests {
         refuse_foreign(&project).unwrap();
     }
 
+    /// An unpack that died before the store went in leaves only names this
+    /// crate wrote, so the next attempt can carry on rather than refuse.
+    #[test]
+    fn accepts_a_half_finished_unpack() {
+        let scratch = Scratch::new("half");
+        write(&scratch.0.join(BASE_DIR).join("files").join("a"), b"").unwrap();
+        write(&scratch.0.join(BASE_TMP_DIR).join("files").join("a"), b"").unwrap();
+        fs::create_dir_all(scratch.0.join(MOD_DIR)).unwrap();
+
+        refuse_foreign(&scratch.0).unwrap();
+    }
+
     #[test]
     fn dropped_staging_leaves_no_trace() {
         let scratch = Scratch::new("staging-drop");
@@ -418,10 +465,10 @@ mod tests {
         write(&staging.dir().join("fresh"), b"new").unwrap();
         staging.promote().unwrap();
 
-        assert_eq!(fs::read(base.join("fresh")).unwrap(), b"new");
+        assert_eq!(read(&base.join("fresh")), b"new");
         assert!(!base.join("stale").exists());
         assert!(!scratch.0.join(BASE_TMP_DIR).exists());
-        assert!(!scratch.0.join(format!("{BASE_DIR}.old")).exists());
+        assert!(!scratch.0.join(BASE_OLD_DIR).exists());
     }
 
     #[test]
@@ -432,6 +479,6 @@ mod tests {
         fs::write(&json, b"edited").unwrap();
 
         scaffold_mod(&scratch.0).unwrap();
-        assert_eq!(fs::read(&json).unwrap(), b"edited");
+        assert_eq!(read(&json), b"edited");
     }
 }

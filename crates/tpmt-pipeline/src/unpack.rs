@@ -59,7 +59,7 @@ fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
         .collect();
     project::write_yaz0(base, &yaz0_compressed)?;
 
-    Ok(unpacked.into_iter().flat_map(|file| file.written).collect())
+    Ok(unpacked.into_iter().flat_map(|file| file.hashes).collect())
 }
 
 /// One disc file laid out under `base/`.
@@ -69,25 +69,25 @@ struct Unpacked {
     /// Whether a Yaz0 wrapper came off it. The disc is the container that
     /// records this for a loose file, in `yaz0.toml`.
     yaz0_compressed: bool,
-    /// Every project file it became, and what each hashed to.
-    written: Vec<(String, String)>,
+    /// What every project file it became hashed to, keyed by project path.
+    hashes: BTreeMap<String, String>,
 }
 
 /// Explodes one disc file into `base/`, hashing each project file as it
 /// lands.
 fn unpack_file(disc: &Disc, base: &Path, path: &str, offset: u64, size: u64) -> Result<Unpacked> {
     let data = disc.read(offset, size)?;
-    let mut written = Vec::new();
+    let mut hashes = BTreeMap::new();
     let yaz0_compressed = explode::file(path, &data, &mut |path, data| {
         project::write(&base.join(path), data)?;
-        written.push((path.to_string(), sha1_hex(data)));
+        hashes.insert(path.to_string(), sha1_hex(data));
         Ok(())
     })?;
 
     Ok(Unpacked {
         path: path.to_string(),
         yaz0_compressed,
-        written,
+        hashes,
     })
 }
 
