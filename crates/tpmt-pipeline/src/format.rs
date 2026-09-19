@@ -43,7 +43,7 @@ pub fn decode(path: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
 
     if Archive::recognises(sniffed) {
         let archive = Archive::decode(sniffed).map_err(at(path))?;
-        return decode_archive(path, &archive, unwrapped.is_some());
+        return explode_archive(path, &archive, unwrapped.is_some());
     }
 
     // Translation layers (e.g. tpmt_bmg::editable::json) are deprecated for
@@ -52,12 +52,11 @@ pub fn decode(path: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     Ok(vec![(path.to_string(), data.to_vec())])
 }
 
-/// A member's wrapper, unlike a loose file's, has somewhere to be recorded:
-/// its [`Member`] entry. So every member is peeled here, and `decode` below
-/// only ever sees a nested archive bare. That makes [`Sidecar::yaz0_compressed`]
-/// true only for an archive loose on the disc; a nested one's wrapping lives
-/// on its member entry in the parent, and nowhere else.
-fn decode_archive(
+/// Explodes `archive` into its members' `(project path, bytes)` pairs,
+/// plus a [`SIDECAR`] recording each member's path, preload flag, id, and
+/// Yaz0 wrapper. Wrappers are peeled here, not in `decode`, since only a
+/// member's wrapper has somewhere to be recorded: its own [`Member`] entry.
+fn explode_archive(
     path: &str,
     archive: &Archive<'_>,
     yaz0_compressed: bool,
