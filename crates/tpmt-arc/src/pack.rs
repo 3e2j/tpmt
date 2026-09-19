@@ -154,36 +154,6 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
     Ok(dirs)
 }
 
-/// Writes a whole archive from its file list.
-///
-/// Directories only exist as shared prefixes of file paths, so an empty one
-/// is dropped: there's no path left to name it. The root is named by the
-/// archive itself, so an empty file list still packs.
-///
-/// Files must arrive grouped by memory: every [`Preload::Mram`] one, then
-/// every [`Preload::Aram`] one, then the rest. The header stores one total
-/// size per memory rather than tagging each file, so that total is only
-/// correct if its group is contiguous; an interleaved list gets
-/// [`Error::Ungrouped`] instead of an archive with wrong stated sizes. Path
-/// order is unconstrained, and a list straight from [`unpack`] is already
-/// grouped.
-///
-/// Every field is reproduced. A file with no [`File::id`] gets the lowest id
-/// no other file in the list already claims, not the format's own convention
-/// (see the comment above [`place_files`] for why). This only guards against
-/// a collision within the list handed in; it cannot know whether some other
-/// file, elsewhere, still references an id that a deleted file used to hold.
-/// That is a linker's job once one exists.
-///
-/// An [`Archive::next_free_id`] the input didn't carry is derived here too
-/// (despite never being used by our implementation).
-///
-/// # Errors
-///
-/// - [`Error::UnusableName`] if a path has an empty, `.`, `..`, or
-///   backslash-holding component, or one that doesn't encode as Shift-JIS.
-/// - [`Error::Ungrouped`]
-/// - [`Error::Oversized`]
 pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
     // Numbers every directory and file; everything below is keyed off that.
     let tree = DirTree::build(archive)?;
@@ -251,7 +221,7 @@ struct Placement {
 ///
 /// A file without an id claims the lowest one nothing else in the list already
 /// holds, so a fallback can never collide with an id carried over from the
-/// original (see [`pack`]'s doc, and the comment below for the format's own
+/// original (see `Archive::encode`'s doc, and the comment below for the format's own
 /// convention). The `synced` flag records whether every file's final id,
 /// however it got one, happens to equal its entry index, the guess a lookup by
 /// id tries before it searches, though nothing reads the flag back to decide
@@ -620,7 +590,8 @@ pub mod tests {
     use tpmt_bytes::Reader;
 
     use super::*;
-    use crate::{File, unpack};
+    use crate::File;
+    use crate::unpack::unpack;
 
     pub fn fixture() -> Vec<File<'static>> {
         vec![

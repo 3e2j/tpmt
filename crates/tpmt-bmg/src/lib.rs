@@ -44,8 +44,7 @@ mod unpack;
 
 pub use crate::sections::flow::Flow;
 pub use crate::sections::message::{Message, MessageId, Mid1Header, TextSegment};
-pub use pack::pack;
-pub use unpack::unpack;
+pub use tpmt_format::Format;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -169,14 +168,41 @@ pub struct Bmg {
     pub extra: Vec<UnknownSection>,
 }
 
+impl<'a> Format<'a> for Bmg {
+    const MAGIC: &'static [u8] = header::MAGIC;
+    type Error = Error;
+
+    /// Takes a message file apart.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::NotBmg`]
+    /// - [`Error::Corrupt`] if the section table would misplace or lose a
+    ///   section: a size that doesn't fit its header, a stated file size that
+    ///   doesn't match where the sections end, a required section missing, or a
+    ///   flow graph with only one of its two sections.
+    fn decode(data: &'a [u8]) -> Result<Self> {
+        unpack::unpack(data)
+    }
+
+    /// Writes a whole message file from what [`decode`](Self::decode) took
+    /// apart.
+    ///
+    /// # Errors
+    /// TODO: Write
+    fn encode(&self) -> Result<Vec<u8>> {
+        pack::pack(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn anything_else_is_not_a_message_file() {
-        assert!(matches!(unpack(b"RARC"), Err(Error::NotBmg)));
-        assert!(matches!(unpack(b""), Err(Error::NotBmg)));
+        assert!(matches!(Bmg::decode(b"RARC"), Err(Error::NotBmg)));
+        assert!(matches!(Bmg::decode(b""), Err(Error::NotBmg)));
     }
 
     /// The header byte and the variant it names, both ways round. An unknown

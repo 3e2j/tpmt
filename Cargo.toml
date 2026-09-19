@@ -13,6 +13,7 @@ tpmt-bmg = { path = "crates/tpmt-bmg", version = "0.1.0" }
 tpmt-bytes = { path = "crates/tpmt-bytes", version = "0.1.0" }
 tpmt-compress = { path = "crates/tpmt-compress", version = "0.1.0" }
 tpmt-disc = { path = "crates/tpmt-disc", version = "0.1.0" }
+tpmt-format = { path = "crates/tpmt-format", version = "0.1.0" }
 tpmt-pipeline = { path = "crates/tpmt-pipeline", version = "0.1.0" }
 
 thiserror = "2"

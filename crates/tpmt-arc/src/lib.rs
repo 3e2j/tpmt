@@ -32,9 +32,9 @@
 //! Replacing one file's bytes, which is the shape nearly every caller wants:
 //!
 //! ```
-//! use tpmt_arc::{Archive, File};
+//! use tpmt_arc::{Archive, File, Format};
 //!
-//! # let on_disc = tpmt_arc::pack(&Archive {
+//! # let on_disc = Archive {
 //! #     root: "archive".into(),
 //! #     files: vec![File {
 //! #         path: "dat/hello.bin".into(),
@@ -42,12 +42,13 @@
 //! #         ..Default::default()
 //! #     }],
 //! #     ..Default::default()
-//! # })?;
-//! let mut opened = tpmt_arc::unpack(&on_disc)?;
+//! # }
+//! # .encode()?;
+//! let mut opened = Archive::decode(&on_disc)?;
 //! opened.files[0].data = b"after";
-//! let rebuilt = tpmt_arc::pack(&opened)?;
+//! let rebuilt = opened.encode()?;
 //!
-//! assert_eq!(tpmt_arc::unpack(&rebuilt)?.files[0].data, b"after");
+//! assert_eq!(Archive::decode(&rebuilt)?.files[0].data, b"after");
 //! # Ok::<(), tpmt_arc::Error>(())
 //! ```
 
@@ -58,8 +59,7 @@ pub mod editable;
 mod pack;
 mod unpack;
 
-pub use pack::pack;
-pub use unpack::unpack;
+pub use tpmt_format::Format;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -97,7 +97,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Which console memory a file is loaded into when its archive is mounted.
 ///
 /// The order the variants are declared in is the order an archive stores them
-/// in, and [`pack`] holds callers to it.
+/// in, and [`Archive::encode`] holds callers to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Preload {
@@ -116,7 +116,7 @@ pub enum Preload {
 ///
 /// `id` and `preload` are the only things an entry records about a file that
 /// its path and bytes do not say. They ride along so that a file handed from
-/// [`unpack`] to [`pack`] comes back exactly as stored; a newly minted file
+/// [`Archive::decode`] to [`Archive::encode`] comes back exactly as stored; a newly minted file
 /// takes both from `..Default::default()`.
 #[derive(Debug, Clone, Default)]
 pub struct File<'a> {
@@ -125,7 +125,7 @@ pub struct File<'a> {
     /// The stored file id, used by *other* resources to cross-reference files.
     ///
     /// Treated as authored data, never reassigned. `None` is for a file nothing
-    /// refers to yet, and takes its entry index from [`pack`], which is what a
+    /// refers to yet, and takes its entry index from [`Archive::encode`], which is what a
     /// freshly authored archive numbers everything.
     // TODO: derive ids from the referencing resources once there is a linker.
     pub id: Option<u16>,
@@ -144,9 +144,70 @@ pub struct Archive<'a> {
     pub root: String,
     pub files: Vec<File<'a>>,
     /// Leftover bookkeeping from whatever built the archive, which nothing
-    /// reads. [`pack`] derives it, so this is `Some` only for the few archives
-    /// storing a number that would not come back on its own.
+    /// reads. [`Archive::encode`] derives it, so this is `Some` only for the
+    /// few archives storing a number that would not come back on its own.
     pub next_free_id: Option<u16>,
+}
+
+impl<'a> Format<'a> for Archive<'a> {
+    const MAGIC: &'static [u8] = top_header::MAGIC;
+    type Error = Error;
+
+    /// Takes an archive apart into every file it holds, directories flattened
+    /// into the paths. Nothing is copied out of `data`.
+    ///
+    /// The files come back in the archive's own order, which is the order
+    /// [`encode`](Self::encode) rebuilds the tree from, so a round trip keeps it.
+    ///
+    /// Compression flags are dropped, since `encode` recomputes them from the
+    /// file's bytes.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::NotRarc`]
+    /// - [`Error::UnusableName`]
+    /// - [`Error::Corrupt`] if the archive's structure is corrupt in a way that
+    ///   would misplace or lose an entry (a wrong stated size, a missing root,
+    ///   more entries than it claims to hold, a file with no memory tag, a
+    ///   directory tree that loops, or similar).
+    fn decode(data: &'a [u8]) -> Result<Self> {
+        unpack::unpack(data)
+    }
+
+    /// Writes a whole archive from its file list.
+    ///
+    /// Directories only exist as shared prefixes of file paths, so an empty
+    /// one is dropped: there's no path left to name it. The root is named by
+    /// the archive itself, so an empty file list still packs.
+    ///
+    /// Files must arrive grouped by memory: every [`Preload::Mram`] one, then
+    /// every [`Preload::Aram`] one, then the rest. The header stores one total
+    /// size per memory rather than tagging each file, so that total is only
+    /// correct if its group is contiguous; an interleaved list gets
+    /// [`Error::Ungrouped`] instead of an archive with wrong stated sizes.
+    /// Path order is unconstrained, and a list straight from
+    /// [`decode`](Self::decode) is already grouped.
+    ///
+    /// Every field is reproduced. A file with no [`File::id`] gets the lowest
+    /// id no other file in the list already claims, not the format's own
+    /// convention (see the comment above `place_files` in `pack.rs` for why).
+    /// This only guards against a collision within the list handed in; it
+    /// cannot know whether some other file, elsewhere, still references an id
+    /// that a deleted file used to hold. That is a linker's job once one
+    /// exists.
+    ///
+    /// An [`Archive::next_free_id`] the input didn't carry is derived here too
+    /// (despite never being used by our implementation).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnusableName`] if a path has an empty, `.`, `..`, or
+    ///   backslash-holding component, or one that doesn't encode as Shift-JIS.
+    /// - [`Error::Ungrouped`]
+    /// - [`Error::Oversized`]
+    fn encode(&self) -> Result<Vec<u8>> {
+        pack::pack(self)
+    }
 }
 
 /// The fixed 0x20 at the front of the archive. Everything else is found
@@ -154,7 +215,7 @@ pub struct Archive<'a> {
 mod top_header {
     pub const LEN: usize = 0x20;
     /// What 0x00 holds, which is the only way to tell an archive from anything
-    /// else handed to [`unpack`](super::unpack).
+    /// else handed to [`decode`](super::Archive::decode).
     pub const MAGIC: &[u8; 4] = b"RARC";
     pub const FILE_SIZE: usize = 0x04;
     pub const DATA_HEADER_PTR: usize = 0x08;
@@ -235,7 +296,7 @@ mod entry {
 /// One past the highest id in use, counting entries rather than files when the
 /// ids are all their own entry index, since then the directories sit on ids too.
 ///
-/// Worked out the same way at both ends, so that [`unpack`] can tell an archive
+/// Worked out the same way at both ends, so that `decode` can tell an archive
 /// storing this from one storing something else.
 fn next_free_id(entry_count: usize, highest: Option<u16>, synced: bool) -> Result<u16> {
     if synced {

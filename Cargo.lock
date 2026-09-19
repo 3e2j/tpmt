@@ -445,6 +445,7 @@ dependencies = [
  "thiserror",
  "toml",
  "tpmt-bytes",
+ "tpmt-format",
 ]
 
 [[package]]
@@ -456,6 +457,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tpmt-bytes",
+ "tpmt-format",
 ]
 
 [[package]]
@@ -483,6 +485,10 @@ dependencies = [
  "thiserror",
  "tpmt-bytes",
 ]
+
+[[package]]
+name = "tpmt-format"
+version = "0.1.0"
 
 [[package]]
 name = "tpmt-pipeline"

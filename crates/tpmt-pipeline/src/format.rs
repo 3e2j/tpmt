@@ -10,6 +10,7 @@
 //! peeled is carried along and recorded, so the fact survives the round trip.
 
 use tpmt_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
+use tpmt_arc::{Archive, Format};
 use tpmt_compress::{is_yaz0, yaz0_decode};
 
 use crate::{Error, Result};
@@ -33,25 +34,22 @@ pub enum DecodeError {
 /// the recursion went to get there: one pair for a plain file, one per member
 /// plus a sidecar for an archive.
 ///
-/// The leading tag picks the format before its decoder runs, so an error out
-/// of a decoder always means "this format, but broken", never "not this
-/// format". A new leaf format is one more arm with its tag.
+/// Each format's magic picks it before its decoder runs, so an error out of
+/// a decoder always means "this format, but broken", never "not this
+/// format". A new leaf format is one more `recognises` check.
 pub fn decode(path: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     let unwrapped = peel(data).map_err(at(path))?;
     let sniffed = unwrapped.as_deref().unwrap_or(data);
 
-    // Every format announces itself with a four-byte ASCII tag, so that is
-    // the key. The decoder still checks whatever follows the tag.
-    match sniffed.first_chunk() {
-        Some(b"RARC") => {
-            let archive = tpmt_arc::unpack(sniffed).map_err(at(path))?;
-            decode_archive(path, &archive, unwrapped.is_some())
-        }
-        // Translation layers (e.g. tpmt_bmg::editable::json) are deprecated
-        // for now: raw game files + a UI is the scoped-down editing path.
-        // A leaf format passes through untouched until that changes.
-        _ => Ok(vec![(path.to_string(), data.to_vec())]),
+    if Archive::recognises(sniffed) {
+        let archive = Archive::decode(sniffed).map_err(at(path))?;
+        return decode_archive(path, &archive, unwrapped.is_some());
     }
+
+    // Translation layers (e.g. tpmt_bmg::editable::json) are deprecated for
+    // now: raw game files + a UI is the scoped-down editing path. A leaf
+    // format passes through untouched until that changes.
+    Ok(vec![(path.to_string(), data.to_vec())])
 }
 
 /// A member's wrapper, unlike a loose file's, has somewhere to be recorded:
@@ -61,7 +59,7 @@ pub fn decode(path: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
 /// on its member entry in the parent, and nowhere else.
 fn decode_archive(
     path: &str,
-    archive: &tpmt_arc::Archive<'_>,
+    archive: &Archive<'_>,
     yaz0_compressed: bool,
 ) -> Result<Vec<(String, Vec<u8>)>> {
     let mut writes = Vec::new();
@@ -104,7 +102,7 @@ fn at<E: Into<DecodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tpmt_arc::{Archive, File};
+    use tpmt_arc::File;
     use tpmt_compress::yaz0_encode;
 
     use super::*;
@@ -114,11 +112,12 @@ mod tests {
     }
 
     fn archive(root: &str, files: Vec<File<'_>>) -> Vec<u8> {
-        tpmt_arc::pack(&Archive {
+        Archive {
             root: root.to_string(),
             files,
             next_free_id: None,
-        })
+        }
+        .encode()
         .unwrap()
     }
 

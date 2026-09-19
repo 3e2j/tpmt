@@ -4,8 +4,8 @@
 use tpmt_bytes::Reader;
 
 use crate::{
-    Archive, Error, File, Preload, Result, data_header, entry, name_hash, next_free_id, node,
-    top_header,
+    Archive, Error, File, Format, Preload, Result, data_header, entry, name_hash, next_free_id,
+    node, top_header,
 };
 
 /// One archive opened for reading: its bytes, and where each section starts.
@@ -32,25 +32,8 @@ struct ArchiveReader<'a> {
     file_data_at: usize,
 }
 
-/// Takes an archive apart into every file it holds, directories flattened into
-/// the paths. Nothing is copied out of `data`.
-///
-/// The files come back in the archive's own order, which is the order [`pack`]
-/// rebuilds the tree from, so a round trip keeps it.
-///
-/// Compression flags are dropped, since [`pack`] recomputes them from the
-/// file's bytes.
-///
-/// # Errors
-///
-/// - [`Error::NotRarc`]
-/// - [`Error::UnusableName`]
-/// - [`Error::Corrupt`] if the archive's structure is corrupt in a way that
-///   would misplace or lose an entry (a wrong stated size, a missing root,
-///   more entries than it claims to hold, a file with no memory tag, a
-///   directory tree that loops, or similar).
 pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
-    if !data.starts_with(top_header::MAGIC) {
+    if !Archive::recognises(data) {
         return Err(Error::NotRarc);
     }
 

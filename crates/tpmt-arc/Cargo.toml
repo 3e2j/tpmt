@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 tpmt-bytes.workspace = true
+tpmt-format.workspace = true
 thiserror.workspace = true
 encoding_rs.workspace = true # entry names in the string pool are Shift-JIS
 serde.workspace = true

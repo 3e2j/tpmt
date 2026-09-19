@@ -4,7 +4,7 @@
 use tpmt_bytes::Reader;
 
 use crate::sections::{flow, message};
-use crate::{Bmg, Encoding, Error, Result, UnknownSection, header, section};
+use crate::{Bmg, Encoding, Error, Format, Result, UnknownSection, header, section};
 
 /// The sections a file holds, sorted out by name on the way past.
 /// INF1 and DAT1 are always there, so they are required fields rather than
@@ -108,17 +108,8 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     ))
 }
 
-/// Takes a message file apart.
-///
-/// # Errors
-///
-/// - [`Error::NotBmg`]
-/// - [`Error::Corrupt`] if the section table would misplace or lose a
-///   section: a size that doesn't fit its header, a stated file size that
-///   doesn't match where the sections end, a required section missing, or a
-///   flow graph with only one of its two sections.
 pub fn unpack(data: &[u8]) -> Result<Bmg> {
-    if !data.starts_with(header::MAGIC) {
+    if !Bmg::recognises(data) {
         return Err(Error::NotBmg);
     }
 
