@@ -10,7 +10,6 @@
 //! peeled is carried along and recorded, so the fact survives the round trip.
 
 use tpmt_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_bmg::editable::json;
 use tpmt_compress::{is_yaz0, yaz0_decode};
 
 use crate::{Error, Result};
@@ -48,14 +47,9 @@ pub fn decode(path: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
             let archive = tpmt_arc::unpack(sniffed).map_err(at(path))?;
             decode_archive(path, &archive, unwrapped.is_some())
         }
-        // An editable leaf has nowhere to record a wrapper, so a wrapped one
-        // stays as it arrived. Members are already bare here; only a loose
-        // disc file can hit the guard.
-        Some(b"MESG") if unwrapped.is_none() => {
-            let bmg = tpmt_bmg::unpack(sniffed).map_err(at(path))?;
-            let editable = json::encode(&bmg).map_err(at(path))?;
-            Ok(vec![(format!("{path}.{}", json::EXTENSION), editable)])
-        }
+        // Translation layers (e.g. tpmt_bmg::editable::json) are deprecated
+        // for now: raw game files + a UI is the scoped-down editing path.
+        // A leaf format passes through untouched until that changes.
         _ => Ok(vec![(path.to_string(), data.to_vec())]),
     }
 }

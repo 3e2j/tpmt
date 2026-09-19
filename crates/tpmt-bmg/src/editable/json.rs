@@ -1,5 +1,7 @@
 //! The BMG translation layer: `Bmg` as JSON.
 //!
+//! Deprecated: not called from `tpmt-pipeline`. See the parent module doc.
+//!
 //! Structural mirror only. No game-specific names are named here, since
 //! what any of them mean is per-game and stays out of this crate. Byte blobs
 //! whose layout is game data (attributes, tag bytes, event params) round-trip
