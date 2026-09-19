@@ -1,5 +1,5 @@
-//! Walks a disc, decodes whatever [`crate::format`] recognises, and lays it
-//! out under `base/`. See [`crate::unpack`].
+//! Walks a disc, explodes each file (see [`crate::explode`]), and lays the
+//! result out under `base/`. See [`crate::unpack`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -8,103 +8,85 @@ use rayon::prelude::*;
 use sha1::{Digest, Sha1};
 use tpmt_disc::{Disc, Entry};
 
-use crate::{Result, format, project};
+use crate::{Result, explode, project};
 
+/// Every fallible step comes before every irreversible one: nothing under
+/// `project` changes until the whole disc has been read and hashed.
 pub fn run(iso: &Path, project: &Path) -> Result<()> {
     // Checked before the disc is even opened: whether this directory is safe
     // to write into does not depend on what is in the ISO.
-    project::prepare(project)?;
+    project::refuse_foreign(project)?;
+    let disc = Disc::open(iso)?;
+
+    let staging = project::Staging::begin(project)?;
+    let hashes = unpack_into(&disc, staging.dir())?;
+    let sha1 = disc.sha1()?;
+
+    staging.promote()?;
+    project::commit(project, iso, &sha1, &hashes)?;
     // Scaffolded alongside base/ rather than left for the first structured
     // edit to create, so a fresh project has somewhere for overlay/res/
     // edits to land immediately. A no-op if mod/ already exists.
-    project::scaffold_mod(project)?;
-
-    let base = project::base_staging_dir(project);
-    let disc = Disc::open(iso)?;
-
-    let hashes = match unpack_into(&disc, &base) {
-        Ok(hashes) => hashes,
-        Err(err) => {
-            // Best-effort: the staging dir is cruft either way, but the
-            // unpack error is the one that matters.
-            let _ = project::clear_staging(project);
-            return Err(err);
-        }
-    };
-
-    project::promote_base(project)?;
-    project::commit(project, iso, &disc.sha1()?, &hashes)
+    project::scaffold_mod(project)
 }
 
 /// Writes one disc's worth of files into `base`, hashing each as it goes.
 fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
     project::write_metadata(base, disc.metadata())?;
 
-    let unpacked = disc
-        .entries()?
+    // Directories hold nothing to hash, but an empty one would otherwise be
+    // lost, since a file only creates the directories on its own path.
+    let entries = disc.entries()?;
+    for entry in &entries {
+        if let Entry::Directory { path } = entry {
+            project::create_dir_all(&base.join(path))?;
+        }
+    }
+
+    let unpacked = entries
         .par_iter()
-        .map(|entry| unpack_entry(disc, base, entry))
+        .filter_map(|entry| match entry {
+            Entry::File { path, offset, size } => Some((path, *offset, *size)),
+            Entry::Directory { .. } => None,
+        })
+        .map(|(path, offset, size)| unpack_file(disc, base, path, offset, size))
         .collect::<Result<Vec<_>>>()?;
 
     let yaz0_compressed: Vec<_> = unpacked
         .iter()
-        .filter(|entry| entry.yaz0_compressed)
-        .map(|entry| entry.path.clone())
+        .filter(|file| file.yaz0_compressed)
+        .map(|file| file.path.clone())
         .collect();
     project::write_yaz0(base, &yaz0_compressed)?;
 
-    Ok(unpacked
-        .into_iter()
-        .flat_map(|entry| entry.written)
-        .map(|written| (written.path, written.sha1))
-        .collect())
+    Ok(unpacked.into_iter().flat_map(|file| file.written).collect())
 }
 
-/// One disc entry laid out under `base/`.
+/// One disc file laid out under `base/`.
 struct Unpacked {
-    /// The entry's disc path.
+    /// The file's disc path.
     path: String,
     /// Whether a Yaz0 wrapper came off it. The disc is the container that
     /// records this for a loose file, in `yaz0.toml`.
     yaz0_compressed: bool,
-    written: Vec<WrittenFile>,
+    /// Every project file it became, and what each hashed to.
+    written: Vec<(String, String)>,
 }
 
-/// One file written into `base/`, and what it hashed to.
-struct WrittenFile {
-    path: String,
-    sha1: String,
-}
-
-/// Decodes one disc entry into `base/`. A directory holds nothing to hash,
-/// but is created here so an empty one is not lost.
-fn unpack_entry(disc: &Disc, base: &Path, entry: &Entry) -> Result<Unpacked> {
-    let Entry::File { path, offset, size } = entry else {
-        project::create_dir_all(&base.join(entry.path()))?;
-        return Ok(Unpacked {
-            path: entry.path().to_string(),
-            yaz0_compressed: false,
-            written: Vec::new(),
-        });
-    };
-
-    let data = disc.read(*offset, *size)?;
-    let decoded = format::decode(path, &data)?;
-    let written = decoded
-        .writes
-        .into_iter()
-        .map(|(path, data)| {
-            project::write(&base.join(&path), &data)?;
-            Ok(WrittenFile {
-                sha1: sha1_hex(&data),
-                path,
-            })
-        })
-        .collect::<Result<_>>()?;
+/// Explodes one disc file into `base/`, hashing each project file as it
+/// lands.
+fn unpack_file(disc: &Disc, base: &Path, path: &str, offset: u64, size: u64) -> Result<Unpacked> {
+    let data = disc.read(offset, size)?;
+    let mut written = Vec::new();
+    let yaz0_compressed = explode::file(path, &data, &mut |path, data| {
+        project::write(&base.join(path), data)?;
+        written.push((path.to_string(), sha1_hex(data)));
+        Ok(())
+    })?;
 
     Ok(Unpacked {
-        path: path.clone(),
-        yaz0_compressed: decoded.yaz0_compressed,
+        path: path.to_string(),
+        yaz0_compressed,
         written,
     })
 }

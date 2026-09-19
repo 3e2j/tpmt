@@ -168,7 +168,7 @@ pub struct Bmg {
     pub extra: Vec<UnknownSection>,
 }
 
-impl<'a> Format<'a> for Bmg {
+impl Format<'_> for Bmg {
     const MAGIC: &'static [u8] = header::MAGIC;
     type Error = Error;
 
@@ -181,7 +181,7 @@ impl<'a> Format<'a> for Bmg {
     ///   section: a size that doesn't fit its header, a stated file size that
     ///   doesn't match where the sections end, a required section missing, or a
     ///   flow graph with only one of its two sections.
-    fn decode(data: &'a [u8]) -> Result<Self> {
+    fn decode(data: &[u8]) -> Result<Self> {
         unpack::unpack(data)
     }
 

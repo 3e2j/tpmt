@@ -33,7 +33,7 @@
 //!
 //! ```text
 //! .tpmt/source.toml   where the ISO was last seen, plus its sha1
-//! .tpmt/hashes        vanilla hashes of base/, for change detection
+//! .tpmt/hashes.toml   vanilla hashes of base/, for change detection
 //! ```
 //!
 //! The store is written at [`crate::unpack`] and read back by `status`/`build`.
@@ -58,7 +58,7 @@ use crate::{Error, Result};
 // Base game
 /// Read-only unpack of the game.
 pub const BASE_DIR: &str = "base";
-/// Staging area for a fresh unpack, promoted to [`BASE_DIR`] once complete.
+/// Where [`Staging`] writes a fresh unpack before promoting it to [`BASE_DIR`].
 const BASE_TMP_DIR: &str = "base.tmp";
 /// The disc preamble values a build cannot derive, under [`BASE_DIR`].
 pub const DISC_TOML: &str = "disc.toml";
@@ -73,14 +73,10 @@ const RES_DIR: &str = "res";
 const SCRIPTS_DIR: &str = "scripts";
 const MOD_JSON: &str = "mod.json";
 
-// Build directory
-/// Built mods and images. Absent until a build makes one.
-pub const BUILD_DIR: &str = "build";
-
 // TPMT specifics
 const STORE_DIR: &str = ".tpmt";
-const HASHES: &str = "hashes";
-const SOURCE: &str = "source.toml";
+const HASHES_TOML: &str = "hashes.toml";
+const SOURCE_TOML: &str = "source.toml";
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
 /// because a file never records its own wrapper: the container holding it
@@ -142,42 +138,66 @@ pub fn discover(start: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Makes `project` somewhere an unpack may write into. `base/` is left alone
-/// until [`promote_base`] replaces it; only a stale `base.tmp` from a
-/// previous failed unpack is cleared. A directory holding anything else is
-/// refused.
-pub fn prepare(project: &Path) -> Result<()> {
-    if is_project(project) {
-        return clear_staging(project);
+/// Refuses to unpack into a directory holding something this crate did not
+/// write. A project, an empty directory, or no directory at all is fine.
+pub fn refuse_foreign(project: &Path) -> Result<()> {
+    if is_project(project) || !project.is_dir() {
+        return Ok(());
     }
-    if project.is_dir()
-        && fs::read_dir(project)
-            .map_err(io_at(project))?
-            .next()
-            .is_some()
-    {
+    let mut entries = fs::read_dir(project).map_err(io_at(project))?;
+    if entries.next().is_some() {
         return Err(Error::ForeignDirectory(project.to_path_buf()));
     }
     Ok(())
 }
 
-/// Where a fresh unpack should write `base/`'s contents.
-#[must_use]
-pub fn base_staging_dir(project: &Path) -> PathBuf {
-    project.join(BASE_TMP_DIR)
+/// A fresh `base/` being written under a temporary name, swapped in by
+/// [`promote`](Self::promote) once complete and thrown away otherwise.
+///
+/// Dropping one unpromoted removes whatever it wrote, so a failed unpack
+/// leaves the project as it found it.
+pub struct Staging {
+    dir: PathBuf,
 }
 
-/// Discards an in-progress unpack's staging directory, e.g. after it fails.
-pub fn clear_staging(project: &Path) -> Result<()> {
-    remove_dir_all_if_exists(&project.join(BASE_TMP_DIR))
+impl Staging {
+    /// Clears anything a previous failed unpack left behind and opens a
+    /// fresh staging directory.
+    pub fn begin(project: &Path) -> Result<Self> {
+        let dir = project.join(BASE_TMP_DIR);
+        remove_dir_all_if_exists(&dir)?;
+        create_dir_all(&dir)?;
+        Ok(Self { dir })
+    }
+
+    /// Where the unpack writes `base/`'s contents.
+    #[must_use]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Swaps the staged tree in as `base/`. The old `base/` is moved aside
+    /// first so no point in the swap has neither.
+    pub fn promote(self) -> Result<()> {
+        let project = self.dir.parent().unwrap_or(&self.dir);
+        let base = project.join(BASE_DIR);
+        let old = project.join(format!("{BASE_DIR}.old"));
+
+        remove_dir_all_if_exists(&old)?;
+        if base.exists() {
+            fs::rename(&base, &old).map_err(io_at(&base))?;
+        }
+        fs::rename(&self.dir, &base).map_err(io_at(&base))?;
+        remove_dir_all_if_exists(&old)
+    }
 }
 
-/// Swaps a finished [`base_staging_dir`] in as `base/`. Only called once the
-/// new unpack is fully written.
-pub fn promote_base(project: &Path) -> Result<()> {
-    let base = project.join(BASE_DIR);
-    remove_dir_all_if_exists(&base)?;
-    fs::rename(project.join(BASE_TMP_DIR), &base).map_err(io_at(&base))
+impl Drop for Staging {
+    fn drop(&mut self) {
+        // Best-effort: after a promote there is nothing here; after a
+        // failure, the error that caused it is the one that matters.
+        let _ = fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// Writes the `mod/` skeleton (`overlay/`, `res/scripts/`, a starter
@@ -233,8 +253,8 @@ pub fn commit(
 ) -> Result<()> {
     let iso = iso.canonicalize().map_err(io_at(iso))?;
     let store = project.join(STORE_DIR);
-    write_toml(&store.join(HASHES), hashes)?;
-    write_toml(&store.join(SOURCE), &Source { iso: &iso, sha1 })
+    write_toml(&store.join(HASHES_TOML), hashes)?;
+    write_toml(&store.join(SOURCE_TOML), &Source { iso: &iso, sha1 })
 }
 
 pub fn create_dir_all(path: &Path) -> Result<()> {
@@ -251,11 +271,19 @@ pub fn write(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 fn write_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    write(path, toml::to_string_pretty(value)?.as_bytes())
+    let text = toml::to_string_pretty(value).map_err(|source| Error::Serialize {
+        path: path.to_path_buf(),
+        source: source.into(),
+    })?;
+    write(path, text.as_bytes())
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    write(path, serde_json::to_string_pretty(value)?.as_bytes())
+    let text = serde_json::to_string_pretty(value).map_err(|source| Error::Serialize {
+        path: path.to_path_buf(),
+        source: source.into(),
+    })?;
+    write(path, text.as_bytes())
 }
 
 /// Like [`fs::remove_dir_all`], but a missing `path` is not an error: there
@@ -275,5 +303,135 @@ fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
     move |source| Error::Io {
         path: path.to_path_buf(),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+
+    /// A scratch directory, gone again when the test that made it ends.
+    /// Tagged with a counter as well as a name, since two tests picking the
+    /// same name would otherwise race on one path.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            static CALLS: AtomicU64 = AtomicU64::new(0);
+            let unique = CALLS.fetch_add(1, Ordering::Relaxed);
+            let at = std::env::temp_dir()
+                .join(format!("tpmt-test-{name}-{}-{unique}", std::process::id()));
+            let _ = fs::remove_dir_all(&at);
+            fs::create_dir_all(&at).unwrap();
+            Self(at)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mark_project(dir: &Path) {
+        fs::create_dir_all(dir.join(STORE_DIR)).unwrap();
+    }
+
+    #[test]
+    fn finds_the_root_from_itself() {
+        let scratch = Scratch::new("self");
+        mark_project(&scratch.0);
+
+        let found = discover(&scratch.0).unwrap();
+        assert_eq!(found, scratch.0.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn finds_the_root_from_a_subdirectory() {
+        let scratch = Scratch::new("nested");
+        mark_project(&scratch.0);
+        let nested = scratch.0.join(BASE_DIR).join("files").join("thing.arc");
+        fs::create_dir_all(&nested).unwrap();
+
+        let found = discover(&nested).unwrap();
+        assert_eq!(found, scratch.0.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn refuses_a_directory_with_no_project_above_it() {
+        let scratch = Scratch::new("none");
+
+        let error = discover(&scratch.0).unwrap_err();
+        assert!(matches!(error, Error::NoProjectFound(_)));
+    }
+
+    /// A personal folder that happens to share a name is left alone rather
+    /// than cleared to make room.
+    #[test]
+    fn refuses_a_directory_that_is_not_a_project() {
+        let scratch = Scratch::new("foreign");
+        let target = scratch.0.join("mine");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("notes.txt"), b"do not delete").unwrap();
+
+        let error = refuse_foreign(&target).unwrap_err();
+        assert!(matches!(error, Error::ForeignDirectory(path) if path == target));
+        assert!(target.join("notes.txt").exists());
+    }
+
+    /// An empty directory has nothing in it to protect, and a project is
+    /// what an unpack is for.
+    #[test]
+    fn accepts_empty_missing_and_project_directories() {
+        let scratch = Scratch::new("accepted");
+        let empty = scratch.0.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        let project = scratch.0.join("project");
+        mark_project(&project);
+        fs::write(project.join("anything"), b"").unwrap();
+
+        refuse_foreign(&empty).unwrap();
+        refuse_foreign(&scratch.0.join("missing")).unwrap();
+        refuse_foreign(&project).unwrap();
+    }
+
+    #[test]
+    fn dropped_staging_leaves_no_trace() {
+        let scratch = Scratch::new("staging-drop");
+        let staging = Staging::begin(&scratch.0).unwrap();
+        fs::write(staging.dir().join("half"), b"written").unwrap();
+        drop(staging);
+
+        assert!(!scratch.0.join(BASE_TMP_DIR).exists());
+        assert!(!scratch.0.join(BASE_DIR).exists());
+    }
+
+    #[test]
+    fn promoted_staging_replaces_base() {
+        let scratch = Scratch::new("staging-promote");
+        let base = scratch.0.join(BASE_DIR);
+        write(&base.join("stale"), b"old").unwrap();
+
+        let staging = Staging::begin(&scratch.0).unwrap();
+        write(&staging.dir().join("fresh"), b"new").unwrap();
+        staging.promote().unwrap();
+
+        assert_eq!(fs::read(base.join("fresh")).unwrap(), b"new");
+        assert!(!base.join("stale").exists());
+        assert!(!scratch.0.join(BASE_TMP_DIR).exists());
+        assert!(!scratch.0.join(format!("{BASE_DIR}.old")).exists());
+    }
+
+    #[test]
+    fn scaffold_never_clobbers_an_existing_mod() {
+        let scratch = Scratch::new("scaffold");
+        scaffold_mod(&scratch.0).unwrap();
+        let json = scratch.0.join(MOD_DIR).join(MOD_JSON);
+        fs::write(&json, b"edited").unwrap();
+
+        scaffold_mod(&scratch.0).unwrap();
+        assert_eq!(fs::read(&json).unwrap(), b"edited");
     }
 }

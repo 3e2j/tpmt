@@ -501,9 +501,9 @@ dependencies = [
  "thiserror",
  "toml",
  "tpmt-arc",
- "tpmt-bmg",
  "tpmt-compress",
  "tpmt-disc",
+ "tpmt-format",
 ]
 
 [[package]]

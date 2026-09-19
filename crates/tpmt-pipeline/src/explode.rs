@@ -1,4 +1,6 @@
-//! Identifying a blob of bytes by its magic and handing it to that format's decoder.
+//! Taking one disc file apart into the project files it becomes: a plain
+//! file is itself, an archive is a directory of members plus a sidecar,
+//! however deep the nesting goes.
 //!
 //! Detection is content-only: some files on the retail disc carry a path or
 //! extension that doesn't match what's inside, so nothing here branches on a
@@ -11,9 +13,10 @@
 //! whatever holds the file: an archive writes it on the member's sidecar
 //! entry, the disc on `yaz0.toml`. A file never records its own.
 
+use tpmt_arc::Archive;
 use tpmt_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_arc::{Archive, Format};
 use tpmt_compress::{is_yaz0, yaz0_decode};
+use tpmt_format::Format;
 
 use crate::{Error, Result};
 
@@ -26,31 +29,23 @@ pub enum DecodeError {
     Archive(#[from] tpmt_arc::Error),
 
     #[error(transparent)]
-    Message(#[from] tpmt_bmg::Error),
-
-    #[error(transparent)]
     Compress(#[from] tpmt_compress::Error),
 }
 
-/// Every `(project path, bytes)` pair one file produces, however deep the
-/// recursion went to get there: one pair for a plain file, one per member
-/// plus a sidecar for an archive.
-pub type Writes = Vec<(String, Vec<u8>)>;
-
-/// One file taken apart, and whether a Yaz0 wrapper came off it first.
-#[derive(Debug)]
-pub struct Decoded {
-    pub writes: Writes,
-    /// The caller records this; see the module doc.
-    pub yaz0_compressed: bool,
-}
-
-/// Peels `data`, then hands it to whichever format's magic it opens with.
+/// Peels `data`, then hands it to whichever format's magic it opens with,
+/// calling `sink` with every `(project path, bytes)` that comes out: once
+/// for a plain file, once per member plus once for the sidecar of an
+/// archive. Returns whether a Yaz0 wrapper came off `data` first, for the
+/// caller to record.
 ///
 /// Each format's magic picks it before its decoder runs, so an error out of
 /// a decoder always means "this format, but broken", never "not this
 /// format". A new leaf format is one more `recognises` check.
-pub fn decode(path: &str, data: &[u8]) -> Result<Decoded> {
+pub fn file(
+    path: &str,
+    data: &[u8],
+    sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+) -> Result<bool> {
     let yaz0_compressed = is_yaz0(data);
     let unwrapped = yaz0_compressed
         .then(|| yaz0_decode(data))
@@ -58,45 +53,42 @@ pub fn decode(path: &str, data: &[u8]) -> Result<Decoded> {
         .map_err(at(path))?;
     let bare = unwrapped.as_deref().unwrap_or(data);
 
-    let writes = if Archive::recognises(bare) {
-        explode(path, bare)?
+    if Archive::recognises(bare) {
+        archive(path, bare, sink)?;
     } else {
         // Translation layers (e.g. tpmt_bmg::editable::json) are deprecated
         // for now: raw game files + a UI is the scoped-down editing path. A
         // leaf format passes through untouched until that changes.
-        vec![(path.to_string(), bare.to_vec())]
-    };
+        sink(path, bare)?;
+    }
 
-    Ok(Decoded {
-        writes,
-        yaz0_compressed,
-    })
+    Ok(yaz0_compressed)
 }
 
-/// Explodes the archive in `bare` into its members' `(project path, bytes)`
-/// pairs, plus a [`SIDECAR`] recording each member's path, preload flag, id,
-/// and Yaz0 wrapper.
-fn explode(path: &str, bare: &[u8]) -> Result<Writes> {
+/// Sinks every member of the archive in `bare`, then a [`SIDECAR`] recording
+/// each member's path, preload flag, id, and Yaz0 wrapper.
+fn archive(
+    path: &str,
+    bare: &[u8],
+    sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+) -> Result<()> {
     let archive = Archive::decode(bare).map_err(at(path))?;
-    let mut writes = Vec::new();
     let mut members = Vec::with_capacity(archive.files.len());
 
-    for file in &archive.files {
-        let decoded = decode(&format!("{path}/{}", file.path), file.data)?;
-        writes.extend(decoded.writes);
+    for member in &archive.files {
+        let yaz0_compressed = file(&format!("{path}/{}", member.path), member.data, sink)?;
         members.push(Member {
-            path: file.path.clone(),
-            preload: file.preload,
-            yaz0_compressed: decoded.yaz0_compressed,
-            id: file.id,
+            path: member.path.clone(),
+            preload: member.preload,
+            yaz0_compressed,
+            id: member.id,
         });
     }
 
-    let sidecar = Sidecar::new(archive.root, members);
-    let toml = sidecar.to_toml().map_err(at(path))?;
-    writes.push((format!("{path}/{SIDECAR}"), toml.into_bytes()));
-
-    Ok(writes)
+    let toml = Sidecar::new(archive.root, members)
+        .to_toml()
+        .map_err(at(path))?;
+    sink(&format!("{path}/{SIDECAR}"), toml.as_bytes())
 }
 
 fn at<E: Into<DecodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {
@@ -137,6 +129,17 @@ mod tests {
         }
     }
 
+    /// Everything `data` explodes into, keyed by project path, plus whether
+    /// it arrived wrapped.
+    fn explode(path: &str, data: &[u8]) -> Result<(BTreeMap<String, Vec<u8>>, bool)> {
+        let mut outputs = BTreeMap::new();
+        let yaz0_compressed = super::file(path, data, &mut |path, data| {
+            outputs.insert(path.to_string(), data.to_vec());
+            Ok(())
+        })?;
+        Ok((outputs, yaz0_compressed))
+    }
+
     fn sidecar(outputs: &BTreeMap<String, Vec<u8>>, dir: &str) -> Sidecar {
         let bytes = &outputs[&format!("{dir}/{SIDECAR}")];
         Sidecar::from_toml(std::str::from_utf8(bytes).unwrap()).unwrap()
@@ -146,11 +149,12 @@ mod tests {
     /// came off it is reported for the caller to record.
     #[test]
     fn unrecognised_bytes_pass_through_unwrapped() {
-        let decoded = decode("files/thing.bin", &wrap(b"not a format")).unwrap();
-        assert!(decoded.yaz0_compressed);
+        let (outputs, yaz0_compressed) =
+            explode("files/thing.bin", &wrap(b"not a format")).unwrap();
+        assert!(yaz0_compressed);
         assert_eq!(
-            decoded.writes,
-            vec![("files/thing.bin".to_string(), b"not a format".to_vec())]
+            outputs,
+            BTreeMap::from([("files/thing.bin".to_string(), b"not a format".to_vec())])
         );
     }
 
@@ -170,12 +174,11 @@ mod tests {
             ],
         ));
 
-        let decoded = decode("files/outer.arc", &outer).unwrap();
+        let (outputs, yaz0_compressed) = explode("files/outer.arc", &outer).unwrap();
         assert!(
-            decoded.yaz0_compressed,
+            yaz0_compressed,
             "a loose archive's wrapper is reported up, not written anywhere"
         );
-        let outputs: BTreeMap<_, _> = decoded.writes.into_iter().collect();
 
         assert_eq!(
             outputs.keys().collect::<Vec<_>>(),
@@ -213,7 +216,7 @@ mod tests {
         truncated.truncate(12);
         let outer = archive("outer", vec![file("bad.bin", &truncated)]);
 
-        let err = decode("files/outer.arc", &outer).unwrap_err();
+        let err = explode("files/outer.arc", &outer).unwrap_err();
         assert!(
             matches!(&err, Error::Decode { path, .. } if path == "files/outer.arc/bad.bin"),
             "{err}"

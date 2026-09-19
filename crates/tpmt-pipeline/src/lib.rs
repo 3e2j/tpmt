@@ -48,13 +48,12 @@
 
 use std::path::{Path, PathBuf};
 
-mod format;
+mod explode;
 mod project;
 mod unpack;
 
+pub use explode::DecodeError;
 pub use project::{discover, is_project};
-
-pub use format::DecodeError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -75,11 +74,13 @@ pub enum Error {
     #[error("`{}` holds something this did not write, so it will not be replaced", .0.display())]
     ForeignDirectory(PathBuf),
 
-    #[error("the project's own data could not be written: {0}")]
-    UnwritableStore(#[from] toml::ser::Error),
-
-    #[error("the project's own data could not be written: {0}")]
-    UnwritableJson(#[from] serde_json::Error),
+    /// A file this crate generates (`disc.toml`, `mod.json`, the store)
+    /// would not serialize.
+    #[error("`{}` could not be written: {source}", .path.display())]
+    Serialize {
+        path: PathBuf,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 
     #[error("`{}` is not inside a project (no `.tpmt` found above it)", .0.display())]
     NoProjectFound(PathBuf),
