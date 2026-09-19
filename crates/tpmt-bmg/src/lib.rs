@@ -22,7 +22,7 @@
 //! ```
 //!
 //! Every section states its own padded size, so the table is walked rather
-//! than indexed, and a name nothing here knows is stepped over intact:
+//! than indexed. These six are the only sections any retail file has:
 //!
 //! ```text
 //! INF1  one fixed-width record per message: where its text starts, then the
@@ -54,6 +54,12 @@ pub enum Error {
     #[error("the message file is corrupt: {0}")]
     Corrupt(&'static str),
 
+    #[error("the message file cannot be written: {0}")]
+    Unwritable(&'static str),
+
+    #[error("the packed message file would not fit the format's size fields")]
+    Oversized,
+
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
 
@@ -74,14 +80,6 @@ mod header {
     pub const SECTION_COUNT: usize = 0x0C;
     pub const ENCODING: usize = 0x10;
     // The rest of the header, 0x11 to the end of it, is zero.
-}
-
-/// What every section opens with: a four character name, then the size of the
-/// whole section, its own header and trailing padding included.
-mod section {
-    pub const HEADER_LEN: usize = 0x08;
-    // 0x00 - Name/magic
-    pub const SIZE: usize = 0x04;
 }
 
 /// Which encoding the bmg text is in.
@@ -136,25 +134,18 @@ impl std::fmt::Display for Encoding {
     }
 }
 
-/// A section this crate has no implementation about, kept whole so it goes back out
-/// exactly as it came in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnknownSection {
-    pub magic: [u8; 4],
-    pub data: Vec<u8>,
-}
-
 /// A message file taken apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bmg {
     pub encoding: Encoding,
-    /// How wide one INF1 record is, the 4 byte text offset at the front of it
-    /// included, so it is four more than an attribute record's own length.
+    /// How wide one INF1 record is: the 4 byte text offset at the front of
+    /// it, then the attribute bytes, so four more than a message's own
+    /// [`attributes`](Message::attributes) are long.
     ///
     /// Carried rather than derived because a file with no messages still
     /// states one, and because a length the game does not recognise is a real
     /// thing some files have.
-    pub attribute_len: u16,
+    pub record_len: u16,
     /// `None` for a file with no MID1 at all, which is addressed by position.
     pub mid1: Option<Mid1Header>,
     pub messages: Vec<Message>,
@@ -164,8 +155,6 @@ pub struct Bmg {
     /// by byte offset, such as common used item names. One entry per string,
     /// terminators excluded.
     pub strings: Option<Vec<Vec<u8>>>,
-    /// Every section none of the above named.
-    pub extra: Vec<UnknownSection>,
 }
 
 impl Format<'_> for Bmg {
@@ -186,10 +175,15 @@ impl Format<'_> for Bmg {
     }
 
     /// Writes a whole message file from what [`decode`](Self::decode) took
-    /// apart.
+    /// apart. A retail file comes back byte for byte.
     ///
     /// # Errors
-    /// TODO: Write
+    ///
+    /// - [`Error::Unwritable`] if the value would not survive its own
+    ///   [`decode`](Self::decode); the error itself names which invariant
+    ///   broke.
+    /// - [`Error::Oversized`] if a count, offset, or size overflows the field
+    ///   it is stored in.
     fn encode(&self) -> Result<Vec<u8>> {
         pack::pack(self)
     }

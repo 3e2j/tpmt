@@ -32,7 +32,7 @@ pub const EXTENSION: &str = "json";
 pub fn encode(bmg: &Bmg) -> Result<Vec<u8>> {
     let json = JsonBmg {
         encoding: bmg.encoding.as_str().to_string(),
-        attribute_len: bmg.attribute_len,
+        attribute_len: bmg.record_len,
         mid1: bmg.mid1.map(mid1_to_json),
         messages: bmg
             .messages
@@ -46,7 +46,6 @@ pub fn encode(bmg: &Bmg) -> Result<Vec<u8>> {
                 .map(|s| decode_text(s, bmg.encoding))
                 .collect()
         }),
-        extra: bmg.extra.iter().map(unknown_section_to_json).collect(),
     };
     serde_json::to_vec_pretty(&json).map_err(Error::UnwritableJson)
 }
@@ -62,21 +61,12 @@ struct JsonBmg {
     flow: Option<JsonFlow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     strings: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    extra: Vec<JsonUnknownSection>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct JsonMid1 {
-    ordered: bool,
     form: u8,
     shift_bytes: u8,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsonUnknownSection {
-    magic: String,
-    data: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -133,7 +123,7 @@ pub fn decode(bytes: &[u8]) -> Result<Bmg> {
     let encoding = encoding_from_str(&json.encoding)?;
     Ok(Bmg {
         encoding,
-        attribute_len: json.attribute_len,
+        record_len: json.attribute_len,
         mid1: json.mid1.as_ref().map(mid1_from_json),
         messages: json
             .messages
@@ -150,17 +140,11 @@ pub fn decode(bytes: &[u8]) -> Result<Bmg> {
                     .collect::<Result<Vec<_>>>()
             })
             .transpose()?,
-        extra: json
-            .extra
-            .iter()
-            .map(unknown_section_from_json)
-            .collect::<Result<Vec<_>>>()?,
     })
 }
 
 const fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
     JsonMid1 {
-        ordered: mid1.ordered,
         form: mid1.form,
         shift_bytes: mid1.shift_bytes,
     }
@@ -168,27 +152,9 @@ const fn mid1_to_json(mid1: Mid1Header) -> JsonMid1 {
 
 const fn mid1_from_json(json: &JsonMid1) -> Mid1Header {
     Mid1Header {
-        ordered: json.ordered,
         form: json.form,
         shift_bytes: json.shift_bytes,
     }
-}
-
-fn unknown_section_to_json(section: &crate::UnknownSection) -> JsonUnknownSection {
-    JsonUnknownSection {
-        magic: to_hex(&section.magic),
-        data: to_hex(&section.data),
-    }
-}
-
-fn unknown_section_from_json(json: &JsonUnknownSection) -> Result<crate::UnknownSection> {
-    let magic = from_hex(&json.magic)?
-        .try_into()
-        .map_err(|_| Error::Corrupt("a section magic is not four bytes"))?;
-    Ok(crate::UnknownSection {
-        magic,
-        data: from_hex(&json.data)?,
-    })
 }
 
 fn flow_to_json(flow: &Flow) -> JsonFlow {
@@ -497,7 +463,7 @@ mod tests {
     fn a_bmg_with_one_message_round_trips_through_json() {
         let bmg = Bmg {
             encoding: Encoding::ShiftJis,
-            attribute_len: 6,
+            record_len: 6,
             mid1: None,
             messages: vec![Message {
                 public_id: 0,
@@ -507,7 +473,6 @@ mod tests {
             }],
             flow: None,
             strings: None,
-            extra: Vec::new(),
         };
 
         let json = encode(&bmg).unwrap();
@@ -516,19 +481,17 @@ mod tests {
         assert_eq!(round_tripped, bmg);
     }
 
-    /// Everything the minimal case left out: MID1, STR1, an unknown section,
-    /// a tag segment, and a flow graph covering all three node types.
+    /// Everything the minimal case left out: MID1, STR1, a tag segment, and
+    /// a flow graph covering all three node types.
     #[test]
-    fn a_bmg_with_flow_mid1_strings_and_extra_round_trips_through_json() {
-        use crate::UnknownSection;
+    fn a_bmg_with_flow_mid1_and_strings_round_trips_through_json() {
         use crate::sections::flow::{Flow, Node, NodeId, Root};
         use crate::sections::message::Mid1Header;
 
         let bmg = Bmg {
             encoding: Encoding::ShiftJis,
-            attribute_len: 4,
+            record_len: 4,
             mid1: Some(Mid1Header {
-                ordered: true,
                 form: 0,
                 shift_bytes: 0,
             }),
@@ -567,10 +530,6 @@ mod tests {
                 }],
             }),
             strings: Some(vec![b"arrow".to_vec(), b"arrows".to_vec()]),
-            extra: vec![UnknownSection {
-                magic: *b"XXXX",
-                data: vec![0xde, 0xad],
-            }],
         };
 
         let json = encode(&bmg).unwrap();

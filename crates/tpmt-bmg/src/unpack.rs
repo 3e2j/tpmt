@@ -3,8 +3,8 @@
 
 use tpmt_bytes::Reader;
 
-use crate::sections::{flow, message};
-use crate::{Bmg, Encoding, Error, Format, Result, UnknownSection, header, section};
+use crate::sections::{self, flow, message};
+use crate::{Bmg, Encoding, Error, Format, Result, header};
 
 /// The sections a file holds, sorted out by name on the way past.
 /// INF1 and DAT1 are always there, so they are required fields rather than
@@ -18,7 +18,6 @@ struct Sections<'a> {
     /// Paired up here rather than kept as two fields so that state is
     /// unrepresentable instead of checked for.
     flow: Option<(&'a [u8], &'a [u8])>,
-    extra: Vec<UnknownSection>,
 }
 
 /// Walks the section table, sorting every section out by name.
@@ -43,35 +42,31 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let mut str1 = None;
     let mut flw1 = None;
     let mut fli1 = None;
-    let mut extra = Vec::new();
 
     for _ in 0..count {
         let magic: [u8; 4] = reader.bytes_at(at)?;
-        let size = reader.u32_at(at + section::SIZE)? as usize;
-        if size < section::HEADER_LEN {
+        let size = reader.u32_at(at + sections::SIZE)? as usize;
+        if size < sections::HEADER_LEN {
             return Err(Error::Corrupt("a section is smaller than its own header"));
         }
 
         // The last section in a file is allowed to stop where the file does,
         // with the padding its stated size counts left off the end.
-        let body_at = at + section::HEADER_LEN;
-        let len = (size - section::HEADER_LEN).min(data.len() - body_at);
+        let body_at = at + sections::HEADER_LEN;
+        let len = (size - sections::HEADER_LEN).min(data.len() - body_at);
         let body = reader.slice_at(body_at, len)?;
 
-        match &magic {
-            b"INF1" => inf1 = Some(body),
-            b"DAT1" => dat1 = Some(body),
-            b"MID1" => mid1 = Some(body),
-            b"STR1" => str1 = Some(body),
-            b"FLW1" => flw1 = Some(body),
-            b"FLI1" => fli1 = Some(body),
-            _ => extra.push(UnknownSection {
-                magic,
-                data: body.to_vec(),
-            }),
+        match magic {
+            sections::INF1 => inf1 = Some(body),
+            sections::DAT1 => dat1 = Some(body),
+            sections::MID1 => mid1 = Some(body),
+            sections::STR1 => str1 = Some(body),
+            sections::FLW1 => flw1 = Some(body),
+            sections::FLI1 => fli1 = Some(body),
+            _ => return Err(Error::Corrupt("a section has a name no file has")),
         }
         at += size;
-        if !matches!(&magic, b"FLW1" | b"FLI1") {
+        if !matches!(magic, sections::FLW1 | sections::FLI1) {
             stated += size;
         }
     }
@@ -103,7 +98,6 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
             mid1,
             str1,
             flow,
-            extra,
         },
     ))
 }
@@ -115,11 +109,10 @@ pub fn unpack(data: &[u8]) -> Result<Bmg> {
 
     let (encoding, sections) = split(data)?;
 
-    let (messages, attribute_len, mid1) =
-        message::read_messages(sections.inf1, sections.dat1, sections.mid1)?;
+    let (messages, record_len, mid1) = message::read(sections.inf1, sections.dat1, sections.mid1)?;
     Ok(Bmg {
         encoding,
-        attribute_len,
+        record_len,
         mid1,
         messages,
         flow: sections
@@ -127,7 +120,6 @@ pub fn unpack(data: &[u8]) -> Result<Bmg> {
             .map(|(flw1, fli1)| flow::read(flw1, fli1))
             .transpose()?,
         strings: sections.str1.map(read_strings),
-        extra: sections.extra,
     })
 }
 
@@ -179,11 +171,9 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_section_is_kept_and_counted() {
+    fn an_unknown_section_is_refused() {
         let data = file(0x50, &[b"INF1", b"DAT1", b"XXXX"]);
-        let (_, sections) = split(&data).unwrap();
-        assert_eq!(sections.extra.len(), 1);
-        assert_eq!(sections.extra[0].magic, *b"XXXX");
+        assert!(matches!(split(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]

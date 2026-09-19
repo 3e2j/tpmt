@@ -4,9 +4,14 @@
 //! record in INF1, the text that record points at in DAT1, and, when the
 //! file has one, the public-facing id sitting at the same position in MID1.
 
-use tpmt_bytes::Reader;
+use tpmt_bytes::{Reader, Writer};
 
 use crate::{Error, Result};
+
+/// What opens a message's text: 0x1A, then the whole tag's length.
+const TAG_OPENER: u8 = 0x1A;
+/// The smallest a tag can be, the opener and the length byte.
+const TAG_HEADER_LEN: usize = 2;
 
 /// Stable internal handle for a message, held by whatever refers to one.
 ///
@@ -28,10 +33,13 @@ pub enum TextSegment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     /// The id external callers look this message up by. Held in MID1, and
-    /// duplicated in the first two bytes of attributes.
+    /// duplicated in the first two bytes of the attributes. This field is
+    /// the one source: it is stamped over both copies on write, and they
+    /// are checked to agree on read.
     ///
     /// Meaningless when the file has no [`crate::Bmg::mid1`], since such a
-    /// file is addressed by position instead.
+    /// file is addressed by position instead and its attributes open with
+    /// whatever the game put there.
     ///
     /// An id above 5000 is redirected to a different resource entirely on
     /// every display path the game has, in world and on the HUD alike. See
@@ -47,68 +55,82 @@ pub struct Message {
 }
 
 /// What it says about the id lookup array that follows.
+///
+/// The header also carries an `ordered` bit, the high nibble of the byte
+/// `form` is in, promising the ids are sorted so the game may binary search
+/// them. It is not a field here: it is a fact about the ids, so it is worked
+/// out from them on write, and on read a file that claims it of unsorted ids
+/// is refused.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Mid1Header {
-    /// Fast path if ids are sorted (binary search) vs scanning.
-    /// Packed into the same byte as `form` in the file (high nibble).
-    pub ordered: bool,
-    /// Which layout the id array is in.
-    /// Packed into the low nibble beside `ordered`.
+    /// Which layout the id array is in, the low nibble of its byte.
     /// The game asserts this is zero and never branches on it (sanity check).
     pub form: u8,
-    /// Bytes a stored id shifts left to make room for a second, independently
-    /// packed id below it (say, an item and a variant). Always zero in
-    /// practice, so a nonzero value is rejected on read rather than guessed
-    /// at. See `read_mid1`.
+    /// How a stored id packs a second, independently packed id below it
+    /// (say, an item and a variant): 1-3 shift the primary id left that many
+    /// bytes to make room, 4 hands the whole entry to the second id instead.
+    /// Always zero in practice, so a nonzero value is rejected on read
+    /// rather than guessed at. See `read_mid1`.
     pub shift_bytes: u8,
 }
 
 /// The 8 byte header in front of INF1's records: how many there are, and how
 /// wide one is.
-mod inf1_header {
+mod inf1_offsets {
     /// How wide the header is, so also where its records start.
     pub const LEN: usize = 0x08;
     pub const COUNT: usize = 0x00;
     pub const RECORD_LEN: usize = 0x02;
-    /// Not read: nothing here branches on which group a message belongs to.
+    /// Neither read nor kept. `JMessage::TResource` can branch on this (see
+    /// JSystem/JMessage/resource.cpp), but TP's `dMsgObject_c` bypasses that
+    /// parser and derives group purely from message id (> 5000).
     pub const _GROUP_ID: usize = 0x04;
     // 0x06, 2 bytes: padding.
 }
 
 /// The 8 byte header in front of MID1's id array.
-mod mid1_header {
+mod mid1_offsets {
     /// How wide the header is, so also where the id array starts.
     pub const LEN: usize = 0x08;
     /// Not read: `count` is redundant with INF1's own record count, which is
-    /// what the array is actually walked by.
-    pub const _COUNT: usize = 0x00;
+    /// what the array is actually walked by. Written as that count.
+    pub const COUNT: usize = 0x00;
     /// High nibble `ordered`, low nibble `form`.
     pub const ORDERED_FORM: usize = 0x02;
     pub const SHIFT_BYTES: usize = 0x03;
+    // 0x04, 4 bytes: padding.
 }
+
+/// The text offset at the front of every INF1 record.
+const TEXT_OFFSET_LEN: u16 = 4;
+
+/// Where a file with a MID1 holds each message's id again: the first two
+/// attribute bytes of its record. See [`Message::public_id`].
+const RECORD_ID: std::ops::Range<usize> = 0..2;
 
 /// The messages, and how wide one INF1 record is.
 ///
 /// All three sections are read together because one message is spread over all
 /// of them: its record in INF1, the text that record points at in DAT1, and
 /// the id sitting at the same position in MID1.
-pub fn read_messages(
+pub fn read(
     inf1: &[u8],
     dat1: &[u8],
     mid1: Option<&[u8]>,
 ) -> Result<(Vec<Message>, u16, Option<Mid1Header>)> {
     let reader = Reader::new(inf1);
-    let count = reader.u16_at(inf1_header::COUNT)? as usize;
+    let count = reader.u16_at(inf1_offsets::COUNT)? as usize;
     // Text offset into DAT1 + attribute bytes
-    let record_len = reader.u16_at(inf1_header::RECORD_LEN)?;
-    let attributes_len = record_len.checked_sub(4).ok_or(Error::Corrupt(
-        "an INF1 record is narrower than its own text offset",
-    ))?;
-    let records = reader.slice_at(inf1_header::LEN, count * record_len as usize)?;
+    let record_len = reader.u16_at(inf1_offsets::RECORD_LEN)?;
+    let attributes_len = record_len
+        .checked_sub(TEXT_OFFSET_LEN)
+        .ok_or(Error::Corrupt(
+            "an INF1 record is narrower than its own text offset",
+        ))?;
+    let records = reader.slice_at(inf1_offsets::LEN, count * record_len as usize)?;
 
     // `shift_bytes` is guaranteed zero by `read_mid1`, so a MID1 entry is
     // always the id whole; see `Mid1Header::shift_bytes`.
-    let mid1_header = mid1.map(read_mid1).transpose()?;
     let mid1 = mid1.map(Reader::new);
 
     let mut messages = Vec::with_capacity(count);
@@ -121,9 +143,18 @@ pub fn read_messages(
 
         let public_id = match &mid1 {
             Some(mid1) => {
-                let entry = mid1.u32_at(mid1_header::LEN + id as usize * 4)?;
-                u16::try_from(entry)
-                    .map_err(|_| Error::Corrupt("a MID1 id does not fit in 16 bits"))?
+                let entry = mid1.u32_at(mid1_offsets::LEN + id as usize * 4)?;
+                let public_id = u16::try_from(entry)
+                    .map_err(|_| Error::Corrupt("a MID1 id does not fit in 16 bits"))?;
+                let copy = attributes.get(RECORD_ID).ok_or(Error::Corrupt(
+                    "a message addressed by id has no room for the id in its record",
+                ))?;
+                if copy != public_id.to_be_bytes() {
+                    return Err(Error::Corrupt(
+                        "a message's id in its record disagrees with its MID1 entry",
+                    ));
+                }
+                public_id
             }
             None => 0,
         };
@@ -136,7 +167,14 @@ pub fn read_messages(
         });
     }
 
+    let mid1_header = mid1.map(|mid1| read_mid1(&mid1, &messages)).transpose()?;
     Ok((messages, record_len, mid1_header))
+}
+
+/// Whether the ids are in the order MID1's `ordered` bit promises the game,
+/// which binary searches them when it is set.
+fn sorted(messages: &[Message]) -> bool {
+    messages.is_sorted_by_key(|message| message.public_id)
 }
 
 /// Splits one message's text at `start` into text and tag runs, stopping at
@@ -158,7 +196,7 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
                 }
                 return Ok(segments);
             }
-            0x1A => {
+            TAG_OPENER => {
                 if i > text_start {
                     segments.push(TextSegment::Text(dat1[text_start..i].to_vec()));
                 }
@@ -166,7 +204,7 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
                     .get(i + 1)
                     .ok_or(Error::Corrupt("a tag is cut off before its length byte"))?
                     as usize;
-                if len < 2 {
+                if len < TAG_HEADER_LEN {
                     return Err(Error::Corrupt(
                         "a tag claims to be shorter than its own header",
                     ));
@@ -184,11 +222,17 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
     }
 }
 
-/// What MID1 says about its ids, as against the ids themselves.
-fn read_mid1(mid1: &[u8]) -> Result<Mid1Header> {
-    let reader = Reader::new(mid1);
-    let byte = reader.u8_at(mid1_header::ORDERED_FORM)?;
-    let shift_bytes = reader.u8_at(mid1_header::SHIFT_BYTES)?;
+/// What MID1 says about its ids, as against the ids themselves, which are
+/// what the `ordered` bit is checked against.
+fn read_mid1(mid1: &Reader<'_>, messages: &[Message]) -> Result<Mid1Header> {
+    let byte = mid1.u8_at(mid1_offsets::ORDERED_FORM)?;
+    let shift_bytes = mid1.u8_at(mid1_offsets::SHIFT_BYTES)?;
+    // `ordered` high nibble
+    if byte & 0xF0 != 0 && !sorted(messages) {
+        return Err(Error::Corrupt(
+            "a MID1 header claims its ids are sorted, and they are not",
+        ));
+    }
     // No call to `TResource::toMessageIndex_messageID` anywhere in TP or the
     // JSystem library it comes from ever passes a second id, so there is
     // nothing to check a decoding of a nonzero value against. The array is a
@@ -201,10 +245,125 @@ fn read_mid1(mid1: &[u8]) -> Result<Mid1Header> {
         ));
     }
     Ok(Mid1Header {
-        ordered: byte & 0xF0 != 0,
         form: byte & 0x0F,
         shift_bytes,
     })
+}
+
+/// The three sections a message is spread across.
+pub type MessageSections = (Vec<u8>, Vec<u8>, Option<Vec<u8>>);
+
+/// INF1, DAT1, and MID1 when the file has one, back from what [`read`] took
+/// apart.
+///
+/// DAT1 opens with one terminator on its own, then holds each message's text
+/// in turn, so no message starts at offset zero. Retail choice - no other reason.
+///
+/// With a MID1, each message's [`public_id`](Message::public_id) is stamped
+/// over the front of its attributes on the way out, so the copy the game
+/// walks can never fall behind the one the header promises.
+pub fn write(
+    messages: &[Message],
+    record_len: u16,
+    mid1: Option<Mid1Header>,
+) -> Result<MessageSections> {
+    let attributes_len = record_len
+        .checked_sub(TEXT_OFFSET_LEN)
+        .ok_or(Error::Unwritable(
+            "an INF1 record is narrower than its own text offset",
+        ))?;
+
+    let mut inf1 = Writer::with_capacity(inf1_offsets::LEN + messages.len() * record_len as usize);
+    inf1.zeros(inf1_offsets::LEN);
+    inf1.u16_at(inf1_offsets::COUNT, count(messages)?);
+    inf1.u16_at(inf1_offsets::RECORD_LEN, record_len);
+
+    let mut dat1 = Writer::new();
+    dat1.u8(0);
+
+    for message in messages {
+        if message.attributes.len() != attributes_len as usize {
+            return Err(Error::Unwritable(
+                "a message's attributes are not the width the file states",
+            ));
+        }
+        inf1.u32(u32::try_from(dat1.len()).map_err(|_| Error::Oversized)?);
+        let attributes_at = inf1.len();
+        inf1.bytes(&message.attributes);
+        if mid1.is_some() {
+            if message.attributes.len() < RECORD_ID.end {
+                return Err(Error::Unwritable(
+                    "a message addressed by id has no room for the id in its record",
+                ));
+            }
+            inf1.u16_at(attributes_at + RECORD_ID.start, message.public_id);
+        }
+        write_text(&mut dat1, &message.text)?;
+    }
+
+    let mid1 = mid1
+        .map(|header| write_mid1(header, messages))
+        .transpose()?;
+    Ok((inf1.finish(), dat1.finish(), mid1))
+}
+
+/// How many messages there are, in the width both INF1 and MID1 store it.
+fn count(messages: &[Message]) -> Result<u16> {
+    u16::try_from(messages.len()).map_err(|_| Error::Oversized)
+}
+
+/// One message's text, terminated. Each run is checked to be what
+/// [`read_text`] would split back out of it, since a terminator or an opener
+/// in the wrong place is a message that quietly ends early.
+fn write_text(dat1: &mut Writer, text: &[TextSegment]) -> Result<()> {
+    for segment in text {
+        match segment {
+            TextSegment::Text(run) => {
+                if run.iter().any(|&byte| byte == 0x00 || byte == TAG_OPENER) {
+                    return Err(Error::Unwritable(
+                        "a text run holds a terminator or a tag opener",
+                    ));
+                }
+                dat1.bytes(run);
+            }
+            TextSegment::Tag(tag) => {
+                let stated = tag.get(1).map(|&len| len as usize);
+                if tag.first() != Some(&TAG_OPENER) || stated != Some(tag.len()) {
+                    return Err(Error::Unwritable(
+                        "a tag does not open with 0x1A and its own length",
+                    ));
+                }
+                dat1.bytes(tag);
+            }
+        }
+    }
+    dat1.u8(0);
+    Ok(())
+}
+
+/// The header, then one id per message, whole. See [`read_mid1`] for why a
+/// packed second id is refused rather than written.
+fn write_mid1(header: Mid1Header, messages: &[Message]) -> Result<Vec<u8>> {
+    if header.shift_bytes != 0 {
+        return Err(Error::Unwritable(
+            "a MID1 header packs a second id into the message id, which is unsupported",
+        ));
+    }
+    if header.form > 0x0F {
+        return Err(Error::Unwritable("a MID1 form does not fit its nibble"));
+    }
+    let mut out = Writer::with_capacity(mid1_offsets::LEN + messages.len() * 4);
+    out.zeros(mid1_offsets::LEN);
+    out.u16_at(mid1_offsets::COUNT, count(messages)?);
+    out.u8_at(
+        mid1_offsets::ORDERED_FORM,
+        u8::from(sorted(messages)) << 4 | header.form,
+    );
+    out.u8_at(mid1_offsets::SHIFT_BYTES, header.shift_bytes);
+    for message in messages {
+        out.u32(message.public_id as u32);
+    }
+    Ok(out.finish())
 }
 
 #[cfg(test)]
@@ -274,11 +433,10 @@ mod tests {
     }
 
     #[test]
-    fn ordered_form_and_shift_bytes_are_read() {
+    fn form_and_shift_bytes_are_read() {
         let mid1 = [0, 0, 0xF3, 0x00, 0, 0, 0, 0];
 
-        let header = read_mid1(&mid1).unwrap();
-        assert!(header.ordered);
+        let header = read_mid1(&Reader::new(&mid1), &[]).unwrap();
         assert_eq!(header.form, 0x3);
         assert_eq!(header.shift_bytes, 0);
     }
@@ -286,7 +444,24 @@ mod tests {
     #[test]
     fn nonzero_shift_bytes_is_corrupt() {
         let mid1 = [0, 0, 0x00, 0x02, 0, 0, 0, 0];
-        assert!(matches!(read_mid1(&mid1), Err(Error::Corrupt(_))));
+        assert!(matches!(
+            read_mid1(&Reader::new(&mid1), &[]),
+            Err(Error::Corrupt(_))
+        ));
+    }
+
+    /// The game binary searches the ids when the bit is set, so a file that
+    /// sets it over unsorted ids has lookups that miss.
+    #[test]
+    fn claiming_unsorted_ids_are_ordered_is_corrupt() {
+        let unsorted = [message(0, 10, &[], &[]), message(1, 5, &[], &[])];
+        let ordered = [0, 0, 0x10, 0x00, 0, 0, 0, 0];
+        assert!(matches!(
+            read_mid1(&Reader::new(&ordered), &unsorted),
+            Err(Error::Corrupt(_))
+        ));
+        let unordered = [0, 0, 0x00, 0x00, 0, 0, 0, 0];
+        assert!(read_mid1(&Reader::new(&unordered), &unsorted).is_ok());
     }
 
     fn inf1_header(count: u16, record_len: u16) -> Vec<u8> {
@@ -306,7 +481,7 @@ mod tests {
         inf1.extend([0xCC, 0xDD]);
         let dat1 = b"Hi\0Yo\0";
 
-        let (messages, record_len, mid1_header) = read_messages(&inf1, dat1, None).unwrap();
+        let (messages, record_len, mid1_header) = read(&inf1, dat1, None).unwrap();
 
         assert_eq!(record_len, 6);
         assert!(mid1_header.is_none());
@@ -320,34 +495,52 @@ mod tests {
         assert_eq!(messages[1].text, [TextSegment::Text(b"Yo".to_vec())]);
     }
 
-    /// The regression this whole module change was about: an id comes out of
-    /// its MID1 entry whole, not masked to the entry's low 16 bits.
+    /// An id comes out of its MID1 entry whole, not masked to the entry's
+    /// low 16 bits, and the copy at the front of the record must agree.
     #[test]
-    fn public_id_comes_from_mid1() {
-        let mut inf1 = inf1_header(2, 4);
+    fn public_id_comes_from_mid1_and_its_record_copy() {
+        let mut inf1 = inf1_header(2, 6);
         inf1.extend(0u32.to_be_bytes());
+        inf1.extend(5u16.to_be_bytes());
         inf1.extend(3u32.to_be_bytes());
+        inf1.extend(10u16.to_be_bytes());
         let dat1 = b"Hi\0Yo\0";
         let mut mid1 = vec![0, 0, 0x00, 0x00, 0, 0, 0, 0];
         mid1.extend(5u32.to_be_bytes());
         mid1.extend(10u32.to_be_bytes());
 
-        let (messages, _, mid1_header) = read_messages(&inf1, dat1, Some(&mid1)).unwrap();
-
+        let (messages, _, mid1_header) = read(&inf1, dat1, Some(&mid1)).unwrap();
         assert_eq!(messages[0].public_id, 5);
         assert_eq!(messages[1].public_id, 10);
         assert_eq!(mid1_header.unwrap().shift_bytes, 0);
+
+        // The game walks the record copy, so one that disagrees with MID1
+        // would be looked up under a different id than the header says.
+        inf1[inf1_offsets::LEN + 4..][..2].copy_from_slice(&6u16.to_be_bytes());
+        assert!(matches!(
+            read(&inf1, dat1, Some(&mid1)),
+            Err(Error::Corrupt(_))
+        ));
+
+        // No room for a copy at all.
+        let mut narrow = inf1_header(1, 4);
+        narrow.extend(0u32.to_be_bytes());
+        assert!(matches!(
+            read(&narrow, dat1, Some(&mid1)),
+            Err(Error::Corrupt(_))
+        ));
     }
 
     #[test]
     fn mid1_id_too_large_is_corrupt() {
-        let mut inf1 = inf1_header(1, 4);
+        let mut inf1 = inf1_header(1, 6);
         inf1.extend(0u32.to_be_bytes());
+        inf1.extend([0, 0]);
         let mut mid1 = vec![0, 0, 0x00, 0x00, 0, 0, 0, 0];
         mid1.extend(0x0001_0000u32.to_be_bytes());
 
         assert!(matches!(
-            read_messages(&inf1, &[], Some(&mid1)),
+            read(&inf1, &[], Some(&mid1)),
             Err(Error::Corrupt(_))
         ));
     }
@@ -355,9 +548,122 @@ mod tests {
     #[test]
     fn record_len_narrower_than_text_offset_is_corrupt() {
         let inf1 = inf1_header(1, 3);
+        assert!(matches!(read(&inf1, &[], None), Err(Error::Corrupt(_))));
+    }
+
+    fn message(id: u32, public_id: u16, attributes: &[u8], text: &[TextSegment]) -> Message {
+        Message {
+            public_id,
+            id: MessageId(id),
+            attributes: attributes.to_vec(),
+            text: text.to_vec(),
+        }
+    }
+
+    fn sample() -> Vec<Message> {
+        vec![
+            message(0, 5, &[0x00, 0x05], &[TextSegment::Text(b"Hi".to_vec())]),
+            message(
+                1,
+                10,
+                &[0x00, 0x0A],
+                &[
+                    TextSegment::Tag(vec![0x1A, 3, 0x01]),
+                    TextSegment::Text(b"Yo".to_vec()),
+                ],
+            ),
+        ]
+    }
+
+    const HEADER: Mid1Header = Mid1Header {
+        form: 0,
+        shift_bytes: 0,
+    };
+
+    /// The retail layout, field by field: DAT1 opens with a lone terminator,
+    /// so the first message's text is at offset 1, and MID1 packs the
+    /// `ordered` bit into the high nibble above `form`.
+    #[test]
+    fn messages_are_written_the_way_the_retail_files_are() {
+        let (inf1, dat1, mid1) = write(&sample(), 6, Some(HEADER)).unwrap();
+
+        let mut expected = inf1_header(2, 6);
+        expected.extend(1u32.to_be_bytes());
+        expected.extend([0x00, 0x05]);
+        expected.extend(4u32.to_be_bytes());
+        expected.extend([0x00, 0x0A]);
+        assert_eq!(inf1, expected);
+        assert_eq!(dat1, b"\0Hi\0\x1A\x03\x01Yo\0");
+        assert_eq!(
+            mid1.unwrap(),
+            [0, 2, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 10]
+        );
+    }
+
+    #[test]
+    fn messages_survive_a_round_trip() {
+        let header = Mid1Header {
+            form: 3,
+            shift_bytes: 0,
+        };
+        let (inf1, dat1, mid1) = write(&sample(), 6, Some(header)).unwrap();
+        let (messages, record_len, read_header) = read(&inf1, &dat1, mid1.as_deref()).unwrap();
+        assert_eq!(messages, sample());
+        assert_eq!(record_len, 6);
+        assert_eq!(read_header, Some(header));
+    }
+
+    /// `public_id` is the one source: whatever the attributes opened with
+    /// is overwritten, but only in a file that has ids at all.
+    #[test]
+    fn the_public_id_is_stamped_over_the_front_of_the_record() {
+        let stale = [message(0, 5, &[0xAA, 0xBB], &[])];
+        let (inf1, _, _) = write(&stale, 6, Some(HEADER)).unwrap();
+        assert_eq!(&inf1[inf1_offsets::LEN + 4..], [0x00, 0x05]);
+
+        let (inf1, _, _) = write(&stale, 6, None).unwrap();
+        assert_eq!(&inf1[inf1_offsets::LEN + 4..], [0xAA, 0xBB]);
+
+        let no_room = [message(0, 5, &[], &[])];
         assert!(matches!(
-            read_messages(&inf1, &[], None),
-            Err(Error::Corrupt(_))
+            write(&no_room, 4, Some(HEADER)),
+            Err(Error::Unwritable(_))
         ));
+        assert!(write(&no_room, 4, None).is_ok());
+    }
+
+    /// The bit is a fact about the ids, so it follows them: sorted in, set;
+    /// shuffled, clear.
+    #[test]
+    fn the_ordered_bit_follows_the_ids() {
+        let (_, _, mid1) = write(&sample(), 6, Some(HEADER)).unwrap();
+        assert_eq!(mid1.unwrap()[2], 0x10);
+
+        let mut shuffled = sample();
+        shuffled.swap(0, 1);
+        let (_, _, mid1) = write(&shuffled, 6, Some(HEADER)).unwrap();
+        assert_eq!(mid1.unwrap()[2], 0x00);
+    }
+
+    #[test]
+    fn attributes_of_the_wrong_width_are_unwritable() {
+        assert!(matches!(
+            write(&sample(), 8, None),
+            Err(Error::Unwritable(_))
+        ));
+    }
+
+    /// Either would be read back as something else: the run would end at
+    /// the terminator, and the tag would swallow whatever its length byte
+    /// said rather than what it holds.
+    #[test]
+    fn text_the_reader_would_split_differently_is_unwritable() {
+        let terminator = [message(0, 0, &[], &[TextSegment::Text(b"a\0b".to_vec())])];
+        assert!(matches!(
+            write(&terminator, 4, None),
+            Err(Error::Unwritable(_))
+        ));
+        let tag = [message(0, 0, &[], &[TextSegment::Tag(vec![0x1A, 4, 0x01])])];
+        assert!(matches!(write(&tag, 4, None), Err(Error::Unwritable(_))));
     }
 }

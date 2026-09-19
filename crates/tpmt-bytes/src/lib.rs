@@ -263,6 +263,13 @@ impl Writer {
         self.patch(pos, &value.to_be_bytes());
     }
 
+    /// Overwrites a run of bytes at an absolute position: a field with no
+    /// natural integer width, like a raw param blob, in a record that was
+    /// reserved with [`zeros`](Self::zeros).
+    pub fn bytes_at(&mut self, pos: usize, bytes: &[u8]) {
+        self.patch(pos, bytes);
+    }
+
     #[must_use]
     pub fn finish(self) -> Vec<u8> {
         self.data
