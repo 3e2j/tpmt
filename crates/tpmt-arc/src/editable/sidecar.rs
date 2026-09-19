@@ -3,7 +3,7 @@
 //! - Pre-assigned member IDs used for cross-referencing.
 //! - Which memory each member is loaded into.
 //! - The name the root node goes back under.
-//! - Yaz0 wrapper presence (for archive and members).
+//! - Yaz0 wrapper presence, per member.
 //!
 //! The order of the members is data too. An archive lays its file bytes out in
 //! the order its entries come, and the two preload runs the header describes
@@ -29,9 +29,14 @@ pub const SIDECAR: &str = ".tpmt-arc.toml";
 /// existed can carry the plainest one there is.
 const ROOT: &str = "archive";
 
-/// Only two things here are the archive's own. Everything the format records
+/// Only the root name is the archive's own. Everything the format records
 /// per file sits on [`Member`] instead, because that is where the archive keeps
 /// it: an entry each, not a setting for the container.
+///
+/// Whether the archive itself arrived Yaz0 wrapped is not here either: that
+/// is a fact about it as somebody's member, so whatever holds the archive
+/// (a parent archive, or the disc) records it, the same way this records it
+/// for each member.
 ///
 /// The next-free-id counter is the one thing an archive carries that is left
 /// out. It is bookkeeping belonging to whatever built the archive, nothing
@@ -44,14 +49,6 @@ pub struct Sidecar {
     /// is rarely the file name. See [`crate::Archive::root`] for why it is
     /// worth keeping.
     pub root: String,
-    /// Whether a Yaz0 wrapper came off this archive on the way in.
-    ///
-    /// Only ever true for an archive loose on the disc. A nested archive's
-    /// wrapper is a fact about it as a member, so it lives on its
-    /// [`Member`] entry in the parent, and the nested archive arrives here
-    /// already bare. A rebuild wraps in one place or the other, never both.
-    #[serde(default)]
-    pub yaz0_compressed: bool,
     /// Every member, in the order the archive stored them.
     #[serde(default, rename = "member")]
     pub members: Vec<Member>,
@@ -120,23 +117,19 @@ impl Member {
 
 impl Sidecar {
     #[must_use]
-    pub const fn new(root: String, yaz0_compressed: bool, members: Vec<Member>) -> Self {
-        Self {
-            root,
-            yaz0_compressed,
-            members,
-        }
+    pub const fn new(root: String, members: Vec<Member>) -> Self {
+        Self { root, members }
     }
 
     /// An archive nobody has described, which is every directory somebody makes
     /// and calls `.arc`.
     ///
     /// Nothing here is guessed: one that never existed has no root name to
-    /// recover, no wrapping it arrived under and no members it used to hold.
-    /// The files in the directory become members on their own terms.
+    /// recover and no members it used to hold. The files in the directory
+    /// become members on their own terms.
     #[must_use]
     pub fn fresh() -> Self {
-        Self::new(ROOT.to_string(), false, Vec::new())
+        Self::new(ROOT.to_string(), Vec::new())
     }
 
     /// The TOML text a project keeps this as.
@@ -170,7 +163,6 @@ mod tests {
     fn example() -> Sidecar {
         Sidecar::new(
             "archive".to_string(),
-            true,
             vec![
                 Member {
                     path: "model.bdl".to_string(),
@@ -197,7 +189,6 @@ mod tests {
         assert_eq!(
             text,
             "root = \"archive\"\n\
-             yaz0_compressed = true\n\
              \n\
              [[member]]\n\
              path = \"model.bdl\"\n\
@@ -213,7 +204,6 @@ mod tests {
 
         let read = Sidecar::from_toml(&text).unwrap();
         assert_eq!(read.root, "archive");
-        assert!(read.yaz0_compressed);
         assert_eq!(read.members[0].id, Some(0));
         assert!(!read.members[0].yaz0_compressed);
         assert_eq!(read.members[1].preload, Preload::Aram);
@@ -234,7 +224,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!read.yaz0_compressed);
         assert!(!read.members[0].yaz0_compressed);
         assert_eq!(read.members[0].id, None);
     }

@@ -40,15 +40,34 @@ pub fn run(iso: &Path, project: &Path) -> Result<()> {
 fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
     project::write_metadata(base, disc.metadata())?;
 
-    Ok(disc
+    let unpacked = disc
         .entries()?
         .par_iter()
         .map(|entry| unpack_entry(disc, base, entry))
-        .collect::<Result<Vec<_>>>()?
+        .collect::<Result<Vec<_>>>()?;
+
+    let yaz0_compressed: Vec<_> = unpacked
+        .iter()
+        .filter(|entry| entry.yaz0_compressed)
+        .map(|entry| entry.path.clone())
+        .collect();
+    project::write_yaz0(base, &yaz0_compressed)?;
+
+    Ok(unpacked
         .into_iter()
-        .flatten()
+        .flat_map(|entry| entry.written)
         .map(|written| (written.path, written.sha1))
         .collect())
+}
+
+/// One disc entry laid out under `base/`.
+struct Unpacked {
+    /// The entry's disc path.
+    path: String,
+    /// Whether a Yaz0 wrapper came off it. The disc is the container that
+    /// records this for a loose file, in `yaz0.toml`.
+    yaz0_compressed: bool,
+    written: Vec<WrittenFile>,
 }
 
 /// One file written into `base/`, and what it hashed to.
@@ -59,14 +78,20 @@ struct WrittenFile {
 
 /// Decodes one disc entry into `base/`. A directory holds nothing to hash,
 /// but is created here so an empty one is not lost.
-fn unpack_entry(disc: &Disc, base: &Path, entry: &Entry) -> Result<Vec<WrittenFile>> {
+fn unpack_entry(disc: &Disc, base: &Path, entry: &Entry) -> Result<Unpacked> {
     let Entry::File { path, offset, size } = entry else {
         project::create_dir_all(&base.join(entry.path()))?;
-        return Ok(Vec::new());
+        return Ok(Unpacked {
+            path: entry.path().to_string(),
+            yaz0_compressed: false,
+            written: Vec::new(),
+        });
     };
 
     let data = disc.read(*offset, *size)?;
-    format::decode(path, &data)?
+    let decoded = format::decode(path, &data)?;
+    let written = decoded
+        .writes
         .into_iter()
         .map(|(path, data)| {
             project::write(&base.join(&path), &data)?;
@@ -75,7 +100,13 @@ fn unpack_entry(disc: &Disc, base: &Path, entry: &Entry) -> Result<Vec<WrittenFi
                 path,
             })
         })
-        .collect()
+        .collect::<Result<_>>()?;
+
+    Ok(Unpacked {
+        path: path.clone(),
+        yaz0_compressed: decoded.yaz0_compressed,
+        written,
+    })
 }
 
 fn sha1_hex(data: &[u8]) -> String {

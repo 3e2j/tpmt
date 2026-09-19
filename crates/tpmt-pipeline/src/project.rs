@@ -7,6 +7,7 @@
 //! ```text
 //! base/         read-only unpack of the ISO, decoded index for the UI to browse
 //!   disc.toml   the preamble values a build cannot derive
+//!   yaz0.toml   which loose files arrived Yaz0 wrapped
 //!   sys/        apploader.img, main.dol
 //!   files/      game content, archives as directories
 //! mod/          the mod project; the only directory a modder edits
@@ -61,6 +62,8 @@ pub const BASE_DIR: &str = "base";
 const BASE_TMP_DIR: &str = "base.tmp";
 /// The disc preamble values a build cannot derive, under [`BASE_DIR`].
 pub const DISC_TOML: &str = "disc.toml";
+/// Which loose files arrived Yaz0 wrapped, under [`BASE_DIR`]: see [`Yaz0`].
+pub const YAZ0_TOML: &str = "yaz0.toml";
 
 // Mod (authored) directory
 /// The mod project: `overlay/`, `res/`, `mod.json`.
@@ -78,6 +81,14 @@ pub const BUILD_DIR: &str = "build";
 const STORE_DIR: &str = ".tpmt";
 const HASHES: &str = "hashes";
 const SOURCE: &str = "source.toml";
+
+/// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
+/// because a file never records its own wrapper: the container holding it
+/// does, and for a loose file that is the disc.
+#[derive(Serialize)]
+struct Yaz0<'a> {
+    compressed: &'a [String],
+}
 
 /// Where the ISO this project came from was last seen, and its sha1, so a
 /// build can tell if it moved or changed.
@@ -202,6 +213,11 @@ pub fn scaffold_mod(project: &Path) -> Result<()> {
 /// `disc.toml`: the preamble values a build cannot derive.
 pub fn write_metadata(base: &Path, metadata: &tpmt_disc::Metadata) -> Result<()> {
     write_toml(&base.join(DISC_TOML), metadata)
+}
+
+/// `yaz0.toml`: see [`Yaz0`].
+pub fn write_yaz0(base: &Path, compressed: &[String]) -> Result<()> {
+    write_toml(&base.join(YAZ0_TOML), &Yaz0 { compressed })
 }
 
 /// Writes the store, which is what makes `project` a project. Only called
