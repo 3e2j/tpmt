@@ -36,7 +36,7 @@
 // whether anything actually references it), and the linker below.
 
 // TODO: the linker. Lands with its first user (`.stb`), as a trait in
-// tpmt-arc a decoded file implements to hand out `&mut` to every reference
+// tpmt-jkernel-arc a decoded file implements to hand out `&mut` to every reference
 // it holds, each an enum of bare `Id(u16)` or resolved `Path(String)`.
 // Unpack turns `Id`s into `Path`s via the owning archive's id -> path map
 // (free from `Sidecar::members`); build turns `Path`s back into ids once

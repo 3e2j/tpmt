@@ -32,7 +32,7 @@
 //! Replacing one file's bytes, which is the shape nearly every caller wants:
 //!
 //! ```
-//! use tpmt_arc::{Archive, File, Format};
+//! use tpmt_jkernel_arc::{Archive, File, Format};
 //!
 //! # let on_disc = Archive {
 //! #     root: "archive".into(),
@@ -49,7 +49,7 @@
 //! let rebuilt = opened.encode()?;
 //!
 //! assert_eq!(Archive::decode(&rebuilt)?.files[0].data, b"after");
-//! # Ok::<(), tpmt_arc::Error>(())
+//! # Ok::<(), tpmt_jkernel_arc::Error>(())
 //! ```
 
 use serde::{Deserialize, Serialize};

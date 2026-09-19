@@ -13,10 +13,10 @@
 //! whatever holds the file: an archive writes it on the member's sidecar
 //! entry, the disc on `yaz0.toml`. A file never records its own.
 
-use tpmt_arc::Archive;
-use tpmt_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_compress::{is_yaz0, yaz0_decode};
 use tpmt_format::Format;
+use tpmt_jkernel_arc::Archive;
+use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
+use tpmt_jkernel_compress::{is_yaz0, yaz0_decode};
 
 use crate::{Error, Result};
 
@@ -26,10 +26,10 @@ use crate::{Error, Result};
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     #[error(transparent)]
-    Archive(#[from] tpmt_arc::Error),
+    Archive(#[from] tpmt_jkernel_arc::Error),
 
     #[error(transparent)]
-    Compress(#[from] tpmt_compress::Error),
+    Compress(#[from] tpmt_jkernel_compress::Error),
 }
 
 /// Peels `data`, then hands it to whichever format's magic it opens with,
@@ -56,7 +56,7 @@ pub fn file(
     if Archive::recognises(bare) {
         archive(path, bare, sink)?;
     } else {
-        // Translation layers (e.g. tpmt_bmg::editable::json) are deprecated
+        // Translation layers (e.g. tpmt_jmessage::editable::json) are deprecated
         // for now: raw game files + a UI is the scoped-down editing path. A
         // leaf format passes through untouched until that changes.
         sink(path, bare)?;
@@ -102,8 +102,8 @@ fn at<E: Into<DecodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tpmt_arc::File;
-    use tpmt_compress::yaz0_encode;
+    use tpmt_jkernel_arc::File;
+    use tpmt_jkernel_compress::yaz0_encode;
 
     use super::*;
 

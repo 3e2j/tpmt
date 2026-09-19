@@ -1,6 +1,6 @@
 [package]
-name = "tpmt-arc"
-description = "RARC archive containers."
+name = "tpmt-jkernel-arc"
+description = "JKernel: RARC archive containers."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

@@ -1,6 +1,6 @@
 [package]
-name = "tpmt-compress"
-description = "Nintendo compression formats used by GameCube-era titles."
+name = "tpmt-jkernel-compress"
+description = "JKernel: Nintendo compression formats used by GameCube-era titles."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

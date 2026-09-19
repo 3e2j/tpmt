@@ -9,8 +9,8 @@ repository.workspace = true
 # Every format the toolkit understands. This crate is the conveyor belt: it
 # only moves files through unpack/build. Organising a format's editable
 # files, sidecars included, is that format crate's own call to make.
-tpmt-arc.workspace = true
-tpmt-compress.workspace = true
+tpmt-jkernel-arc.workspace = true
+tpmt-jkernel-compress.workspace = true
 tpmt-disc.workspace = true
 tpmt-format.workspace = true
 
