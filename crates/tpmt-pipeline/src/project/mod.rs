@@ -18,7 +18,7 @@
 //! build/        what `build` and `image` produce, made by the first of them
 //! ```
 //!
-//! `base/` is rewritten whole on every unpack. `mod/` is scaffolded once.
+//! Every unpack rewrites `base/` whole. [`scaffold_mod`] writes `mod/` once.
 //!
 //! Facts a decoded file can't carry, like a wrapper that came off it or
 //! which memory an archive member loads into, live in a sidecar next to it
@@ -30,13 +30,17 @@
 //!
 //! Everything generated about the project, rather than for it, lives in
 //! `.tpmt/` (see [`metadata`]). It goes in last, after everything else
-//! succeeded, so its presence means an unpack finished: [`is_project`]
-//! is exactly that test.
+//! succeeded, so its presence means an unpack finished, which is what
+//! [`is_project`] tests.
 // # TODO
-// Disc paths (from [`tpmt_disc::Entry`]) are used as project paths verbatim.
-// That holds for one disc, but GZ2E, GZ2P and GZ2J do not share paths, so a
-// routing table keyed by region will be needed once anything has to
-// reconcile more than one disc against a project.
+// One disc per project FOR NOW.
+//
+// A modder may bring more than one region (GZ2E, GZ2P, GZ2J), in which case
+// the first unpacked (by the modder) is the primary copy and each other region's
+// files show only where their hash differs from the primary's file at the same path.
+// That needs `hashes.toml` and `source.toml` keyed per region; both hold
+// one disc today.
+// Nothing here decides which regions an edit applies to yet.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -95,9 +99,9 @@ pub fn is_project(dir: &Path) -> bool {
     dir.join(STORE_DIR).is_dir()
 }
 
-/// Finds the project root by walking upward from `start`, the way git finds
-/// `.git`: canonicalize first, then climb one directory at a time until a
-/// `.tpmt` store turns up or the filesystem root is reached.
+/// Finds the project root by walking upward from `start`. Canonicalizes
+/// first, then climbs one directory at a time until a `.tpmt` store turns
+/// up or the climb hits the filesystem root.
 ///
 /// # Errors
 ///
@@ -116,9 +120,12 @@ pub fn discover(start: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Refuses to unpack into a directory holding something this crate did not
-/// write. A project, an empty directory, no directory at all, or one holding
-/// only [`OWNED`] names (an unpack that failed part way) is fine.
+/// Refuses a directory that is not a project but already holds files.
+///
+/// A project passes whatever else it holds (notes, fixtures, `.git`), since
+/// a re-unpack replaces only `base/`. An empty or missing directory passes,
+/// as does one holding only [`OWNED`] names from an unpack that failed part
+/// way.
 pub fn refuse_foreign(project: &Path) -> Result<()> {
     if is_project(project) || !project.is_dir() {
         return Ok(());
@@ -161,8 +168,8 @@ impl Staging {
         &self.dir
     }
 
-    /// Swaps the staged tree in as `base/`. The old `base/` is moved aside
-    /// rather than deleted first, so a failure between the two renames
+    /// Swaps the staged tree in as `base/`. Moves the old `base/` aside
+    /// rather than deleting it first, so a failure between the two renames
     /// leaves it recoverable as [`BASE_OLD_DIR`].
     pub fn promote(self) -> Result<()> {
         let base = self.project.join(BASE_DIR);
@@ -179,15 +186,15 @@ impl Staging {
 
 impl Drop for Staging {
     fn drop(&mut self) {
-        // Best-effort: after a promote there is nothing here; after a
-        // failure, the error that caused it is the one that matters.
+        // Best effort. After a promote there is nothing here, and after a
+        // failure the error that caused it matters more.
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
 /// Writes the `mod/` skeleton (`overlay/`, `res/scripts/`, a starter
-/// `mod.json`) alongside `base/`. Left untouched if `mod/` already exists,
-/// so re-unpacking a project never clobbers a modder's own edits.
+/// `mod.json`) alongside `base/`. Skips an existing `mod/`, so re-unpacking
+/// a project never clobbers a modder's edits.
 pub fn scaffold_mod(project: &Path) -> Result<()> {
     let mod_dir = project.join(MOD_DIR);
     if mod_dir.is_dir() {
@@ -289,8 +296,8 @@ mod tests {
         assert!(matches!(error, Error::NoProjectFound(_)));
     }
 
-    /// A personal folder that happens to share a name is left alone rather
-    /// than cleared to make room.
+    /// Unpacking into a directory the user already keeps their own files in
+    /// fails rather than clearing it to make room.
     #[test]
     fn refuses_a_directory_that_is_not_a_project() {
         let scratch = Scratch::new("foreign");

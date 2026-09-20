@@ -9,9 +9,8 @@
 //! .tpmt/hashes.toml   Hashes         vanilla sha1 of every base/ file
 //! ```
 //!
-//! `disc.toml` and `mod.json` are for people as much as for tpmt, so their
-//! shape is chosen to read well. The `.tpmt/` files are never hand-edited,
-//! so theirs is whatever's convenient to (de)serialize.
+//! `disc.toml` and `mod.json` are safe to edit by hand. `.tpmt/` is not:
+//! every unpack rewrites it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -23,21 +22,28 @@ use super::{DISC_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML}
 use crate::Result;
 use crate::fs::{io_at, write_json, write_toml};
 
-/// `disc.toml`: what [`tpmt_disc::Metadata`] holds, verbatim.
-pub fn write_disc(base: &Path, metadata: &tpmt_disc::Metadata) -> Result<()> {
-    write_toml(&base.join(DISC_TOML), metadata)
-}
-
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
-/// because a file never records its own wrapper: the container holding it
-/// does, and for a loose file that is the disc.
+/// because a loose file never records its own wrapper (unlike containers).
 #[derive(Serialize)]
 struct Yaz0<'a> {
     compressed: &'a [String],
 }
 
-pub fn write_yaz0(base: &Path, compressed: &[String]) -> Result<()> {
-    write_toml(&base.join(YAZ0_TOML), &Yaz0 { compressed })
+/// Writes `base/`'s own metadata: `disc.toml` and `yaz0.toml`. The one call
+/// site for everything under `base/` that isn't a copied file, so nothing
+/// else reaches into `base/` to write a TOML of its own.
+pub fn write_base(
+    base: &Path,
+    metadata: &tpmt_disc::Metadata,
+    yaz0_compressed: &[String],
+) -> Result<()> {
+    write_toml(&base.join(DISC_TOML), metadata)?;
+    write_toml(
+        &base.join(YAZ0_TOML),
+        &Yaz0 {
+            compressed: yaz0_compressed,
+        },
+    )
 }
 
 /// `mod.json`: what a mod says about itself.
@@ -68,11 +74,11 @@ struct Source<'a> {
     sha1: &'a str,
 }
 
-/// Writes `.tpmt/`, which is what makes `project` a project. Only called
-/// once every other file is in place.
+/// Writes `.tpmt/`, which is what makes `project` a project. The caller
+/// runs this last, once every other file is in place.
 ///
-/// The ISO path is stored canonical: a project is often built from
-/// somewhere other than where it was unpacked.
+/// Stores the ISO path canonicalized so later commands can read files off
+/// the original disc without asking the user where it is again.
 pub fn write_store(
     project: &Path,
     iso: &Path,

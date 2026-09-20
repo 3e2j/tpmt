@@ -2,16 +2,16 @@
 //! file is itself, an archive is a directory of members plus a sidecar,
 //! however deep the nesting goes.
 //!
-//! Detection is content-only: some files on the retail disc carry a path or
+//! Detection is content-only. Some files on the retail disc carry a path or
 //! extension that doesn't match what's inside, so nothing here branches on a
-//! name, only on checking each format's magic. A blob nothing recognises
-//! passes through unchanged, whatever its name claims.
+//! name, only on each format's magic. A blob nothing recognises passes
+//! through unchanged, whatever its name claims.
 //!
-//! Yaz0 is peeled before content is sniffed, since most files on disc arrive
-//! wrapped and nothing downstream expects to see it. Whether a wrapper came
-//! off is handed back to the caller, since the record of it belongs to
-//! whatever holds the file: an archive writes it on the member's sidecar
-//! entry, the disc on `yaz0.toml`. A file never records its own.
+//! [`file`] peels Yaz0 before sniffing content, since most files on disc
+//! arrive wrapped and nothing downstream expects to see it. It hands back
+//! whether a wrapper came off, since the record of it belongs to whatever
+//! holds the file. An archive writes it on the member's sidecar entry, the
+//! disc on `yaz0.toml`. A file never records its own.
 
 use tpmt_format::Format;
 use tpmt_jkernel_arc::Archive;
@@ -56,9 +56,7 @@ pub fn file(
     if Archive::recognises(bare) {
         archive(path, bare, sink)?;
     } else {
-        // Translation layers (e.g. tpmt_jmessage::editable::json) are deprecated
-        // for now: raw game files + a UI is the scoped-down editing path. A
-        // leaf format passes through untouched until that changes.
+        // Leaf formats pass through as raw bytes. Editing is the UI's job.
         sink(path, bare)?;
     }
 
@@ -159,8 +157,8 @@ mod tests {
     }
 
     /// A wrapped archive holding a wrapped member and a wrapped nested
-    /// archive. Every wrapper comes off; each is recorded exactly once, by
-    /// whatever held the file.
+    /// archive. Every wrapper comes off, and whatever held the file records
+    /// it exactly once.
     #[test]
     fn wrapping_is_recorded_by_the_container() {
         let inner = wrap(&archive("inner", vec![file("deep.bin", b"deep")]));
@@ -177,7 +175,7 @@ mod tests {
         let (outputs, yaz0_compressed) = explode("files/outer.arc", &outer).unwrap();
         assert!(
             yaz0_compressed,
-            "a loose archive's wrapper is reported up, not written anywhere"
+            "the disc file's wrapper goes up to the caller, not to disk"
         );
 
         assert_eq!(

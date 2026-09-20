@@ -11,8 +11,7 @@ pub fn create_dir_all(path: &Path) -> Result<()> {
     fs::create_dir_all(path).map_err(io_at(path))
 }
 
-/// Writes `data` to `path`, creating whatever directories it takes to get
-/// there.
+/// Writes `data` to `path`, creating any missing parent directories.
 pub fn write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         create_dir_all(parent)?;
@@ -36,8 +35,8 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     write(path, text.as_bytes())
 }
 
-/// Like [`fs::remove_dir_all`], but a missing `path` is not an error: there
-/// is already nothing there to clear.
+/// Like [`fs::remove_dir_all`], but a missing `path` is not an error, since
+/// there is nothing to clear.
 pub fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),

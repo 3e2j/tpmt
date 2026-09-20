@@ -11,32 +11,28 @@ use crate::{Result, fs, project};
 
 pub mod explode;
 
-/// Every fallible step comes before every irreversible one: nothing under
-/// `project` changes until the whole disc has been read and hashed.
+/// Unpacks a disc into `base/`, records the store under `.tpmt/`, and
+/// scaffolds a `mod/` folder.
 pub fn run(iso: &Path, project: &Path) -> Result<()> {
-    // Checked before the disc is even opened: whether this directory is safe
-    // to write into does not depend on what is in the ISO.
     project::refuse_foreign(project)?;
     let disc = Disc::open(iso)?;
-
-    let staging = project::Staging::begin(project)?;
-    let hashes = unpack_into(&disc, staging.dir())?;
     let sha1 = disc.sha1()?;
 
+    let staging = project::Staging::begin(project)?;
+    let (yaz0_compressed, hashes) = unpack_files(&disc, staging.dir())?;
+    project::metadata::write_base(staging.dir(), disc.metadata(), &yaz0_compressed)?;
     staging.promote()?;
+
     project::metadata::write_store(project, iso, &sha1, &hashes)?;
-    // Scaffolded alongside base/ rather than left for the first structured
-    // edit to create, so a fresh project has somewhere for overlay/res/
-    // edits to land immediately. A no-op if mod/ already exists.
+
     project::scaffold_mod(project)
 }
 
-/// Writes one disc's worth of files into `base`, hashing each as it goes.
-fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
-    project::metadata::write_disc(base, disc.metadata())?;
-
-    // Directories hold nothing to hash, but an empty one would otherwise be
-    // lost, since a file only creates the directories on its own path.
+/// Unpacks one disc's worth of files into `base`, hashing each as it goes,
+/// and returns what `base/`'s metadata needs to say about them.
+fn unpack_files(disc: &Disc, base: &Path) -> Result<(Vec<String>, BTreeMap<String, String>)> {
+    // Create every listed directory before any file, so empty directories
+    // survive the unpack.
     let entries = disc.entries()?;
     for entry in &entries {
         if let Entry::Directory { path } = entry {
@@ -44,7 +40,7 @@ fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
         }
     }
 
-    let unpacked = entries
+    let unpacked_files = entries
         .par_iter()
         .filter_map(|entry| match entry {
             Entry::File { path, offset, size } => Some((path, *offset, *size)),
@@ -53,14 +49,18 @@ fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
         .map(|(path, offset, size)| unpack_file(disc, base, path, offset, size))
         .collect::<Result<Vec<_>>>()?;
 
-    let yaz0_compressed: Vec<_> = unpacked
+    let yaz0_compressed = unpacked_files
         .iter()
         .filter(|file| file.yaz0_compressed)
         .map(|file| file.path.clone())
         .collect();
-    project::metadata::write_yaz0(base, &yaz0_compressed)?;
 
-    Ok(unpacked.into_iter().flat_map(|file| file.hashes).collect())
+    let hashes = unpacked_files
+        .into_iter()
+        .flat_map(|file| file.hashes)
+        .collect();
+
+    Ok((yaz0_compressed, hashes))
 }
 
 /// One disc file laid out under `base/`.

@@ -1,26 +1,19 @@
 //! Unpacking a disc to a project folder, and building it back. This is the
-//! convayer-belt assembly line that interacts with all game formats.
-//! The `tpmt` CLI is a thin wrapper around the logic here.
+//! conveyor belt that carries every game format through unpack and build.
+//! The `tpmt` CLI is a thin wrapper around this crate.
 //!
-//! A format crate owns its own conversion to and from an editable form:
-//! this crate only hands those format crate's the relevant data blobs.
+//! A format crate owns its own conversion to and from an editable form and
+//! knows nothing about unpacking, building, or cross-references. This crate
+//! only hands each format crate its bytes.
 //!
 //! Project layout: see `project/mod.rs`.
-
-// Rewrite in progress. The previous implementation is gone from the working
-// tree but not from history: `git log` on this branch (pipeline-rewrite) has
-// it as of 7ff78a1, for reference while rebuilding.
 
 // TODO: golden roundtrip tests. Unpack a retail ISO, image it straight back
 // with nothing edited, and diff the two.
 //
-// Byte equality is the wrong measurement for rebuilt entries. A format that
-// stores something derived comes back derived rather than restored, so the
-// bytes can move freely without anything being "wrong".
-
-// TODO: routing tables (disc path to project path) are still hardcoded nowhere.
-// Scope is Twilight Princess only, but GZ2E, GZ2P and GZ2J do not share paths,
-// so whatever holds them is keyed by region.
+// Byte equality is the wrong test for rebuilt entries. A format that stores
+// derived data re-derives it on encode rather than restoring it, so those
+// bytes can differ with nothing wrong.
 
 // TODO: a mod has no way to say a file was deleted, only which ones it
 // replaces or adds. Only matters outside an archive, since a deleted member
@@ -30,10 +23,10 @@
 
 // TODO: nothing here catches a deleted file that something else still
 // references by id, path, or name; that only surfaces as a crash in game,
-// far from the build that caused it. Two separate defenses belong here
-// eventually: a build-time warning when a file the original archive held is
-// gone from what gets packed (cheap, catches the common case, blind to
-// whether anything actually references it), and the linker below.
+// far from the build that caused it. Two checks belong here eventually. One
+// is a build-time warning when a file the original archive held is gone from
+// what gets packed (cheap, catches the common case, blind to whether anything
+// references it). The other is the linker below.
 
 // TODO: the linker. Lands with its first user (`.stb`), as a trait in
 // tpmt-jkernel-arc a decoded file implements to hand out `&mut` to every reference
@@ -71,12 +64,12 @@ pub enum Error {
         source: std::io::Error,
     },
 
-    #[error("`{}` holds something this did not write, so it will not be replaced", .0.display())]
+    #[error("`{}` holds something tpmt did not write, so tpmt will not replace it", .0.display())]
     ForeignDirectory(PathBuf),
 
     /// A file this crate generates (`disc.toml`, `mod.json`, the store)
     /// would not serialize.
-    #[error("`{}` could not be written: {source}", .path.display())]
+    #[error("could not serialize `{}`: {source}", .path.display())]
     Serialize {
         path: PathBuf,
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -103,13 +96,11 @@ pub enum ChangeKind {
 /// file to whichever format crate can decode it, writing the result out as
 /// `base/`.
 ///
-/// `mod/` is scaffolded alongside it, empty, ready for the edits that make
-/// it a mod.
+/// Also scaffolds an empty `mod/` next to it.
 ///
-/// `project` may be an existing project (marked for being overridden).
-/// If it already exists, only `base/` is replaced; `mod/` is left alone.
-/// Committed only once every file is derived, so a failure part way
-/// through leaves no half-made project behind.
+/// `project` may be an existing project. In that case the unpack replaces
+/// only `base/` and leaves `mod/` alone. It commits only once every file is
+/// written, so a failure part way through leaves no half-made project.
 ///
 /// # Errors
 ///
