@@ -483,8 +483,6 @@ name = "tpmt-jmessage"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
- "serde",
- "serde_json",
  "thiserror",
  "tpmt-bytes",
  "tpmt-format",

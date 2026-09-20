@@ -37,7 +37,6 @@
 //! Only INF1 and DAT1 are always there. A file addressed positionally carries
 //! no MID1, and one nothing branches through carries neither flow section.
 
-pub mod editable;
 mod pack;
 mod sections;
 mod unpack;
@@ -62,12 +61,6 @@ pub enum Error {
 
     #[error(transparent)]
     Bytes(#[from] tpmt_bytes::ByteError),
-
-    #[error("not a BMG translation document: {0}")]
-    InvalidJson(#[from] serde_json::Error),
-
-    #[error("the message file could not be written as a translation document: {0}")]
-    UnwritableJson(serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -115,7 +108,6 @@ impl Encoding {
         self as u8
     }
 
-    /// The name the editable form spells it as.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
