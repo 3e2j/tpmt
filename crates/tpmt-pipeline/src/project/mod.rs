@@ -1,6 +1,6 @@
-//! The project directory: where everything in it lives, the fs helpers that
-//! get bytes onto disk under it, and the store that marks one as a finished
-//! unpack.
+//! The project directory: where everything in it lives, how to find one,
+//! and how its directories come and go. The files tpmt writes into it are
+//! [`metadata`]'s.
 //!
 //! A project is two directories, edited in place:
 //!
@@ -28,17 +28,8 @@
 //! *.arc/.tpmt-arc.toml   what an unpacked archive is, minus its bytes
 //! ```
 //!
-//! Everything generated about the project, rather than for it, lives in the
-//! store:
-//!
-//! ```text
-//! .tpmt/source.toml   where the ISO was last seen, plus its sha1
-//! .tpmt/hashes.toml   vanilla hashes of base/, for change detection
-//! ```
-//!
-//! The store is written at [`crate::unpack`] and read back by `status`/`build`.
-//! Never hand-edited, so its shape is whatever's convenient to (de)serialize,
-//! not whatever reads best by hand. It goes in last, after everything else
+//! Everything generated about the project, rather than for it, lives in
+//! `.tpmt/` (see [`metadata`]). It goes in last, after everything else
 //! succeeded, so its presence means an unpack finished: [`is_project`]
 //! is exactly that test.
 // # TODO
@@ -47,13 +38,15 @@
 // routing table keyed by region will be needed once anything has to
 // reconcile more than one disc against a project.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
-
+use crate::fs::{create_dir_all, io_at, remove_dir_all_if_exists};
 use crate::{Error, Result};
+
+pub mod metadata;
+
+use metadata::ModMetadata;
 
 // Base game
 /// Read-only unpack of the game.
@@ -63,9 +56,9 @@ const BASE_TMP_DIR: &str = "base.tmp";
 /// Where the previous [`BASE_DIR`] sits during a promote.
 const BASE_OLD_DIR: &str = "base.old";
 /// The disc preamble values a build cannot derive, under [`BASE_DIR`].
-pub const DISC_TOML: &str = "disc.toml";
-/// Which loose files arrived Yaz0 wrapped, under [`BASE_DIR`]: see [`Yaz0`].
-pub const YAZ0_TOML: &str = "yaz0.toml";
+const DISC_TOML: &str = "disc.toml";
+/// Which loose files arrived Yaz0 wrapped, under [`BASE_DIR`].
+const YAZ0_TOML: &str = "yaz0.toml";
 
 // Mod (authored) directory
 /// The mod project: `overlay/`, `res/`, `mod.json`.
@@ -94,40 +87,9 @@ const OWNED: [&str; 6] = [
     STORE_DIR,
 ];
 
-/// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
-/// because a file never records its own wrapper: the container holding it
-/// does, and for a loose file that is the disc.
-#[derive(Serialize)]
-struct Yaz0<'a> {
-    compressed: &'a [String],
-}
-
-/// Where the ISO this project came from was last seen, and its sha1, so a
-/// build can tell if it moved or changed.
-#[derive(Serialize)]
-struct Source<'a> {
-    iso: &'a Path,
-    sha1: &'a str,
-}
-
-/// `mod.json`'s starter shape.
-///
-/// Fields are the target-agnostic subset only. Dusklight reads a few more
-/// (`runtime`, pinning a mod to a specific host runtime service) that are
-/// specific to the `.dusk` export step.
-#[derive(Serialize)]
-struct ModMetadata<'a> {
-    id: &'a str,
-    name: &'a str,
-    version: &'a str,
-    author: &'a str,
-    description: &'a str,
-    icon: Option<&'a str>,
-    banner: Option<&'a str>,
-}
-
-/// Whether `dir` is a finished unpack: it has the store that only
-/// [`commit`] writes, and only after everything else is in place.
+/// Whether `dir` is a finished unpack: it has the `.tpmt/` that only
+/// `metadata::write_store` writes, and only after everything else is in
+/// place.
 #[must_use]
 pub fn is_project(dir: &Path) -> bool {
     dir.join(STORE_DIR).is_dir()
@@ -239,8 +201,8 @@ pub fn scaffold_mod(project: &Path) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("mod");
-    write_json(
-        &mod_dir.join(MOD_JSON),
+    metadata::write_mod(
+        &mod_dir,
         &ModMetadata {
             id,
             name: id,
@@ -253,87 +215,12 @@ pub fn scaffold_mod(project: &Path) -> Result<()> {
     )
 }
 
-/// `disc.toml`: the preamble values a build cannot derive.
-pub fn write_metadata(base: &Path, metadata: &tpmt_disc::Metadata) -> Result<()> {
-    write_toml(&base.join(DISC_TOML), metadata)
-}
-
-/// `yaz0.toml`: see [`Yaz0`].
-pub fn write_yaz0(base: &Path, compressed: &[String]) -> Result<()> {
-    write_toml(&base.join(YAZ0_TOML), &Yaz0 { compressed })
-}
-
-/// Writes the store, which is what makes `project` a project. Only called
-/// once every other file is in place.
-///
-/// The ISO path is stored canonical: a project is often built from
-/// somewhere other than where it was unpacked.
-pub fn commit(
-    project: &Path,
-    iso: &Path,
-    sha1: &str,
-    hashes: &BTreeMap<String, String>,
-) -> Result<()> {
-    let iso = iso.canonicalize().map_err(io_at(iso))?;
-    let store = project.join(STORE_DIR);
-    write_toml(&store.join(HASHES_TOML), hashes)?;
-    write_toml(&store.join(SOURCE_TOML), &Source { iso: &iso, sha1 })
-}
-
-pub fn create_dir_all(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).map_err(io_at(path))
-}
-
-/// Writes `data` to `path`, creating whatever directories it takes to get
-/// there.
-pub fn write(path: &Path, data: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        create_dir_all(parent)?;
-    }
-    fs::write(path, data).map_err(io_at(path))
-}
-
-fn write_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let text = toml::to_string_pretty(value).map_err(|source| Error::Serialize {
-        path: path.to_path_buf(),
-        source: source.into(),
-    })?;
-    write(path, text.as_bytes())
-}
-
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let text = serde_json::to_string_pretty(value).map_err(|source| Error::Serialize {
-        path: path.to_path_buf(),
-        source: source.into(),
-    })?;
-    write(path, text.as_bytes())
-}
-
-/// Like [`fs::remove_dir_all`], but a missing `path` is not an error: there
-/// is already nothing there to clear.
-fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
-    match fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(Error::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
-fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
-    move |source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
+    use crate::fs::write;
 
     /// A scratch directory, gone again when the test that made it ends.
     /// Tagged with a counter as well as a name, since two tests picking the

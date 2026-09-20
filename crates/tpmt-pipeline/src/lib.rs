@@ -5,7 +5,7 @@
 //! A format crate owns its own conversion to and from an editable form:
 //! this crate only hands those format crate's the relevant data blobs.
 //!
-//! Project layout: see `project.rs`.
+//! Project layout: see `project/mod.rs`.
 
 // Rewrite in progress. The previous implementation is gone from the working
 // tree but not from history: `git log` on this branch (pipeline-rewrite) has
@@ -48,12 +48,12 @@
 
 use std::path::{Path, PathBuf};
 
-mod explode;
+mod fs;
 mod project;
 mod unpack;
 
-pub use explode::DecodeError;
 pub use project::{discover, is_project};
+pub use unpack::explode::DecodeError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -127,7 +127,7 @@ pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
 /// # Errors
 ///
 /// Not yet designed.
-pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
+pub fn status(_project: &Path) -> Result<Vec<Change>, Error> {
     todo!()
 }
 
@@ -137,7 +137,7 @@ pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
 /// # Errors
 ///
 /// Not yet designed.
-pub fn build(project: &Path, output: Option<&Path>) -> Result<PathBuf, Error> {
+pub fn build(_project: &Path, _output: Option<&Path>) -> Result<PathBuf, Error> {
     todo!()
 }
 
@@ -147,7 +147,7 @@ pub fn build(project: &Path, output: Option<&Path>) -> Result<PathBuf, Error> {
 /// # Errors
 ///
 /// Not yet designed.
-pub fn image(project: &Path, output: Option<&Path>) -> Result<PathBuf, Error> {
+pub fn image(_project: &Path, _output: Option<&Path>) -> Result<PathBuf, Error> {
     todo!()
 }
 
@@ -157,6 +157,6 @@ pub fn image(project: &Path, output: Option<&Path>) -> Result<PathBuf, Error> {
 /// # Errors
 ///
 /// Not yet designed.
-pub fn revert(project: &Path, target: &Path) -> Result<(), Error> {
+pub fn revert(_project: &Path, _target: &Path) -> Result<(), Error> {
     todo!()
 }

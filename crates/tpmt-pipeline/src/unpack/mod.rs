@@ -1,14 +1,15 @@
-//! Walks a disc, explodes each file (see [`crate::explode`]), and lays the
+//! Walks a disc, explodes each file (see [`explode`]), and lays the
 //! result out under `base/`. See [`crate::unpack`].
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use rayon::prelude::*;
-use sha1::{Digest, Sha1};
 use tpmt_disc::{Disc, Entry};
 
-use crate::{Result, explode, project};
+use crate::{Result, fs, project};
+
+pub mod explode;
 
 /// Every fallible step comes before every irreversible one: nothing under
 /// `project` changes until the whole disc has been read and hashed.
@@ -23,7 +24,7 @@ pub fn run(iso: &Path, project: &Path) -> Result<()> {
     let sha1 = disc.sha1()?;
 
     staging.promote()?;
-    project::commit(project, iso, &sha1, &hashes)?;
+    project::metadata::write_store(project, iso, &sha1, &hashes)?;
     // Scaffolded alongside base/ rather than left for the first structured
     // edit to create, so a fresh project has somewhere for overlay/res/
     // edits to land immediately. A no-op if mod/ already exists.
@@ -32,14 +33,14 @@ pub fn run(iso: &Path, project: &Path) -> Result<()> {
 
 /// Writes one disc's worth of files into `base`, hashing each as it goes.
 fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
-    project::write_metadata(base, disc.metadata())?;
+    project::metadata::write_disc(base, disc.metadata())?;
 
     // Directories hold nothing to hash, but an empty one would otherwise be
     // lost, since a file only creates the directories on its own path.
     let entries = disc.entries()?;
     for entry in &entries {
         if let Entry::Directory { path } = entry {
-            project::create_dir_all(&base.join(path))?;
+            fs::create_dir_all(&base.join(path))?;
         }
     }
 
@@ -57,7 +58,7 @@ fn unpack_into(disc: &Disc, base: &Path) -> Result<BTreeMap<String, String>> {
         .filter(|file| file.yaz0_compressed)
         .map(|file| file.path.clone())
         .collect();
-    project::write_yaz0(base, &yaz0_compressed)?;
+    project::metadata::write_yaz0(base, &yaz0_compressed)?;
 
     Ok(unpacked.into_iter().flat_map(|file| file.hashes).collect())
 }
@@ -79,8 +80,8 @@ fn unpack_file(disc: &Disc, base: &Path, path: &str, offset: u64, size: u64) -> 
     let data = disc.read(offset, size)?;
     let mut hashes = BTreeMap::new();
     let yaz0_compressed = explode::file(path, &data, &mut |path, data| {
-        project::write(&base.join(path), data)?;
-        hashes.insert(path.to_string(), sha1_hex(data));
+        fs::write(&base.join(path), data)?;
+        hashes.insert(path.to_string(), project::metadata::sha1_hex(data));
         Ok(())
     })?;
 
@@ -89,10 +90,4 @@ fn unpack_file(disc: &Disc, base: &Path, path: &str, offset: u64, size: u64) -> 
         yaz0_compressed,
         hashes,
     })
-}
-
-fn sha1_hex(data: &[u8]) -> String {
-    let mut hasher = Sha1::new();
-    hasher.update(data);
-    format!("{:x}", hasher.finalize())
 }
