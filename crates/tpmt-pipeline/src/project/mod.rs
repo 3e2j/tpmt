@@ -15,7 +15,9 @@
 //!   res/        authored user-made content
 //!     scripts/  Luau scripts
 //!   mod.json    mod metadata (id, name, version, author, description, icon, banner)
-//! build/        what `build` and `image` produce, made by the first of them
+//! build/
+//!   targets/
+//!     <target>/ what one build target produced, cleared and rewritten by it
 //! ```
 //!
 //! Every unpack rewrites `base/` whole. [`scaffold_mod`] writes `mod/` once.
@@ -55,10 +57,6 @@ use metadata::ModMetadata;
 // Base game
 /// Read-only unpack of the game.
 pub const BASE_DIR: &str = "base";
-/// Where [`Staging`] writes a fresh unpack before promoting it to [`BASE_DIR`].
-const BASE_TMP_DIR: &str = "base.tmp";
-/// Where the previous [`BASE_DIR`] sits during a promote.
-const BASE_OLD_DIR: &str = "base.old";
 /// The disc preamble values a build cannot derive, under [`BASE_DIR`].
 const DISC_TOML: &str = "disc.toml";
 /// Which loose files arrived Yaz0 wrapped, under [`BASE_DIR`].
@@ -74,6 +72,8 @@ const MOD_JSON: &str = "mod.json";
 
 // Build output
 const BUILD_DIR: &str = "build";
+/// Holds one directory per build target, under [`BUILD_DIR`].
+const TARGETS_DIR: &str = "targets";
 
 // TPMT specifics
 const STORE_DIR: &str = ".tpmt";
@@ -81,15 +81,30 @@ const HASHES_TOML: &str = "hashes.toml";
 const SOURCE_TOML: &str = "source.toml";
 
 /// Every top-level name this crate writes. A directory holding nothing but
-/// these is ours, however far an unpack got before it failed.
-const OWNED: [&str; 6] = [
-    BASE_DIR,
-    BASE_TMP_DIR,
-    BASE_OLD_DIR,
-    MOD_DIR,
-    BUILD_DIR,
-    STORE_DIR,
-];
+/// these and their [`Staging`] copies is ours, however far an unpack got
+/// before it failed.
+const OWNED: [&str; 4] = [BASE_DIR, MOD_DIR, BUILD_DIR, STORE_DIR];
+
+/// The read-only unpack of the disc.
+#[must_use]
+pub fn base(project: &Path) -> PathBuf {
+    project.join(BASE_DIR)
+}
+
+/// The modder's whole-file and archive-member replacements, addressed by the
+/// same project paths [`base`] holds.
+#[must_use]
+pub fn overlay(project: &Path) -> PathBuf {
+    project.join(MOD_DIR).join(OVERLAY_DIR)
+}
+
+/// Where one build target writes what it produced. A target owns its
+/// directory outright and clears it on every build, so two targets never
+/// read each other's leftovers.
+#[must_use]
+pub fn target_output(project: &Path, target: &str) -> PathBuf {
+    project.join(BUILD_DIR).join(TARGETS_DIR).join(target)
+}
 
 /// Whether `dir` is a finished unpack: it has the `.tpmt/` that only
 /// `metadata::write_store` writes, and only after everything else is in
@@ -127,61 +142,106 @@ pub fn discover(start: &Path) -> Result<PathBuf> {
 /// as does one holding only [`OWNED`] names from an unpack that failed part
 /// way.
 pub fn refuse_foreign(project: &Path) -> Result<()> {
-    if is_project(project) || !project.is_dir() {
+    if is_project(project) {
         return Ok(());
     }
-    for entry in fs::read_dir(project).map_err(io_at(project))? {
-        let entry = entry.map_err(io_at(project))?;
-        if !OWNED.iter().any(|name| entry.file_name() == *name) {
-            return Err(Error::ForeignDirectory(project.to_path_buf()));
+    refuse_unowned(project, &OWNED)
+}
+
+/// Refuses `dir` if it holds any name outside `owned`, counting a
+/// [`Staging`] copy of an owned name as owned. A missing or empty directory
+/// passes.
+pub fn refuse_unowned(dir: &Path, owned: &[&str]) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).map_err(io_at(dir))? {
+        let entry = entry.map_err(io_at(dir))?;
+        let name = entry.file_name();
+        if !name
+            .to_str()
+            .is_some_and(|name| owned.contains(&unstaged(name)))
+        {
+            return Err(Error::ForeignDirectory(dir.to_path_buf()));
         }
     }
     Ok(())
 }
 
-/// A fresh `base/` being written under a temporary name, swapped in by
-/// [`promote`](Self::promote) once complete and thrown away otherwise.
+/// `name` without a [`Staging`] suffix, if it has one.
+fn unstaged(name: &str) -> &str {
+    [STAGING_SUFFIX, REPLACED_SUFFIX]
+        .into_iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .unwrap_or(name)
+}
+
+/// Appended to a directory's name for the copy [`Staging`] writes.
+const STAGING_SUFFIX: &str = ".tpmt-tmp";
+/// Appended to a directory's name for the copy a promote moves aside.
+const REPLACED_SUFFIX: &str = ".tpmt-old";
+
+/// A fresh copy of a directory being written beside it under a temporary
+/// name, swapped in by [`promote`](Self::promote) once complete and thrown
+/// away otherwise.
 ///
-/// Dropping one unpromoted removes whatever it wrote, so a failed unpack
-/// leaves the project as it found it.
+/// Dropping one unpromoted removes whatever it wrote, so a failed unpack or
+/// build leaves the directory it was replacing as it found it.
+///
+/// The temporary names carry a `tpmt` suffix because a build output can be
+/// anywhere, and `begin` clears whatever sits at the staging name.
 pub struct Staging {
-    project: PathBuf,
+    target: PathBuf,
     dir: PathBuf,
 }
 
 impl Staging {
-    /// Clears anything a previous failed unpack left behind and opens a
-    /// fresh staging directory.
-    pub fn begin(project: &Path) -> Result<Self> {
-        let dir = project.join(BASE_TMP_DIR);
+    /// Clears anything a previous failed attempt left behind and opens a
+    /// fresh staging directory beside `target`.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnusablePath`] if `target` has no name to stage beside
+    /// - [`Error::Io`] if the staging directory cannot be made
+    pub fn begin(target: &Path) -> Result<Self> {
+        let dir = beside(target, STAGING_SUFFIX)?;
         remove_dir_all_if_exists(&dir)?;
         create_dir_all(&dir)?;
         Ok(Self {
-            project: project.to_path_buf(),
+            target: target.to_path_buf(),
             dir,
         })
     }
 
-    /// Where the unpack writes `base/`'s contents.
+    /// Where the new contents go.
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
 
-    /// Swaps the staged tree in as `base/`. Moves the old `base/` aside
+    /// Swaps the staged tree in as the target. Moves the old one aside
     /// rather than deleting it first, so a failure between the two renames
-    /// leaves it recoverable as [`BASE_OLD_DIR`].
+    /// leaves it recoverable under [`REPLACED_SUFFIX`].
     pub fn promote(self) -> Result<()> {
-        let base = self.project.join(BASE_DIR);
-        let old = self.project.join(BASE_OLD_DIR);
+        let old = beside(&self.target, REPLACED_SUFFIX)?;
 
         remove_dir_all_if_exists(&old)?;
-        if base.exists() {
-            fs::rename(&base, &old).map_err(io_at(&base))?;
+        if self.target.exists() {
+            fs::rename(&self.target, &old).map_err(io_at(&self.target))?;
         }
-        fs::rename(&self.dir, &base).map_err(io_at(&base))?;
+        fs::rename(&self.dir, &self.target).map_err(io_at(&self.target))?;
         remove_dir_all_if_exists(&old)
     }
+}
+
+/// `target` with `suffix` on the end of its name.
+fn beside(target: &Path, suffix: &str) -> Result<PathBuf> {
+    let mut name = target
+        .file_name()
+        .ok_or_else(|| Error::UnusablePath(target.to_path_buf()))?
+        .to_os_string();
+    name.push(suffix);
+    Ok(target.with_file_name(name))
 }
 
 impl Drop for Staging {
@@ -201,15 +261,18 @@ pub fn scaffold_mod(project: &Path) -> Result<()> {
         return Ok(());
     }
 
-    create_dir_all(&mod_dir.join(OVERLAY_DIR))?;
-    create_dir_all(&mod_dir.join(RES_DIR).join(SCRIPTS_DIR))?;
+    // Staged, so a failure part way cannot leave a `mod/` without its
+    // `mod.json` that the check above would then skip forever.
+    let staging = Staging::begin(&mod_dir)?;
+    create_dir_all(&staging.dir().join(OVERLAY_DIR))?;
+    create_dir_all(&staging.dir().join(RES_DIR).join(SCRIPTS_DIR))?;
 
     let id = project
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("mod");
     metadata::write_mod(
-        &mod_dir,
+        staging.dir(),
         &ModMetadata {
             id,
             name: id,
@@ -219,53 +282,22 @@ pub fn scaffold_mod(project: &Path) -> Result<()> {
             icon: None,
             banner: None,
         },
-    )
+    )?;
+    staging.promote()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     use super::*;
     use crate::fs::write;
-
-    /// A scratch directory, gone again when the test that made it ends.
-    /// Tagged with a counter as well as a name, since two tests picking the
-    /// same name would otherwise race on one path.
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(name: &str) -> Self {
-            static CALLS: AtomicU64 = AtomicU64::new(0);
-            let unique = CALLS.fetch_add(1, Ordering::Relaxed);
-            let at = std::env::temp_dir()
-                .join(format!("tpmt-test-{name}-{}-{unique}", std::process::id()));
-            let _ = fs::remove_dir_all(&at);
-            fs::create_dir_all(&at).unwrap();
-            Self(at)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_support::Scratch;
 
     fn mark_project(dir: &Path) {
         fs::create_dir_all(dir.join(STORE_DIR)).unwrap();
     }
 
-    /// The workspace disallows `fs::read` because an ISO may not fit in
-    /// memory. A test file does.
     fn read(path: &Path) -> Vec<u8> {
-        use std::io::Read;
-        let mut data = Vec::new();
-        fs::File::open(path)
-            .unwrap()
-            .read_to_end(&mut data)
-            .unwrap();
-        data
+        crate::fs::read(path).unwrap()
     }
 
     #[test]
@@ -332,7 +364,11 @@ mod tests {
     fn accepts_a_half_finished_unpack() {
         let scratch = Scratch::new("half");
         write(&scratch.0.join(BASE_DIR).join("files").join("a"), b"").unwrap();
-        write(&scratch.0.join(BASE_TMP_DIR).join("files").join("a"), b"").unwrap();
+        write(
+            &scratch.0.join("base.tpmt-tmp").join("files").join("a"),
+            b"",
+        )
+        .unwrap();
         fs::create_dir_all(scratch.0.join(MOD_DIR)).unwrap();
 
         refuse_foreign(&scratch.0).unwrap();
@@ -341,11 +377,12 @@ mod tests {
     #[test]
     fn dropped_staging_leaves_no_trace() {
         let scratch = Scratch::new("staging-drop");
-        let staging = Staging::begin(&scratch.0).unwrap();
+        let staging = Staging::begin(&scratch.0.join(BASE_DIR)).unwrap();
+        assert_eq!(staging.dir(), scratch.0.join("base.tpmt-tmp"));
         fs::write(staging.dir().join("half"), b"written").unwrap();
         drop(staging);
 
-        assert!(!scratch.0.join(BASE_TMP_DIR).exists());
+        assert!(!scratch.0.join("base.tpmt-tmp").exists());
         assert!(!scratch.0.join(BASE_DIR).exists());
     }
 
@@ -355,14 +392,14 @@ mod tests {
         let base = scratch.0.join(BASE_DIR);
         write(&base.join("stale"), b"old").unwrap();
 
-        let staging = Staging::begin(&scratch.0).unwrap();
+        let staging = Staging::begin(&base).unwrap();
         write(&staging.dir().join("fresh"), b"new").unwrap();
         staging.promote().unwrap();
 
         assert_eq!(read(&base.join("fresh")), b"new");
         assert!(!base.join("stale").exists());
-        assert!(!scratch.0.join(BASE_TMP_DIR).exists());
-        assert!(!scratch.0.join(BASE_OLD_DIR).exists());
+        assert!(!scratch.0.join("base.tpmt-tmp").exists());
+        assert!(!scratch.0.join("base.tpmt-old").exists());
     }
 
     #[test]

@@ -11,22 +11,28 @@
 //!
 //! `disc.toml` and `mod.json` are safe to edit by hand. `.tpmt/` is not:
 //! every unpack rewrites it.
+//!
+//! Unpack writes all of these and build reads them back, so each type here
+//! goes both ways.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
 use super::{DISC_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::Result;
-use crate::fs::{io_at, write_json, write_toml};
+use crate::fs::{io_at, read_toml, write_json, write_toml};
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
 /// because a loose file never records its own wrapper (unlike containers).
-#[derive(Serialize)]
-struct Yaz0<'a> {
-    compressed: &'a [String],
+///
+/// A set rather than a list, since the only question anyone asks it is
+/// whether one path is in it.
+#[derive(Serialize, Deserialize)]
+struct Yaz0 {
+    compressed: BTreeSet<String>,
 }
 
 /// Writes `base/`'s own metadata: `disc.toml` and `yaz0.toml`. The one call
@@ -35,7 +41,7 @@ struct Yaz0<'a> {
 pub fn write_base(
     base: &Path,
     metadata: &tpmt_disc::Metadata,
-    yaz0_compressed: &[String],
+    yaz0_compressed: BTreeSet<String>,
 ) -> Result<()> {
     write_toml(&base.join(DISC_TOML), metadata)?;
     write_toml(
@@ -44,6 +50,31 @@ pub fn write_base(
             compressed: yaz0_compressed,
         },
     )
+}
+
+/// What `base/` says about itself, which is everything a rebuild needs that
+/// the unpacked files do not carry.
+pub struct Base {
+    /// The preamble values a build cannot derive.
+    pub metadata: tpmt_disc::Metadata,
+    /// Which disc files arrived Yaz0 wrapped, so a rebuild puts the wrapper
+    /// back on the same ones.
+    pub yaz0_compressed: BTreeSet<String>,
+}
+
+/// Reads back what [`write_base`] wrote.
+///
+/// # Errors
+///
+/// - [`Error::Io`](crate::Error::Io) if either file is missing
+/// - [`Error::Parse`](crate::Error::Parse) if either is not what it was
+pub fn read_base(base: &Path) -> Result<Base> {
+    let metadata = read_toml(&base.join(DISC_TOML))?;
+    let yaz0: Yaz0 = read_toml(&base.join(YAZ0_TOML))?;
+    Ok(Base {
+        metadata,
+        yaz0_compressed: yaz0.compressed,
+    })
 }
 
 /// `mod.json`: what a mod says about itself.
@@ -68,10 +99,10 @@ pub fn write_mod(mod_dir: &Path, metadata: &ModMetadata<'_>) -> Result<()> {
 
 /// `source.toml`: where the ISO this project came from was last seen, and
 /// its sha1, so a build can tell if it moved or changed.
-#[derive(Serialize)]
-struct Source<'a> {
-    iso: &'a Path,
-    sha1: &'a str,
+#[derive(Serialize, Deserialize)]
+pub struct Source {
+    pub iso: PathBuf,
+    pub sha1: String,
 }
 
 /// Writes `.tpmt/`, which is what makes `project` a project. The caller
@@ -88,7 +119,36 @@ pub fn write_store(
     let iso = iso.canonicalize().map_err(io_at(iso))?;
     let store = project.join(STORE_DIR);
     write_toml(&store.join(HASHES_TOML), hashes)?;
-    write_toml(&store.join(SOURCE_TOML), &Source { iso: &iso, sha1 })
+    write_toml(
+        &store.join(SOURCE_TOML),
+        &Source {
+            iso,
+            sha1: sha1.to_string(),
+        },
+    )
+}
+
+/// What `.tpmt/` holds: the disc this project came from, and what every file
+/// the unpack wrote hashed to.
+pub struct Store {
+    pub source: Source,
+    /// The vanilla sha1 of every project file, keyed by project path. Around
+    /// 27,000 entries for one disc.
+    pub hashes: BTreeMap<String, String>,
+}
+
+/// Reads back what [`write_store`] wrote.
+///
+/// # Errors
+///
+/// - [`Error::Io`](crate::Error::Io) if either file is missing
+/// - [`Error::Parse`](crate::Error::Parse) if either is not what it was
+pub fn read_store(project: &Path) -> Result<Store> {
+    let store = project.join(STORE_DIR);
+    Ok(Store {
+        source: read_toml(&store.join(SOURCE_TOML))?,
+        hashes: read_toml(&store.join(HASHES_TOML))?,
+    })
 }
 
 /// The digest `hashes.toml` records per project file.

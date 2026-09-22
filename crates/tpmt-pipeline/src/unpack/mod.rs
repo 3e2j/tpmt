@@ -1,7 +1,7 @@
 //! Walks a disc, explodes each file (see [`explode`]), and lays the
 //! result out under `base/`. See [`crate::unpack`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -18,9 +18,9 @@ pub fn run(iso: &Path, project: &Path) -> Result<()> {
     let disc = Disc::open(iso)?;
     let sha1 = disc.sha1()?;
 
-    let staging = project::Staging::begin(project)?;
+    let staging = project::Staging::begin(&project::base(project))?;
     let (yaz0_compressed, hashes) = unpack_files(&disc, staging.dir())?;
-    project::metadata::write_base(staging.dir(), disc.metadata(), &yaz0_compressed)?;
+    project::metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
     staging.promote()?;
 
     project::metadata::write_store(project, iso, &sha1, &hashes)?;
@@ -30,7 +30,7 @@ pub fn run(iso: &Path, project: &Path) -> Result<()> {
 
 /// Unpacks one disc's worth of files into `base`, hashing each as it goes,
 /// and returns what `base/`'s metadata needs to say about them.
-fn unpack_files(disc: &Disc, base: &Path) -> Result<(Vec<String>, BTreeMap<String, String>)> {
+fn unpack_files(disc: &Disc, base: &Path) -> Result<(BTreeSet<String>, BTreeMap<String, String>)> {
     // Create every listed directory before any file, so empty directories
     // survive the unpack.
     let entries = disc.entries()?;

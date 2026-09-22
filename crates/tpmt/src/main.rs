@@ -6,8 +6,9 @@ use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
-use tpmt_pipeline::{Change, ChangeKind};
+use tpmt_pipeline::{Built, Change, ChangeKind, Target};
 
 // A bad invocation already exits 2 through clap, so this is only for work that
 // was asked for correctly and then failed.
@@ -35,6 +36,7 @@ enum Command {
     /// List files that differ from vanilla
     Status {
         /// Project to check, defaults to the current directory
+        #[arg(short = 'C', long = "dir")]
         dir: Option<PathBuf>,
     },
     /// Restore a file, or every file under a directory, from the disc
@@ -48,22 +50,25 @@ enum Command {
         #[arg(short = 'y', long = "yes")]
         yes: bool,
     },
-    /// Pack the changes into a ready to install mod
+    /// Pack the changes for one target
     Build {
+        /// What to build
+        #[arg(value_parser = target_parser())]
+        target: Target,
         /// Project to pack, defaults to the current directory
+        #[arg(short = 'C', long = "dir")]
         dir: Option<PathBuf>,
-        /// Where to write the mod, defaults to build/ inside the project
+        /// An empty or new directory to write it to, defaults to
+        /// build/targets/<target>/ in the project
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Pack the changes into a playable disc image
-    Image {
-        /// Project to pack, defaults to the current directory
-        dir: Option<PathBuf>,
-        /// Where to write the image, defaults to build/ inside the project
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
+}
+
+/// Offers exactly the pipeline's targets, so a new one needs nothing here.
+fn target_parser() -> impl TypedValueParser<Value = Target> {
+    PossibleValuesParser::new(Target::ALL.map(Target::name))
+        .try_map(|name| Target::from_name(&name).ok_or("not a build target"))
 }
 
 fn main() -> ExitCode {
@@ -123,16 +128,14 @@ fn run(command: Command) -> Result<(), Error> {
             };
             revert(&root, &absolute, yes)
         }
-        Command::Build { dir, output } => {
+        Command::Build {
+            target,
+            dir,
+            output,
+        } => {
             let root = project(dir.as_ref())?;
-            let out = tpmt_pipeline::build(&root, output.as_deref())?;
-            println!("built {}", out.display());
-            Ok(())
-        }
-        Command::Image { dir, output } => {
-            let root = project(dir.as_ref())?;
-            let out = tpmt_pipeline::image(&root, output.as_deref())?;
-            println!("wrote {}", out.display());
+            let built = tpmt_pipeline::build(&root, target, output.as_deref())?;
+            print_built(&built);
             Ok(())
         }
     }
@@ -168,6 +171,25 @@ fn print_status(changes: &[Change]) {
             println!("{tag} {}", change.path);
         }
     }
+}
+
+/// Prints what a build wrote.
+///
+/// An overlay file that matches vanilla goes to standard error rather than
+/// standard out: it is not what was asked for, and somebody who put it there
+/// meant to change something.
+fn print_built(built: &Built) {
+    for path in &built.unchanged {
+        eprintln!("tpmt: `{path}` is identical to vanilla, so it changes nothing");
+    }
+
+    if built.rebuilt.is_empty() {
+        println!("nothing in the overlay to build");
+    }
+    for path in &built.rebuilt {
+        println!("rebuilt {path}");
+    }
+    println!("wrote {}", built.path.display());
 }
 
 /// Reverts `target`, an absolute filesystem path, asking first unless `yes`

@@ -26,25 +26,18 @@
 // far from the build that caused it. Two checks belong here eventually. One
 // is a build-time warning when a file the original archive held is gone from
 // what gets packed (cheap, catches the common case, blind to whether anything
-// references it). The other is the linker below.
-
-// TODO: the linker. Lands with its first user (`.stb`), as a trait in
-// tpmt-jkernel-arc a decoded file implements to hand out `&mut` to every reference
-// it holds, each an enum of bare `Id(u16)` or resolved `Path(String)`.
-// Unpack turns `Id`s into `Path`s via the owning archive's id -> path map
-// (free from `Sidecar::members`); build turns `Path`s back into ids once
-// that archive's member list is fixed, before the referencer's bytes get
-// encoded, no cycle since id assignment never depends on referencer
-// content. Per-archive scope confirmed against the decomp
-// (`JKRArchive::getResource`/`findIdResource`): refs never leave their
-// archive.
+// references it). The other is the linker (see `build::implode::archive`).
 
 use std::path::{Path, PathBuf};
 
+mod build;
 mod fs;
 mod project;
+#[cfg(test)]
+mod test_support;
 mod unpack;
 
+pub use build::{Built, EncodeError, Target};
 pub use project::{discover, is_project};
 pub use unpack::explode::DecodeError;
 
@@ -57,6 +50,10 @@ pub enum Error {
     /// member of a nested archive points at itself.
     #[error("`{path}`: {source}")]
     Decode { path: String, source: DecodeError },
+
+    /// A format crate would not write one file back out, named the same way.
+    #[error("`{path}`: {source}")]
+    Encode { path: String, source: EncodeError },
 
     #[error("`{}`: {source}", .path.display())]
     Io {
@@ -75,8 +72,35 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
+    /// A file this crate wrote will not read back as what it was.
+    #[error("could not read `{}`: {source}", .path.display())]
+    Parse {
+        path: PathBuf,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     #[error("`{}` is not inside a project (no `.tpmt` found above it)", .0.display())]
     NoProjectFound(PathBuf),
+
+    #[error("`{}` is not a name a project path can hold", .0.display())]
+    UnusablePath(PathBuf),
+
+    /// A vanilla file is no longer what the unpack recorded, so a build off
+    /// it would pack somebody's edit as though the disc had shipped it.
+    #[error("`{0}` in `base/` is not what was unpacked; re-unpack the disc, or put it back")]
+    BaseModified(String),
+
+    #[error("nothing in `base/` or `mod/overlay/` holds `{0}`")]
+    MissingFile(String),
+
+    #[error("the disc this project was unpacked from is no longer at `{}`", .0.display())]
+    SourceMissing(PathBuf),
+
+    #[error("`{}` is not the disc this project was unpacked from", .0.display())]
+    SourceChanged(PathBuf),
+
+    #[error("the {0} target is not implemented yet")]
+    Unsupported(Target),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -122,24 +146,23 @@ pub fn status(_project: &Path) -> Result<Vec<Change>, Error> {
     todo!()
 }
 
-/// Does the same hashing as [`status`], then re-encodes what changed and
-/// copies everything else out of the source disc untouched.
+/// Re-encodes whatever `mod/overlay/` changed and hands it to `target`,
+/// which decides what to do with it: a tree of the changed disc files, a
+/// whole disc image, or a mod bundle.
+///
+/// `output` stands in for the directory the target would otherwise own under
+/// `build/targets/`, and must be missing or empty.
 ///
 /// # Errors
 ///
-/// Not yet designed.
-pub fn build(_project: &Path, _output: Option<&Path>) -> Result<PathBuf, Error> {
-    todo!()
-}
-
-/// Lays a [`build`]'s files onto a disc, the one step that has to know where
-/// anything goes.
-///
-/// # Errors
-///
-/// Not yet designed.
-pub fn image(_project: &Path, _output: Option<&Path>) -> Result<PathBuf, Error> {
-    todo!()
+/// - [`Error::ForeignDirectory`] if `output` is not empty
+/// - [`Error::Io`] or [`Error::Parse`] if the project's own files cannot be
+///   read
+/// - [`Error::BaseModified`] if `base/` no longer matches the disc it came from
+/// - [`Error::Encode`] if a rebuilt file does not fit its format
+/// - whatever else the target needs, which for an image is the source disc
+pub fn build(project: &Path, target: Target, output: Option<&Path>) -> Result<Built, Error> {
+    build::run(project, target, output)
 }
 
 /// Puts an edited file back to its vanilla bytes, re-unpacking its archive
