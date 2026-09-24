@@ -13,6 +13,13 @@ use std::path::{Path, PathBuf};
 use crate::build::{Job, Target};
 use crate::{Error, Result};
 
+// TODO: an option to export through Dusklight's services instead of overlay
+// files: `MessageService` for messages, `FlowService` for flows, and others
+// where they fit. Flows could then name a mod's own queries and events next
+// to the built-in ones, with the export doing the wiring and the modder
+// writing only what each one does. Worth revisiting once those services
+// mature.
+
 /// # Errors
 ///
 /// Always [`Error::Unsupported`], until there is something here.
