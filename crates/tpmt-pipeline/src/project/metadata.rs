@@ -157,3 +157,12 @@ pub fn sha1_hex(data: &[u8]) -> String {
     hasher.update(data);
     format!("{:x}", hasher.finalize())
 }
+
+/// [`sha1_hex`] of a file, streamed rather than read whole. Status hashes
+/// every file in the project, videos included.
+pub fn sha1_file(path: &Path) -> Result<String> {
+    let file = std::fs::File::open(path).map_err(io_at(path))?;
+    let mut hasher = Sha1::new();
+    std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(io_at(path))?;
+    Ok(format!("{:x}", hasher.finalize()))
+}

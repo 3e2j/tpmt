@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
 
 use crate::project::metadata::sha1_hex;
-use crate::{Error, Result, fs, project};
+use crate::{Error, Result, fs, project, status};
 
 /// The two layers a build reads, in the order it reads them.
 pub struct Tree {
@@ -37,14 +37,11 @@ impl Tree {
     /// - [`Error::UnusablePath`] if a name in it is not UTF-8
     pub fn open(project: &Path, hashes: BTreeMap<String, String>) -> Result<(Self, Vec<String>)> {
         let overlay = project::overlay(project);
-        let overlaid = files(&overlay)?;
+        let overlaid = fs::files(&overlay)?;
 
         let flagged = overlaid
             .into_par_iter()
-            .map(|path| {
-                let data = fs::read(&overlay.join(&path))?;
-                Ok((is_vanilla(&hashes, &path, &data), path))
-            })
+            .map(|path| Ok((status::diff(&overlay, &path, &hashes)?.is_none(), path)))
             .collect::<Result<Vec<_>>>()?;
         let (identical, edits): (Vec<_>, Vec<_>) = flagged.into_iter().partition(|(same, _)| *same);
         let paths =
@@ -163,7 +160,7 @@ impl Tree {
     fn outermost<'p>(&self, under: &str, rest: &'p str) -> &'p str {
         rest.match_indices('/')
             .filter_map(|(end, _)| rest.get(..end))
-            .find(|prefix| self.is_archive(&join(under, prefix)))
+            .find(|prefix| self.is_archive(&fs::join(under, prefix)))
             .unwrap_or(rest)
     }
 }
@@ -172,38 +169,4 @@ impl Tree {
 /// has no hash, so it never is.
 fn is_vanilla(hashes: &BTreeMap<String, String>, path: &str, data: &[u8]) -> bool {
     hashes.get(path).is_some_and(|want| *want == sha1_hex(data))
-}
-
-/// Every file under `dir`, as sorted project paths.
-fn files(dir: &Path) -> Result<Vec<String>> {
-    let mut files = Vec::new();
-    let mut pending = vec![(dir.to_path_buf(), String::new())];
-    while let Some((dir, at)) = pending.pop() {
-        if !dir.is_dir() {
-            continue;
-        }
-        for entry in std::fs::read_dir(&dir).map_err(fs::io_at(&dir))? {
-            let entry = entry.map_err(fs::io_at(&dir))?;
-            let name = entry.file_name();
-            let name = name
-                .to_str()
-                .ok_or_else(|| Error::UnusablePath(entry.path()))?;
-            let path = join(&at, name);
-            if entry.path().is_dir() {
-                pending.push((entry.path(), path));
-            } else {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn join(under: &str, path: &str) -> String {
-    if under.is_empty() {
-        path.to_string()
-    } else {
-        format!("{under}/{path}")
-    }
 }

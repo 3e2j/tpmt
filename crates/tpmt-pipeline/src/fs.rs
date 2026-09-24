@@ -90,3 +90,38 @@ where
         source: source.into(),
     }
 }
+
+/// Every file under `dir`, as sorted project paths.
+pub fn files(dir: &Path) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    let mut pending = vec![(dir.to_path_buf(), String::new())];
+    while let Some((dir, at)) = pending.pop() {
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&dir).map_err(io_at(&dir))? {
+            let entry = entry.map_err(io_at(&dir))?;
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| Error::UnusablePath(entry.path()))?;
+            let path = join(&at, name);
+            if entry.path().is_dir() {
+                pending.push((entry.path(), path));
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// `path` under the project path `under`, which may be the root.
+pub fn join(under: &str, path: &str) -> String {
+    if under.is_empty() {
+        path.to_string()
+    } else {
+        format!("{under}/{path}")
+    }
+}

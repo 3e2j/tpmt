@@ -43,6 +43,11 @@
 // That needs `hashes.toml` and `source.toml` keyed per region; both hold
 // one disc today.
 // Nothing here decides which regions an edit applies to yet.
+//
+// A modder who edits `base/` directly should have those edits moved into
+// `mod/overlay/` automatically, and `base/` restored. Hashing all of `base/`
+// on every build is too slow, so record each file's size and mtime at unpack
+// and hash only the files whose size or mtime changed.
 
 use std::fs;
 use std::path::{Path, PathBuf};

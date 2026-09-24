@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 mod build;
 mod fs;
 mod project;
+mod status;
 #[cfg(test)]
 mod test_support;
 mod unpack;
@@ -105,15 +106,18 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// One file that differs from vanilla.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Change {
+    /// A project path, under `mod/overlay/`.
     pub path: String,
     pub kind: ChangeKind,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum ChangeKind {
     Added,
     Modified,
-    Deleted,
 }
 
 /// Walks the disc, peels off compression, opens archives, and hands each
@@ -136,14 +140,19 @@ pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
     unpack::run(iso, project)
 }
 
-/// Hashes the project tree against the vanilla hashes taken at [`unpack`],
-/// and reports whatever doesn't match.
+/// Hashes `mod/overlay/` against the vanilla hashes taken at [`unpack`], and
+/// reports whatever doesn't match, sorted by path.
+///
+/// An overlay file identical to vanilla is not a change. `base/` is not
+/// checked; a build refuses drift there when it reads the file.
 ///
 /// # Errors
 ///
-/// Not yet designed.
-pub fn status(_project: &Path) -> Result<Vec<Change>, Error> {
-    todo!()
+/// - [`Error::Io`] or [`Error::Parse`] if `.tpmt/` cannot be read back
+/// - [`Error::Io`] if a project file cannot be walked or read
+/// - [`Error::UnusablePath`] if a name in the project is not UTF-8
+pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
+    status::run(project)
 }
 
 /// Re-encodes whatever `mod/overlay/` changed and hands it to `target`,

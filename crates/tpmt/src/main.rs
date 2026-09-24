@@ -150,8 +150,8 @@ fn project(dir: Option<&PathBuf>) -> Result<PathBuf, Error> {
     Ok(tpmt_pipeline::discover(start)?)
 }
 
-/// Prints a status listing, colored red/yellow/green for deleted, modified
-/// and added when standard out is a terminal somebody is looking at.
+/// Prints a status listing, colored yellow/green for modified and added when
+/// standard out is a terminal somebody is looking at.
 fn print_status(changes: &[Change]) {
     if changes.is_empty() {
         println!("nothing changed from vanilla");
@@ -163,7 +163,6 @@ fn print_status(changes: &[Change]) {
         let (tag, code) = match change.kind {
             ChangeKind::Added => ("A", "32"),
             ChangeKind::Modified => ("M", "33"),
-            ChangeKind::Deleted => ("D", "31"),
         };
         if color {
             println!("\x1b[{code}m{tag}\x1b[0m {}", change.path);
