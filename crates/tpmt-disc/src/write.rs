@@ -203,6 +203,10 @@ fn inside_the_tree(path: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
+// TODO: `Image::file` takes a whole file as one slice, so the caller holds
+// each file in memory as it goes in, the largest being a 137 MB video.
+// Taking a reader instead would let it stream.
+
 /// An image being written out.
 ///
 /// The caller hands over one file at a time, in the order the layout put them,
