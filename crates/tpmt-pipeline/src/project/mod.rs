@@ -13,7 +13,7 @@
 //! mod/          the mod project; the only directory a modder edits
 //!   overlay/    whole-file / archive-member replacements, real paths
 //!   res/        authored user-made content
-//!     scripts/  Luau scripts
+//!     scripts/  Luau scripts, never parsed, copied into a build untouched
 //!   mod.json    mod metadata (id, name, version, author, description, icon, banner)
 //! build/
 //!   targets/

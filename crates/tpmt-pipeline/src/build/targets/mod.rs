@@ -3,6 +3,18 @@
 //!
 //! Every target re-encodes the overlay's changes with [`super::rebuild`] and
 //! packages the result its own way.
+//!
+//! Replacing something by an id a format already has (an audio bank and wave
+//! id) needs nothing beyond decoding. Something added has no id until a target
+//! gives it one, so the project names it and each target resolves the name:
+//! `image` and `patch` assign the next free id, `dusk` gets one from
+//! Dusklight at load.
+//!
+//! An edit a target can't express is reported as unsupported for it, never
+//! worked around. For example, a BMG tag playing an added wave works in
+//! `image`, where the id is written into the file, but not in `dusk`, where
+//! the BMG is an overlay with its ids fixed before Dusklight dynamically hands
+//! one out (unpredictable).
 
 use std::fmt;
 
