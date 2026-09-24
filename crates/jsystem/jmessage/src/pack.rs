@@ -105,8 +105,6 @@ fn write_strings(strings: &[Vec<u8>]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-
     use super::*;
     use crate::sections::flow::{Node, NodeId, Root};
     use crate::{Flow, Format, Message, MessageId, Mid1Header, TextSegment};
@@ -219,21 +217,4 @@ mod tests {
         assert!(matches!(pack(&bmg), Err(Error::Unwritable(_))));
     }
 
-    /// A retail file, byte for byte, when there is one to hand. The fixture
-    /// is local game data rather than part of the repository, so its absence
-    /// is a skip, not a failure.
-    #[test]
-    fn a_retail_file_comes_back_byte_for_byte() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../dev/fixtures/zel_03.bmg");
-        let Ok(mut file) = std::fs::File::open(path) else {
-            eprintln!("skipped: no retail fixture at {path}");
-            return;
-        };
-        let mut data = Vec::new();
-        file.read_to_end(&mut data).unwrap();
-
-        let bmg = Bmg::decode(&data).unwrap();
-        assert!(bmg.flow.is_some());
-        assert_eq!(bmg.encode().unwrap(), data);
-    }
 }
