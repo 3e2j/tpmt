@@ -57,6 +57,7 @@ pub trait Format<'a>: Sized {
 /// unpack turns them into directories, so no project file is one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileKind {
+    /// A message file, owned by `JMessage` and decoded by `tpmt-jmessage`.
     Bmg,
 }
 

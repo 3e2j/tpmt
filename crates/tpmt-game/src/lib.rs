@@ -15,12 +15,12 @@
 
 // TODO: a golden test that holds every fact these tables state about retail
 // data against every retail file on every disc. Today that is the record
-// width in `bmg::record::LEN` and the argument length each `bmg::tag` row
-// gives. A value a table doesn't name is not a claim, so the test
-// shouldn't demand one. It belongs beside the round trip in
-// `crates/formats/tpmt-tests`.
+// width in `jsystem::jmessage::record::LEN` and the argument length each
+// `jsystem::jmessage::tag` row gives. A value a table doesn't name is not a
+// claim, so the test shouldn't demand one. It belongs beside the round trip
+// in `crates/formats/tpmt-tests`.
 
-pub mod bmg;
+pub mod jsystem;
 
 /// One named value in a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

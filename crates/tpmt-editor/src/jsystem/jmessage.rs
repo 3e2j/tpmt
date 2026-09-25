@@ -12,8 +12,8 @@ use std::mem;
 use std::ops::Range;
 
 use tpmt_format::Format;
-use tpmt_game::bmg::record::{self, Field};
-use tpmt_game::bmg::tag::{self, Tag};
+use tpmt_game::jsystem::jmessage::record::{self, Field};
+use tpmt_game::jsystem::jmessage::tag::{self, Tag};
 use tpmt_jmessage::{Bmg, Flow, Message, MessageId, Node, NodeId, Root, TextSegment};
 
 use crate::Document;

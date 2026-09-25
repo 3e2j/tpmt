@@ -19,7 +19,7 @@
 //! No UI framework here, so documents can be tested headless and reused by the
 //! CLI or an export.
 
-pub mod bmg;
+pub mod jsystem;
 
 /// A decoded file that changes only through edits.
 pub trait Document {

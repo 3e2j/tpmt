@@ -14,7 +14,7 @@ use tpmt_pipeline::FileKind;
 use tpmt_tests::Checks;
 
 /// A new leaf format is one more row.
-static CHECKS: Checks = &[("bmg", FileKind::Bmg, round_trip::<Bmg>)];
+static CHECKS: Checks = &[("jsystem::jmessage::bmg", FileKind::Bmg, round_trip::<Bmg>)];
 
 fn main() -> ExitCode {
     tpmt_tests::run(CHECKS)
