@@ -216,5 +216,4 @@ mod tests {
         };
         assert!(matches!(pack(&bmg), Err(Error::Unwritable(_))));
     }
-
 }
