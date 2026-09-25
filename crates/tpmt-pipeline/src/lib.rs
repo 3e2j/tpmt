@@ -125,8 +125,8 @@ pub enum ChangeKind {
 /// only `base/` and leaves `mod/` alone. It commits only once every file is
 /// written, so a failure part way through leaves no half-made project.
 ///
-/// Reports [`Step::HashDisc`], [`Step::Unpack`], then [`Step::Save`] through
-/// `progress`.
+/// Reads the disc once, front to back. Reports [`Step::Unpack`] across the
+/// whole image, then [`Step::Save`], through `progress`.
 ///
 /// # Errors
 ///

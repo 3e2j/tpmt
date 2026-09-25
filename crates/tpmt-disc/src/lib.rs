@@ -39,6 +39,7 @@
 mod ciso;
 mod fst;
 mod image;
+mod stream;
 mod sys;
 mod write;
 
@@ -49,10 +50,9 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use sha1::{Digest, Sha1};
-
 use crate::image::{Handle, read_at};
 
+pub use crate::stream::Stream;
 pub use crate::sys::{BI2_PATH, BOOT_PATH, Bi2, Boot, Metadata, bi2_bin, boot_bin_over};
 pub use crate::write::{Image, Layout};
 
@@ -296,18 +296,21 @@ impl Disc {
     /// # Errors
     ///
     /// Returns [`Error::Read`].
-    pub fn sha1(&self, mut hashed: impl FnMut(u64)) -> Result<String> {
-        const CHUNK: u64 = 1 << 20;
+    pub fn sha1(&self, hashed: impl FnMut(u64)) -> Result<String> {
+        Stream::new(self, &[], hashed).finish()
+    }
 
-        let mut hash = Sha1::new();
-        let mut at = 0;
-        while at < self.handle.len {
-            let size = CHUNK.min(self.handle.len - at);
-            hash.update(&self.read(Span { offset: at, size })?);
-            hashed(size);
-            at += size;
-        }
-        Ok(format!("{:x}", hash.finalize()))
+    /// Reads the image once, front to back. Every file in `entries` comes out in
+    /// offset order, and [`Stream::finish`] returns the image's
+    /// [`sha1`](Self::sha1).
+    ///
+    /// The gaps between files are read too, since the hash covers them. Calls
+    /// `hashed` with each read's size, so a caller can report progress across
+    /// the whole [`len`](Self::len).
+    ///
+    /// `entries` is what [`entries`](Self::entries) returned, or any part of it.
+    pub fn stream<'a, F: FnMut(u64)>(&'a self, entries: &'a [Entry], hashed: F) -> Stream<'a, F> {
+        Stream::new(self, entries, hashed)
     }
 
     /// Everything the disc holds: the preamble under `sys/`, then the game's

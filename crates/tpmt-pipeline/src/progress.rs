@@ -17,9 +17,10 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Step {
-    /// SHA-1 over the whole source disc, counted in bytes.
+    /// SHA-1 over the whole source disc before a build, counted in bytes.
     HashDisc = 1,
-    /// Taking every disc file apart into `base/`, counted in disc bytes.
+    /// Reading the disc once, hashing it and taking every file apart into
+    /// `base/` on the way, counted in image bytes read.
     Unpack,
     /// Writing the project's own files and swapping `base/` in. No total.
     Save,
@@ -52,7 +53,7 @@ impl Step {
     pub const fn label(self) -> &'static str {
         match self {
             Self::HashDisc => "hashing disc",
-            Self::Unpack => "unpacking files",
+            Self::Unpack => "unpacking disc",
             Self::Save => "saving project",
             Self::Rebuild => "rebuilding files",
             Self::WriteImage => "writing image",

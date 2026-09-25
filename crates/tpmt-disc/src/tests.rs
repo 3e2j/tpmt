@@ -190,6 +190,83 @@ fn walks_the_file_table_depth_first() {
     ));
 }
 
+/// [`disc`] with distinct bytes in each file, so none can pass for zero fill or
+/// another file.
+fn disc_with_contents() -> Vec<u8> {
+    let mut data = disc();
+    let at = DATA_OFFSET as usize;
+    data[at..at + 4].copy_from_slice(b"aaaa");
+    data[at + 0x10..at + 0x15].copy_from_slice(b"bbbbb");
+    data[at + 0x20..at + 0x26].copy_from_slice(b"cccccc");
+    data
+}
+
+fn digest(data: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+    format!("{:x}", Sha1::digest(data))
+}
+
+/// Streams `data` and checks the last files it hands out, then that every
+/// byte of the image went through the digest exactly once.
+fn assert_streams(data: &[u8], last: &[(&str, &[u8])]) {
+    let disc = open(data).unwrap();
+    let entries = disc.entries().unwrap();
+    let mut hashed = 0;
+    let mut stream = disc.stream(&entries, |size| hashed += size);
+    let files = stream.by_ref().collect::<Result<Vec<_>>>().unwrap();
+    let files: Vec<_> = files
+        .iter()
+        .map(|(path, bytes)| (*path, bytes.as_slice()))
+        .collect();
+    assert_eq!(files[files.len() - last.len()..], *last);
+    assert_eq!(stream.finish().unwrap(), digest(data));
+    assert_eq!(hashed, data.len() as u64);
+}
+
+/// One pass hands out every file nearest first, and hashes every byte of the
+/// image exactly once, the gaps between files included.
+#[test]
+fn a_stream_hands_out_files_in_offset_order_and_hashes_the_whole_image() {
+    assert_streams(
+        &disc_with_contents(),
+        &[
+            ("files/a.bin", b"aaaa"),
+            ("files/sub/b.bin", b"bbbbb"),
+            ("files/c.bin", b"cccccc"),
+        ],
+    );
+}
+
+/// A file table can point one file into another's bytes. Those bytes are
+/// hashed once, both files still come out whole, and the disc's order wins
+/// over the table's.
+#[test]
+fn a_stream_hashes_shared_bytes_once() {
+    let mut data = disc_with_contents();
+    put_fst(&mut data, 5, false, NAME_C, DATA_OFFSET + 2, 6);
+    assert_streams(
+        &data,
+        &[
+            ("files/a.bin", b"aaaa"),
+            ("files/c.bin", b"aa\0\0\0\0"),
+            ("files/sub/b.bin", b"bbbbb"),
+        ],
+    );
+}
+
+/// Stopping part way still finishes on the image's digest, reading the rest
+/// without handing it out.
+#[test]
+fn a_stream_stopped_early_still_hashes_the_whole_image() {
+    let data = disc_with_contents();
+    let disc = open(&data).unwrap();
+    let entries = disc.entries().unwrap();
+    let mut stream = disc.stream(&entries, |_| {});
+    stream.next().unwrap().unwrap();
+    assert_eq!(stream.finish().unwrap(), digest(&data));
+    assert_eq!(disc.sha1(|_| {}).unwrap(), digest(&data));
+}
+
 /// Neither length is stored anywhere on the disc, so both come out of their own
 /// headers. Getting either wrong truncates a plausible looking file.
 #[test]

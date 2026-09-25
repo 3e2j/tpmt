@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rayon::prelude::*;
-use tpmt_disc::{Disc, Entry, Span};
+use tpmt_disc::{Disc, Entry};
 
 use crate::progress::{Progress, Step};
 use crate::{Result, fs, project};
@@ -17,10 +17,13 @@ pub mod explode;
 pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
     project::refuse_foreign(project)?;
     let disc = Disc::open(iso)?;
-    let sha1 = project::metadata::sha1_disc(&disc, progress)?;
 
     let staging = project::Staging::begin(&project::base(project))?;
-    let (yaz0_compressed, hashes) = unpack_files(&disc, staging.dir(), progress)?;
+    let Unpacked {
+        sha1,
+        yaz0_compressed,
+        hashes,
+    } = unpack_disc(&disc, staging.dir(), progress)?;
 
     progress.begin(Step::Save, 0);
     project::metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
@@ -31,13 +34,20 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
     project::scaffold_mod(project)
 }
 
-/// Unpacks one disc's worth of files into `base`, hashing each as it goes,
-/// and returns what `base/`'s metadata needs to say about them.
-fn unpack_files(
-    disc: &Disc,
-    base: &Path,
-    progress: &Progress,
-) -> Result<(BTreeSet<String>, BTreeMap<String, String>)> {
+/// What one read of the disc leaves for the project to record.
+struct Unpacked {
+    /// The whole image's SHA-1, for `source.toml`.
+    sha1: String,
+    /// The disc files that arrived Yaz0 wrapped, for `yaz0.toml`.
+    yaz0_compressed: BTreeSet<String>,
+    /// What every project file hashed to, keyed by project path.
+    hashes: BTreeMap<String, String>,
+}
+
+/// Unpacks one disc's worth of files into `base`, reading the disc once, in
+/// order. Every drive handles that pattern well, and nothing relies on the
+/// page cache holding the disc for a second pass.
+fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked> {
     // Create every listed directory before any file, so empty directories
     // survive the unpack.
     let entries = disc.entries()?;
@@ -47,20 +57,20 @@ fn unpack_files(
         }
     }
 
-    let files: Vec<_> = entries
-        .iter()
-        .filter_map(|entry| Some((entry.path(), entry.span()?)))
-        .collect();
+    let unpacking = progress.begin(Step::Unpack, disc.len());
+    let mut stream = disc.stream(&entries, |size| unpacking.add(size));
 
-    let unpacking = progress.begin(Step::Unpack, files.iter().map(|(_, span)| span.size).sum());
-    let unpacked_files = files
-        .into_par_iter()
-        .map(|(path, span)| {
-            let unpacked = unpack_file(disc, base, path, span)?;
-            unpacking.add(span.size);
-            Ok(unpacked)
+    // Workers pull files off the stream one at a time, so the disc is still
+    // read in order and at most one file per worker sits in memory.
+    let unpacked_files = stream
+        .by_ref()
+        .par_bridge()
+        .map(|file| {
+            let (path, data) = file?;
+            unpack_file(base, path, &data)
         })
         .collect::<Result<Vec<_>>>()?;
+    let sha1 = stream.finish()?;
 
     let yaz0_compressed = unpacked_files
         .iter()
@@ -73,11 +83,15 @@ fn unpack_files(
         .flat_map(|file| file.hashes)
         .collect();
 
-    Ok((yaz0_compressed, hashes))
+    Ok(Unpacked {
+        sha1,
+        yaz0_compressed,
+        hashes,
+    })
 }
 
 /// One disc file laid out under `base/`.
-struct Unpacked {
+struct UnpackedFile {
     /// The file's disc path.
     path: String,
     /// Whether a Yaz0 wrapper came off it. The disc is the container that
@@ -89,16 +103,15 @@ struct Unpacked {
 
 /// Explodes one disc file into `base/`, hashing each project file as it
 /// lands.
-fn unpack_file(disc: &Disc, base: &Path, path: &str, span: Span) -> Result<Unpacked> {
-    let data = disc.read(span)?;
+fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
     let mut hashes = BTreeMap::new();
-    let yaz0_compressed = explode::file(path, &data, &mut |path, data| {
+    let yaz0_compressed = explode::file(path, data, &mut |path, data| {
         fs::write(&base.join(path), data)?;
         hashes.insert(path.to_string(), project::metadata::sha1_hex(data));
         Ok(())
     })?;
 
-    Ok(Unpacked {
+    Ok(UnpackedFile {
         path: path.to_string(),
         yaz0_compressed,
         hashes,
