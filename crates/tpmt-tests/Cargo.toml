@@ -1,0 +1,25 @@
+[package]
+name = "tpmt-tests"
+description = "Tests that read the retail discs in `discs/`. Nothing depends on this crate."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dev-dependencies]
+tpmt-disc.workspace = true
+tpmt-format.workspace = true
+tpmt-jmessage.workspace = true
+tpmt-pipeline.workspace = true
+
+rayon.workspace = true
+libtest-mimic.workspace = true
+
+# Its own `main`, so it can make one trial per image in `discs/`, or an
+# ignored one when there are none.
+[[test]]
+name = "golden"
+harness = false
+
+[lints]
+workspace = true

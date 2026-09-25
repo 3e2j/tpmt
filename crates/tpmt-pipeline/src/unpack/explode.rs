@@ -32,15 +32,22 @@ pub enum DecodeError {
     Compress(#[from] tpmt_jkernel_compress::Error),
 }
 
-/// Peels `data`, then hands it to whichever format's magic it opens with,
-/// calling `sink` with every `(project path, bytes)` that comes out: once
+/// Peels `data`, then hands it to whichever format's magic it opens with.
+///
+/// Calls `sink` with every `(project path, bytes)` that comes out: once
 /// for a plain file, once per member plus once for the sidecar of an
 /// archive. Returns whether a Yaz0 wrapper came off `data` first, for the
 /// caller to record.
 ///
 /// Each format's magic picks it before its decoder runs, so an error out of
 /// a decoder always means "this format, but broken", never "not this
-/// format". A new leaf format is one more `recognises` check.
+/// format".
+///
+/// # Errors
+///
+/// - [`Error::Decode`] naming the innermost file whose Yaz0 wrapper or
+///   archive would not open
+/// - whatever `sink` returns
 pub fn file(
     path: &str,
     data: &[u8],

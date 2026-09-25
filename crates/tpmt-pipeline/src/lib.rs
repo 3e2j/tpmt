@@ -8,13 +8,6 @@
 //!
 //! Project layout: see `project/mod.rs`.
 
-// TODO: golden roundtrip tests. Unpack a retail ISO, image it straight back
-// with nothing edited, and diff the two.
-//
-// Byte equality is the wrong test for rebuilt entries. A format that stores
-// derived data re-derives it on encode rather than restoring it, so those
-// bytes can differ with nothing wrong.
-
 // TODO: a mod has no way to say a file was deleted, only which ones it
 // replaces or adds. Only matters outside an archive, since a deleted member
 // is already covered by the whole container repacking. An image handles a
@@ -40,7 +33,7 @@ mod unpack;
 
 pub use build::{Built, EncodeError, Target};
 pub use project::{discover, is_project};
-pub use unpack::explode::DecodeError;
+pub use unpack::explode::{DecodeError, file as explode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
