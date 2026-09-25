@@ -752,3 +752,375 @@ pub const fn split_tag(tag: &[u8]) -> Option<TagParts<'_>> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tpmt_jmessage::{Encoding, Mid1Header};
+
+    use super::*;
+    use crate::History;
+
+    fn message(id: u32, text: &[u8]) -> Message {
+        Message {
+            public_id: u16::try_from(id).unwrap(),
+            id: MessageId(id),
+            attributes: [&u16::try_from(id).unwrap().to_be_bytes()[..], &[0; 14]].concat(),
+            text: vec![TextSegment::Text(text.to_vec())],
+        }
+    }
+
+    fn text(text: &[u8]) -> Vec<TextSegment> {
+        vec![TextSegment::Text(text.to_vec())]
+    }
+
+    fn field(offset: usize) -> Field {
+        *record::FIELDS
+            .iter()
+            .find(|field| field.offset == offset)
+            .unwrap()
+    }
+
+    fn set_message(id: MessageId, change: MessageChange) -> BmgEdit {
+        MessageEdit::Set { id, change }.into()
+    }
+
+    fn set_node(id: NodeId, change: NodeChange) -> BmgEdit {
+        NodeEdit::Set { id, change }.into()
+    }
+
+    fn answer(node: NodeId, edit: ListEdit<Option<NodeId>>) -> BmgEdit {
+        set_node(node, NodeChange::Answer(edit))
+    }
+
+    fn root(edit: ListEdit<Root>) -> BmgEdit {
+        FlowEdit::Root(edit).into()
+    }
+
+    /// Two messages, and a flow whose one root shows the first.
+    fn document() -> BmgDocument {
+        BmgDocument::from(Bmg {
+            encoding: Encoding::ShiftJis,
+            record_len: record::LEN,
+            mid1: Some(Mid1Header::default()),
+            messages: vec![message(0, b"Hello"), message(1, b"Unused")],
+            flow: Some(Flow {
+                nodes: vec![Node::Text {
+                    id: NodeId(0),
+                    message: MessageId(0),
+                    next: None,
+                }],
+                roots: vec![Root {
+                    public_id: 1,
+                    node: NodeId(0),
+                }],
+            }),
+            strings: None,
+        })
+    }
+
+    #[test]
+    fn undo_and_redo_walk_the_edits_back_and_forth() {
+        let original = document();
+        let mut document = original.clone();
+        let mut history = History::default();
+
+        history
+            .apply(
+                &mut document,
+                set_message(MessageId(0), MessageChange::Text(text(b"Goodbye"))),
+            )
+            .unwrap();
+        history
+            .apply(&mut document, MessageEdit::Remove(MessageId(1)).into())
+            .unwrap();
+        let edited = document.clone();
+        assert_eq!(document.bmg().messages.len(), 1);
+
+        assert!(history.undo(&mut document).unwrap());
+        assert!(history.undo(&mut document).unwrap());
+        // Can't undo any further
+        assert!(!history.undo(&mut document).unwrap());
+        assert_eq!(document, original);
+
+        assert!(history.redo(&mut document).unwrap());
+        assert!(history.redo(&mut document).unwrap());
+        assert_eq!(document, edited);
+    }
+
+    #[test]
+    fn a_new_edit_drops_the_redo_stack() {
+        let mut document = document();
+        let mut history = History::default();
+        let set_text = |body: &[u8]| set_message(MessageId(0), MessageChange::Text(text(body)));
+        history.apply(&mut document, set_text(b"A")).unwrap();
+        history.undo(&mut document).unwrap();
+        history.apply(&mut document, set_text(b"B")).unwrap();
+        assert!(!history.can_redo());
+    }
+
+    #[test]
+    fn a_refused_edit_changes_nothing() {
+        let original = document();
+        let mut document = original.clone();
+        let mut history = History::default();
+        let refused = [
+            (
+                MessageEdit::Remove(MessageId(0)).into(),
+                EditError::MessageInUse(MessageId(0)),
+            ),
+            (
+                NodeEdit::Remove(NodeId(0)).into(),
+                EditError::NodeInUse(NodeId(0)),
+            ),
+            (
+                set_message(MessageId(9), MessageChange::Text(text(b"foo"))),
+                EditError::UnknownMessage(MessageId(9)),
+            ),
+            (
+                MessageEdit::Insert {
+                    at: 0,
+                    message: message(1, b""),
+                }
+                .into(),
+                EditError::DuplicateMessage(MessageId(1)),
+            ),
+            (
+                set_message(MessageId(0), MessageChange::Attributes(vec![0; 3])),
+                EditError::AttributeWidth {
+                    expected: 16,
+                    actual: 3,
+                },
+            ),
+            (
+                set_message(
+                    MessageId(0),
+                    MessageChange::Field {
+                        field: field(0x09),
+                        value: 256,
+                    },
+                ),
+                EditError::ValueTooWide { value: 256, len: 1 },
+            ),
+            (
+                set_message(
+                    MessageId(0),
+                    MessageChange::Field {
+                        field: field(0x04),
+                        value: 7,
+                    },
+                ),
+                EditError::IdField,
+            ),
+            (
+                set_node(NodeId(0), NodeChange::Next(Some(NodeId(5)))),
+                EditError::UnknownNode(NodeId(5)),
+            ),
+            (
+                set_node(NodeId(0), NodeChange::Query { query: 0, param: 0 }),
+                EditError::WrongKind {
+                    node: NodeId(0),
+                    expected: "branch",
+                },
+            ),
+            (root(ListEdit::Remove { at: 1 }), EditError::OutOfRange(1)),
+            (FlowEdit::Delete.into(), EditError::FlowNotEmpty),
+            (FlowEdit::Create.into(), EditError::HasFlow),
+        ];
+        for (edit, error) in refused {
+            assert_eq!(history.apply(&mut document, edit), Err(error));
+        }
+        assert_eq!(document, original);
+        assert!(!history.can_undo());
+    }
+
+    /// Building a conversation up from nothing, then undoing all of it, gives
+    /// back a file with no flow at all rather than an empty one.
+    #[test]
+    fn a_flow_built_and_undone_leaves_no_flow_behind() {
+        let mut document = document();
+        let mut history = History::default();
+        history
+            .apply(&mut document, root(ListEdit::Remove { at: 0 }))
+            .unwrap();
+        history
+            .apply(&mut document, NodeEdit::Remove(NodeId(0)).into())
+            .unwrap();
+        history
+            .apply(&mut document, FlowEdit::Delete.into())
+            .unwrap();
+        let original = document.clone();
+
+        let node = document.unused_node_id();
+        history
+            .apply(&mut document, FlowEdit::Create.into())
+            .unwrap();
+        let text = Node::Text {
+            id: node,
+            message: MessageId(1),
+            next: Some(node),
+        };
+        history
+            .apply(&mut document, NodeEdit::Insert { at: 0, node: text }.into())
+            .unwrap();
+        history
+            .apply(
+                &mut document,
+                root(ListEdit::Insert {
+                    at: 0,
+                    value: Root { public_id: 7, node },
+                }),
+            )
+            .unwrap();
+        assert!(document.save().is_ok());
+
+        for _ in 0..3 {
+            history.undo(&mut document).unwrap();
+        }
+        assert_eq!(document, original);
+        assert_eq!(document.bmg().flow, None);
+    }
+
+    #[test]
+    fn a_branch_is_rewired_one_answer_at_a_time() {
+        let original = document();
+        let mut document = original.clone();
+        let mut history = History::default();
+        let branch = document.unused_node_id();
+        let edits = [
+            NodeEdit::Insert {
+                at: 1,
+                node: Node::Branch {
+                    id: branch,
+                    query: 0,
+                    param: 0,
+                    children: vec![None, None],
+                },
+            }
+            .into(),
+            answer(
+                branch,
+                ListEdit::Set {
+                    at: 1,
+                    value: Some(NodeId(0)),
+                },
+            ),
+            answer(
+                branch,
+                ListEdit::Insert {
+                    at: 2,
+                    value: Some(branch),
+                },
+            ),
+            answer(branch, ListEdit::Remove { at: 0 }),
+            set_node(branch, NodeChange::Query { query: 3, param: 2 }),
+            set_node(NodeId(0), NodeChange::Next(Some(branch))),
+        ];
+        for edit in edits.clone() {
+            history.apply(&mut document, edit).unwrap();
+        }
+        let flow = document.bmg().flow.as_ref().unwrap();
+        assert_eq!(
+            flow.nodes[1],
+            Node::Branch {
+                id: branch,
+                query: 3,
+                param: 2,
+                children: vec![Some(NodeId(0)), Some(branch)],
+            }
+        );
+        assert_eq!(
+            history.apply(
+                &mut document,
+                answer(branch, ListEdit::Set { at: 2, value: None }),
+            ),
+            Err(EditError::OutOfRange(2))
+        );
+
+        for _ in edits {
+            history.undo(&mut document).unwrap();
+        }
+        assert_eq!(document, original);
+    }
+
+    #[test]
+    fn setting_the_public_id_rewrites_its_copy_in_the_attributes() {
+        let mut document = document();
+        let mut history = History::default();
+        history
+            .apply(
+                &mut document,
+                set_message(MessageId(1), MessageChange::PublicId(0x1234)),
+            )
+            .unwrap();
+        let message = document.message(MessageId(1)).unwrap();
+        assert_eq!(&message.attributes[RECORD_ID], &[0x12, 0x34]);
+        assert_eq!(
+            BmgDocument::open(&document.save().unwrap()).unwrap(),
+            document
+        );
+
+        history.undo(&mut document).unwrap();
+        let message = document.message(MessageId(1)).unwrap();
+        assert_eq!(message.public_id, 1);
+        assert_eq!(&message.attributes[RECORD_ID], &[0, 1]);
+    }
+
+    #[test]
+    fn a_field_edit_undoes_to_the_old_value() {
+        let mut document = document();
+        let mut history = History::default();
+        let box_kind = field(0x09);
+        let read = |document: &BmgDocument| {
+            read_field(
+                &document.message(MessageId(0)).unwrap().attributes,
+                &box_kind,
+            )
+        };
+        history
+            .apply(
+                &mut document,
+                set_message(
+                    MessageId(0),
+                    MessageChange::Field {
+                        field: box_kind,
+                        value: 13,
+                    },
+                ),
+            )
+            .unwrap();
+        assert_eq!(read(&document), Some(13));
+        history.undo(&mut document).unwrap();
+        assert_eq!(read(&document), Some(0));
+    }
+
+    #[test]
+    fn saving_and_opening_gives_the_same_document() {
+        let document = document();
+        assert_eq!(
+            BmgDocument::open(&document.save().unwrap()).unwrap(),
+            document
+        );
+    }
+
+    #[test]
+    fn fields_read_and_write_big_endian() {
+        let label = field(0x06);
+        let box_kind = field(0x09);
+        let mut attributes = vec![0; 16];
+
+        write_field(&mut attributes, &label, 0x1234).unwrap();
+        write_field(&mut attributes, &box_kind, 13).unwrap();
+        assert_eq!(&attributes[2..6], &[0x12, 0x34, 0, 13]);
+        assert_eq!(read_field(&attributes, &box_kind), Some(13));
+        assert_eq!(write_field(&mut attributes, &box_kind, 256), None);
+    }
+
+    #[test]
+    fn a_tag_splits_into_group_code_and_args() {
+        let pause = [0x1A, 7, 0, 0, 7, 0, 30];
+        let parts = split_tag(&pause).unwrap();
+        assert_eq!((parts.group, parts.code, parts.args), (0, 7, &[0, 30][..]));
+        assert_eq!(parts.kind().map(|kind| kind.name), Some("Pause"));
+        assert_eq!(split_tag(&[0x1A, 2]), None);
+    }
+}
