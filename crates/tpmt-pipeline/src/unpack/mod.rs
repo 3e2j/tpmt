@@ -7,19 +7,22 @@ use std::path::Path;
 use rayon::prelude::*;
 use tpmt_disc::{Disc, Entry, Span};
 
+use crate::progress::{Progress, Step};
 use crate::{Result, fs, project};
 
 pub mod explode;
 
 /// Unpacks a disc into `base/`, records the store under `.tpmt/`, and
 /// scaffolds a `mod/` folder.
-pub fn run(iso: &Path, project: &Path) -> Result<()> {
+pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
     project::refuse_foreign(project)?;
     let disc = Disc::open(iso)?;
-    let sha1 = disc.sha1()?;
+    let sha1 = project::metadata::sha1_disc(&disc, progress)?;
 
     let staging = project::Staging::begin(&project::base(project))?;
-    let (yaz0_compressed, hashes) = unpack_files(&disc, staging.dir())?;
+    let (yaz0_compressed, hashes) = unpack_files(&disc, staging.dir(), progress)?;
+
+    progress.begin(Step::Save, 0);
     project::metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
     staging.promote()?;
 
@@ -30,7 +33,11 @@ pub fn run(iso: &Path, project: &Path) -> Result<()> {
 
 /// Unpacks one disc's worth of files into `base`, hashing each as it goes,
 /// and returns what `base/`'s metadata needs to say about them.
-fn unpack_files(disc: &Disc, base: &Path) -> Result<(BTreeSet<String>, BTreeMap<String, String>)> {
+fn unpack_files(
+    disc: &Disc,
+    base: &Path,
+    progress: &Progress,
+) -> Result<(BTreeSet<String>, BTreeMap<String, String>)> {
     // Create every listed directory before any file, so empty directories
     // survive the unpack.
     let entries = disc.entries()?;
@@ -40,10 +47,19 @@ fn unpack_files(disc: &Disc, base: &Path) -> Result<(BTreeSet<String>, BTreeMap<
         }
     }
 
-    let unpacked_files = entries
-        .par_iter()
+    let files: Vec<_> = entries
+        .iter()
         .filter_map(|entry| Some((entry.path(), entry.span()?)))
-        .map(|(path, span)| unpack_file(disc, base, path, span))
+        .collect();
+
+    let unpacking = progress.begin(Step::Unpack, files.iter().map(|(_, span)| span.size).sum());
+    let unpacked_files = files
+        .into_par_iter()
+        .map(|(path, span)| {
+            let unpacked = unpack_file(disc, base, path, span)?;
+            unpacking.add(span.size);
+            Ok(unpacked)
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let yaz0_compressed = unpacked_files

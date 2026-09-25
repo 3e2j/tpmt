@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use tpmt_disc::{Disc, Entry, Item, Layout, Span};
 
 use crate::build::{Job, rebuild};
-use crate::project::metadata::Source;
+use crate::progress::{Progress, Step};
+use crate::project::metadata::{self, Source};
 use crate::{Error, Result, fs};
 
 /// Where rebuilt disc files wait while the image is laid out around them.
@@ -29,7 +30,7 @@ const STAGING: &str = ".rebuilt";
 /// - [`Error::Disc`] if the image will not lay out or will not write
 /// - whatever assembling a changed file hit. See [`crate::build::run`]
 pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
-    let disc = open(job.source)?;
+    let disc = open(job.source, job.progress)?;
     let staged = out.join(STAGING);
     rebuild(job, &staged)?;
 
@@ -42,17 +43,24 @@ pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
     let file = File::create(&path).map_err(fs::io_at(&path))?;
     let mut image = layout.write(BufWriter::new(file));
 
+    let writing = job
+        .progress
+        .begin(Step::WriteImage, sources.values().map(Bytes::size).sum());
+
     for entry in layout.entries() {
         let Entry::File { path: at, .. } = entry else {
             continue;
         };
 
-        let bytes = match sources.get(at.as_str()) {
-            Some(Bytes::Disc(span)) => disc.read(*span)?,
-            Some(Bytes::Staged { .. }) => fs::read(&staged.join(at))?,
-            None => return Err(Error::MissingFile(at.clone())),
+        let Some(source) = sources.get(at.as_str()) else {
+            return Err(Error::MissingFile(at.clone()));
+        };
+        let bytes = match source {
+            Bytes::Disc(span) => disc.read(*span)?,
+            Bytes::Staged { .. } => fs::read(&staged.join(at))?,
         };
         image.file(&bytes)?;
+        writing.add(source.size());
     }
     image.finish()?;
 
@@ -116,13 +124,13 @@ fn items(original: &[Entry], sources: &BTreeMap<&str, Bytes>) -> Vec<Item> {
 
 /// Opens the disc this project was unpacked from, and checks it is still the
 /// same one.
-fn open(source: &Source) -> Result<Disc> {
+fn open(source: &Source, progress: &Progress) -> Result<Disc> {
     if !source.iso.is_file() {
         return Err(Error::SourceMissing(source.iso.clone()));
     }
 
     let disc = Disc::open(&source.iso)?;
-    if disc.sha1()? != source.sha1 {
+    if metadata::sha1_disc(&disc, progress)? != source.sha1 {
         return Err(Error::SourceChanged(source.iso.clone()));
     }
     Ok(disc)

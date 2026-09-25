@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
+use crate::progress::{Progress, Step};
 use crate::project::metadata::{self, Source};
 use crate::project::{self, Staging};
 use crate::{Result, fs};
@@ -52,6 +53,8 @@ pub struct Job<'a> {
     pub source: &'a Source,
     /// The disc files the overlay changed, each to be rebuilt.
     pub changed: &'a BTreeSet<String>,
+    /// Where each step reports how far it has got.
+    pub progress: &'a Progress,
 }
 
 /// Reads the project, works out what changed, and hands it to `target`.
@@ -59,7 +62,12 @@ pub struct Job<'a> {
 /// The target's own directory under `build/targets/` is replaced whole on
 /// every build. An `output` given instead can be anywhere, so it must be
 /// missing or empty rather than emptied.
-pub fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {
+pub fn run(
+    project: &Path,
+    target: Target,
+    output: Option<&Path>,
+    progress: &Progress,
+) -> Result<Built> {
     let out = match output {
         Some(output) => {
             project::refuse_unowned(output, &[])?;
@@ -79,6 +87,7 @@ pub fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Buil
         base: &base,
         source: &source,
         changed: &changed,
+        progress,
     };
 
     let staging = Staging::begin(&out)?;
@@ -102,12 +111,15 @@ pub fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Buil
 /// One disc file has nothing to do with the next, so they go in parallel, the
 /// same way an unpack takes them apart.
 fn rebuild(job: &Job, into: &Path) -> Result<()> {
+    let rebuilding = job.progress.begin(Step::Rebuild, job.changed.len() as u64);
     job.changed
         .par_iter()
         .map(|path| {
             let wrapped = job.base.yaz0_compressed.contains(path);
             let bytes = implode::disc_file(job.tree, path, wrapped)?;
-            fs::write(&into.join(path), &bytes)
+            fs::write(&into.join(path), &bytes)?;
+            rebuilding.add(1);
+            Ok(())
         })
         .collect()
 }
@@ -125,6 +137,11 @@ mod tests {
     use crate::project::metadata::sha1_hex;
     use crate::test_support::Scratch;
     use crate::unpack::explode;
+
+    /// [`super::run`] with nobody watching its progress.
+    fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {
+        super::run(project, target, output, &Progress::default())
+    }
 
     fn metadata() -> Metadata {
         Metadata {

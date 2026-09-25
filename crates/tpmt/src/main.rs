@@ -10,6 +10,8 @@ use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
 use tpmt_pipeline::{Built, Change, ChangeKind, Target};
 
+mod progress;
+
 // A bad invocation already exits 2 through clap, so this is only for work that
 // was asked for correctly and then failed.
 const EXIT_FAILURE: u8 = 1;
@@ -106,7 +108,7 @@ fn run(command: Command) -> Result<(), Error> {
                 }
             }
 
-            tpmt_pipeline::unpack(&iso, &project)?;
+            progress::show(|progress| tpmt_pipeline::unpack(&iso, &project, progress))?;
             println!("unpacked {} into {}", iso.display(), project.display());
             Ok(())
         }
@@ -134,7 +136,9 @@ fn run(command: Command) -> Result<(), Error> {
             output,
         } => {
             let root = project(dir.as_ref())?;
-            let built = tpmt_pipeline::build(&root, target, output.as_deref())?;
+            let built = progress::show(|progress| {
+                tpmt_pipeline::build(&root, target, output.as_deref(), progress)
+            })?;
             print_built(&built);
             Ok(())
         }

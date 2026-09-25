@@ -24,6 +24,7 @@ use sha1::{Digest, Sha1};
 use super::{DISC_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::Result;
 use crate::fs::{io_at, read_toml, write_json, write_toml};
+use crate::progress::{Progress, Step};
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
 /// because a loose file never records its own wrapper (unlike containers).
@@ -165,4 +166,11 @@ pub fn sha1_file(path: &Path) -> Result<String> {
     let mut hasher = Sha1::new();
     std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(io_at(path))?;
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// The digest `source.toml` records for the disc, reported as
+/// [`Step::HashDisc`].
+pub fn sha1_disc(disc: &tpmt_disc::Disc, progress: &Progress) -> Result<String> {
+    let hashing = progress.begin(Step::HashDisc, disc.len());
+    Ok(disc.sha1(|size| hashing.add(size))?)
 }

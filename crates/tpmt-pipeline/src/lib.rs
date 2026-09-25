@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 
 mod build;
 mod fs;
+mod progress;
 mod project;
 mod status;
 #[cfg(test)]
@@ -32,6 +33,7 @@ mod test_support;
 mod unpack;
 
 pub use build::{Built, EncodeError, Target};
+pub use progress::{Progress, Snapshot, Step, Unit};
 pub use project::{discover, is_project};
 pub use unpack::explode::{DecodeError, file as explode};
 
@@ -123,14 +125,17 @@ pub enum ChangeKind {
 /// only `base/` and leaves `mod/` alone. It commits only once every file is
 /// written, so a failure part way through leaves no half-made project.
 ///
+/// Reports [`Step::HashDisc`], [`Step::Unpack`], then [`Step::Save`] through
+/// `progress`.
+///
 /// # Errors
 ///
 /// - [`Error::ForeignDirectory`] if `project` holds something else
 /// - [`Error::Disc`] if the ISO can't be opened or read
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
 /// - [`Error::Io`] on any write
-pub fn unpack(iso: &Path, project: &Path) -> Result<(), Error> {
-    unpack::run(iso, project)
+pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(), Error> {
+    unpack::run(iso, project, progress)
 }
 
 /// Hashes `mod/overlay/` against the vanilla hashes taken at [`unpack`], and
@@ -155,6 +160,9 @@ pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
 /// `output` stands in for the directory the target would otherwise own under
 /// `build/targets/`, and must be missing or empty.
 ///
+/// Reports [`Step::Rebuild`] through `progress`, and for an image
+/// [`Step::HashDisc`] and [`Step::WriteImage`] as well.
+///
 /// # Errors
 ///
 /// - [`Error::ForeignDirectory`] if `output` is not empty
@@ -163,8 +171,13 @@ pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
 /// - [`Error::BaseModified`] if `base/` no longer matches the disc it came from
 /// - [`Error::Encode`] if a rebuilt file does not fit its format
 /// - whatever else the target needs, which for an image is the source disc
-pub fn build(project: &Path, target: Target, output: Option<&Path>) -> Result<Built, Error> {
-    build::run(project, target, output)
+pub fn build(
+    project: &Path,
+    target: Target,
+    output: Option<&Path>,
+    progress: &Progress,
+) -> Result<Built, Error> {
+    build::run(project, target, output, progress)
 }
 
 /// Puts an edited file back to its vanilla bytes, re-unpacking its archive

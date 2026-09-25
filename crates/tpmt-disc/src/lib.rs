@@ -290,10 +290,13 @@ impl Disc {
     /// Over the image rather than the file, so a container and a raw dump of
     /// the same disc answer the same.
     ///
+    /// Calls `hashed` with the size of each chunk once it is hashed, so a
+    /// caller can report progress across the whole [`len`](Self::len).
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Read`].
-    pub fn sha1(&self) -> Result<String> {
+    pub fn sha1(&self, mut hashed: impl FnMut(u64)) -> Result<String> {
         const CHUNK: u64 = 1 << 20;
 
         let mut hash = Sha1::new();
@@ -301,6 +304,7 @@ impl Disc {
         while at < self.handle.len {
             let size = CHUNK.min(self.handle.len - at);
             hash.update(&self.read(Span { offset: at, size })?);
+            hashed(size);
             at += size;
         }
         Ok(format!("{:x}", hash.finalize()))
