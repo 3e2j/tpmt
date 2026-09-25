@@ -32,10 +32,9 @@ pub enum TextSegment {
 /// One message: what it is called, how it is displayed, and what it says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    /// The id external callers look this message up by. Held in MID1, and
-    /// duplicated in the first two bytes of the attributes. This field is
-    /// the one source: it is stamped over both copies on write, and they
-    /// are checked to agree on read.
+    /// The id external callers look this message up by, held in MID1.
+    /// A game may keep a copy in its attributes too, which this crate leaves
+    /// as it finds it.
     ///
     /// Meaningless when the file has no [`crate::Bmg::mid1`], since such a
     /// file is addressed by position instead and its attributes open with
@@ -104,10 +103,6 @@ mod mid1_offsets {
 /// The text offset at the front of every INF1 record.
 const TEXT_OFFSET_LEN: u16 = 4;
 
-/// Where a file with a MID1 holds each message's id again: the first two
-/// attribute bytes of its record. See [`Message::public_id`].
-const RECORD_ID: std::ops::Range<usize> = 0..2;
-
 /// The messages, and how wide one INF1 record is.
 ///
 /// All three sections are read together because one message is spread over all
@@ -144,17 +139,8 @@ pub fn read(
         let public_id = match &mid1 {
             Some(mid1) => {
                 let entry = mid1.u32_at(mid1_offsets::LEN + id as usize * 4)?;
-                let public_id = u16::try_from(entry)
-                    .map_err(|_| Error::Corrupt("a MID1 id does not fit in 16 bits"))?;
-                let copy = attributes.get(RECORD_ID).ok_or(Error::Corrupt(
-                    "a message addressed by id has no room for the id in its record",
-                ))?;
-                if copy != public_id.to_be_bytes() {
-                    return Err(Error::Corrupt(
-                        "a message's id in its record disagrees with its MID1 entry",
-                    ));
-                }
-                public_id
+                u16::try_from(entry)
+                    .map_err(|_| Error::Corrupt("a MID1 id does not fit in 16 bits"))?
             }
             None => 0,
         };
@@ -258,10 +244,6 @@ pub type MessageSections = (Vec<u8>, Vec<u8>, Option<Vec<u8>>);
 ///
 /// DAT1 opens with one terminator on its own, then holds each message's text
 /// in turn, so no message starts at offset zero. Retail choice - no other reason.
-///
-/// With a MID1, each message's [`public_id`](Message::public_id) is stamped
-/// over the front of its attributes on the way out, so the copy the game
-/// walks can never fall behind the one the header promises.
 pub fn write(
     messages: &[Message],
     record_len: u16,
@@ -288,16 +270,7 @@ pub fn write(
             ));
         }
         inf1.u32(u32::try_from(dat1.len()).map_err(|_| Error::Oversized)?);
-        let attributes_at = inf1.len();
         inf1.bytes(&message.attributes);
-        if mid1.is_some() {
-            if message.attributes.len() < RECORD_ID.end {
-                return Err(Error::Unwritable(
-                    "a message addressed by id has no room for the id in its record",
-                ));
-            }
-            inf1.u16_at(attributes_at + RECORD_ID.start, message.public_id);
-        }
         write_text(&mut dat1, &message.text)?;
     }
 
@@ -496,9 +469,9 @@ mod tests {
     }
 
     /// An id comes out of its MID1 entry whole, not masked to the entry's
-    /// low 16 bits, and the copy at the front of the record must agree.
+    /// low 16 bits.
     #[test]
-    fn public_id_comes_from_mid1_and_its_record_copy() {
+    fn public_id_comes_from_mid1() {
         let mut inf1 = inf1_header(2, 6);
         inf1.extend(0u32.to_be_bytes());
         inf1.extend(5u16.to_be_bytes());
@@ -513,22 +486,24 @@ mod tests {
         assert_eq!(messages[0].public_id, 5);
         assert_eq!(messages[1].public_id, 10);
         assert_eq!(mid1_header.unwrap().shift_bytes, 0);
+    }
 
-        // The game walks the record copy, so one that disagrees with MID1
-        // would be looked up under a different id than the header says.
-        inf1[inf1_offsets::LEN + 4..][..2].copy_from_slice(&6u16.to_be_bytes());
-        assert!(matches!(
-            read(&inf1, dat1, Some(&mid1)),
-            Err(Error::Corrupt(_))
-        ));
+    /// Whether the attributes repeat the id is up to the game, so a copy
+    /// that disagrees with MID1, or no room for one, reads fine.
+    #[test]
+    fn attributes_are_not_checked_against_mid1() {
+        let mut inf1 = inf1_header(1, 6);
+        inf1.extend(0u32.to_be_bytes());
+        inf1.extend(6u16.to_be_bytes());
+        let mut mid1 = vec![0, 0, 0x00, 0x00, 0, 0, 0, 0];
+        mid1.extend(5u32.to_be_bytes());
+        let (messages, _, _) = read(&inf1, b"Hi\0", Some(&mid1)).unwrap();
+        assert_eq!(messages[0].public_id, 5);
+        assert_eq!(messages[0].attributes, [0x00, 0x06]);
 
-        // No room for a copy at all.
         let mut narrow = inf1_header(1, 4);
         narrow.extend(0u32.to_be_bytes());
-        assert!(matches!(
-            read(&narrow, dat1, Some(&mid1)),
-            Err(Error::Corrupt(_))
-        ));
+        assert!(read(&narrow, b"Hi\0", Some(&mid1)).is_ok());
     }
 
     #[test]
@@ -613,23 +588,14 @@ mod tests {
         assert_eq!(read_header, Some(header));
     }
 
-    /// `public_id` is the one source: whatever the attributes opened with
-    /// is overwritten, but only in a file that has ids at all.
     #[test]
-    fn the_public_id_is_stamped_over_the_front_of_the_record() {
+    fn attributes_are_written_as_given() {
         let stale = [message(0, 5, &[0xAA, 0xBB], &[])];
         let (inf1, _, _) = write(&stale, 6, Some(HEADER)).unwrap();
-        assert_eq!(&inf1[inf1_offsets::LEN + 4..], [0x00, 0x05]);
-
-        let (inf1, _, _) = write(&stale, 6, None).unwrap();
         assert_eq!(&inf1[inf1_offsets::LEN + 4..], [0xAA, 0xBB]);
 
         let no_room = [message(0, 5, &[], &[])];
-        assert!(matches!(
-            write(&no_room, 4, Some(HEADER)),
-            Err(Error::Unwritable(_))
-        ));
-        assert!(write(&no_room, 4, None).is_ok());
+        assert!(write(&no_room, 4, Some(HEADER)).is_ok());
     }
 
     /// The bit is a fact about the ids, so it follows them: sorted in, set;

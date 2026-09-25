@@ -44,10 +44,14 @@ impl Field {
     }
 }
 
+/// The message id, which a file with a MID1 repeats from its MID1 entry.
+pub const ID: Field =
+    field(0x04, 2, "Message id").notes("Id the game looks the message up by. Same as the MID1 id");
+
 /// Every field after the 4-byte text offset, in record order.
 #[rustfmt::skip]
 pub static FIELDS: &[Field] = &[
-    field(0x04, 2, "Message id")    .notes("Id the game looks the message up by. Same as the MID1 id"),
+    ID,
     field(0x06, 2, "Event label")   .notes("`saveBitLabels` index set when the message displays"),
     field(0x08, 1, "Speaker")       .notes("`Z2SpeechMgr2` voice bank id"),
     field(0x09, 1, "Box kind")      .values(BOX_KINDS),

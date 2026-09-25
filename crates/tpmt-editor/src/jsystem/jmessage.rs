@@ -22,9 +22,6 @@ use crate::Document;
 /// attributes leave out.
 const TEXT_OFFSET_LEN: usize = 4;
 
-/// Where a file with a MID1 repeats each message's id in its attributes.
-const RECORD_ID: Range<usize> = 0..2;
-
 /// What opens every tag.
 const TAG_OPENER: u8 = 0x1A;
 
@@ -130,6 +127,21 @@ impl From<NodeEdit> for BmgEdit {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum OpenError {
+    #[error(transparent)]
+    Decode(#[from] tpmt_jmessage::Error),
+
+    /// The edits keep the two equal, so a file where they differ can't be
+    /// edited without losing one of them.
+    #[error("message {} has id {record} in its record, and {public_id} in MID1", .message.0)]
+    IdMismatch {
+        message: MessageId,
+        public_id: u16,
+        record: u16,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EditError {
     #[error("no message has internal id {}", .0.0)]
@@ -190,9 +202,24 @@ pub struct BmgDocument {
 impl BmgDocument {
     /// # Errors
     ///
-    /// When the bytes aren't a BMG, or are a broken one.
-    pub fn open(bytes: &[u8]) -> Result<Self, tpmt_jmessage::Error> {
-        Bmg::decode(bytes).map(Self::from)
+    /// When the bytes aren't a BMG, or are a broken one, or a message's
+    /// record holds a different id than its MID1 entry.
+    pub fn open(bytes: &[u8]) -> Result<Self, OpenError> {
+        let document = Self::from(Bmg::decode(bytes)?);
+        if document.id_bytes().is_some() {
+            for message in &document.bmg.messages {
+                if let Some(record) = read_field(&message.attributes, &record::ID)
+                    && record != message.public_id
+                {
+                    return Err(OpenError::IdMismatch {
+                        message: message.id,
+                        public_id: message.public_id,
+                        record,
+                    });
+                }
+            }
+        }
+        Ok(document)
     }
 
     /// The file as bytes, for the pipeline to write into the overlay.
@@ -242,22 +269,27 @@ impl BmgDocument {
         NodeId(highest.map_or(0, |id| id + 1))
     }
 
+    /// Where the attributes repeat [`Message::public_id`], which only the
+    /// game's own record does, and only in a file with a MID1.
+    fn id_bytes(&self) -> Option<Range<usize>> {
+        self.bmg.mid1?;
+        self.fields()?;
+        field_bytes(&record::ID)
+    }
+
     fn attributes_len(&self) -> usize {
         usize::from(self.bmg.record_len).saturating_sub(TEXT_OFFSET_LEN)
     }
 
-    /// Checks `attributes` for width and, in a file with a MID1, copies
-    /// `public_id` over the id in them, as the encoder does. What's left is
-    /// what the file would hold after a save and reopen.
+    /// Checks `attributes` for width and copies `public_id` over the id in
+    /// them, where they hold one.
     fn fit(&self, public_id: u16, attributes: &mut [u8]) -> Result<(), EditError> {
         let expected = self.attributes_len();
         let actual = attributes.len();
         if actual != expected {
             return Err(EditError::AttributeWidth { expected, actual });
         }
-        if self.bmg.mid1.is_some()
-            && let Some(id) = attributes.get_mut(RECORD_ID)
-        {
+        if let Some(id) = self.id_bytes().and_then(|bytes| attributes.get_mut(bytes)) {
             id.copy_from_slice(&public_id.to_be_bytes());
         }
         Ok(())
@@ -361,7 +393,10 @@ impl BmgDocument {
         value: u16,
     ) -> Result<MessageChange, EditError> {
         let bytes = field_bytes(&field).ok_or(EditError::FieldOutOfRange(field.offset))?;
-        if self.bmg.mid1.is_some() && bytes.start < RECORD_ID.end && RECORD_ID.start < bytes.end {
+        if let Some(id) = self.id_bytes()
+            && bytes.start < id.end
+            && id.start < bytes.end
+        {
             return Err(EditError::IdField);
         }
         let attributes = &mut self.message_mut(message)?.attributes;
@@ -392,9 +427,9 @@ impl BmgDocument {
         message: MessageId,
         public_id: u16,
     ) -> Result<MessageChange, EditError> {
-        let has_mid1 = self.bmg.mid1.is_some();
+        let id_bytes = self.id_bytes();
         let slot = self.message_mut(message)?;
-        if has_mid1 && let Some(id) = slot.attributes.get_mut(RECORD_ID) {
+        if let Some(id) = id_bytes.and_then(|bytes| slot.attributes.get_mut(bytes)) {
             id.copy_from_slice(&public_id.to_be_bytes());
         }
         Ok(MessageChange::PublicId(mem::replace(
@@ -711,8 +746,8 @@ pub fn read_field(attributes: &[u8], field: &Field) -> Option<u16> {
 /// Writes a record field's value into a message's attributes. `None` when the
 /// attributes are too short, or `value` doesn't fit a 1-byte field.
 ///
-/// The message id field is overwritten from [`Message::public_id`] on save in
-/// a file with a MID1, so set that instead.
+/// In a file with a MID1, the message id field repeats
+/// [`Message::public_id`], so set that instead.
 #[must_use]
 pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<()> {
     match attributes.get_mut(field_bytes(field)?)? {
@@ -1053,7 +1088,10 @@ mod tests {
             )
             .unwrap();
         let message = document.message(MessageId(1)).unwrap();
-        assert_eq!(&message.attributes[RECORD_ID], &[0x12, 0x34]);
+        assert_eq!(
+            &message.attributes[field_bytes(&record::ID).unwrap()],
+            &[0x12, 0x34]
+        );
         assert_eq!(
             BmgDocument::open(&document.save().unwrap()).unwrap(),
             document
@@ -1062,7 +1100,10 @@ mod tests {
         history.undo(&mut document).unwrap();
         let message = document.message(MessageId(1)).unwrap();
         assert_eq!(message.public_id, 1);
-        assert_eq!(&message.attributes[RECORD_ID], &[0, 1]);
+        assert_eq!(
+            &message.attributes[field_bytes(&record::ID).unwrap()],
+            &[0, 1]
+        );
     }
 
     #[test]
@@ -1091,6 +1132,25 @@ mod tests {
         assert_eq!(read(&document), Some(13));
         history.undo(&mut document).unwrap();
         assert_eq!(read(&document), Some(0));
+    }
+
+    #[test]
+    fn a_record_id_that_disagrees_with_mid1_is_refused() {
+        let mut bmg = document().bmg;
+        bmg.messages[1].attributes[field_bytes(&record::ID).unwrap()]
+            .copy_from_slice(&7u16.to_be_bytes());
+        assert!(matches!(
+            BmgDocument::open(&bmg.encode().unwrap()),
+            Err(OpenError::IdMismatch {
+                message: MessageId(1),
+                public_id: 1,
+                record: 7,
+            })
+        ));
+
+        // Without a MID1 the record's id is the game's to use.
+        bmg.mid1 = None;
+        assert!(BmgDocument::open(&bmg.encode().unwrap()).is_ok());
     }
 
     #[test]
