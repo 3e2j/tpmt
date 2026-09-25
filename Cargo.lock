@@ -473,6 +473,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpmt-editor"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tpmt-format",
+ "tpmt-game",
+ "tpmt-jmessage",
+]
+
+[[package]]
 name = "tpmt-format"
 version = "0.1.0"
 

@@ -1,0 +1,16 @@
+[package]
+name = "tpmt-editor"
+description = "Editable documents, one per format, with edits as values and undo."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+tpmt-format.workspace = true
+tpmt-game.workspace = true
+tpmt-jmessage.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
