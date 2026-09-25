@@ -8,7 +8,8 @@ use rayon::prelude::*;
 use tpmt_disc::{Disc, Entry};
 
 use crate::progress::{Progress, Step};
-use crate::{Result, fs, project};
+use crate::project::metadata::Formats;
+use crate::{FileKind, Result, fs, project};
 
 pub mod explode;
 
@@ -23,13 +24,14 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
         sha1,
         yaz0_compressed,
         hashes,
+        formats,
     } = unpack_disc(&disc, staging.dir(), progress)?;
 
     progress.begin(Step::Save, 0);
     project::metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
     staging.promote()?;
 
-    project::metadata::write_store(project, iso, &sha1, &hashes)?;
+    project::metadata::write_store(project, iso, &sha1, &hashes, &formats)?;
 
     project::scaffold_mod(project)
 }
@@ -42,6 +44,8 @@ struct Unpacked {
     yaz0_compressed: BTreeSet<String>,
     /// What every project file hashed to, keyed by project path.
     hashes: BTreeMap<String, String>,
+    /// Which project files hold a known leaf format, for `formats.toml`.
+    formats: Formats,
 }
 
 /// Unpacks one disc's worth of files into `base`, reading the disc once, in
@@ -78,15 +82,20 @@ fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked
         .map(|file| file.path.clone())
         .collect();
 
-    let hashes = unpacked_files
-        .into_iter()
-        .flat_map(|file| file.hashes)
-        .collect();
+    let mut hashes = BTreeMap::new();
+    let mut formats = Formats::new();
+    for file in unpacked_files {
+        hashes.extend(file.hashes);
+        for (kind, path) in file.kinds {
+            formats.entry(kind).or_default().insert(path);
+        }
+    }
 
     Ok(Unpacked {
         sha1,
         yaz0_compressed,
         hashes,
+        formats,
     })
 }
 
@@ -99,15 +108,21 @@ struct UnpackedFile {
     yaz0_compressed: bool,
     /// What every project file it became hashed to, keyed by project path.
     hashes: BTreeMap<String, String>,
+    /// The project files it became that hold a known leaf format.
+    kinds: Vec<(FileKind, String)>,
 }
 
-/// Explodes one disc file into `base/`, hashing each project file as it
-/// lands.
+/// Explodes one disc file into `base/`, hashing and identifying each project
+/// file as it lands.
 fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
     let mut hashes = BTreeMap::new();
+    let mut kinds = Vec::new();
     let yaz0_compressed = explode::file(path, data, &mut |path, data| {
         fs::write(&base.join(path), data)?;
         hashes.insert(path.to_string(), project::metadata::sha1_hex(data));
+        if let Some(kind) = FileKind::identify(data) {
+            kinds.push((kind, path.to_string()));
+        }
         Ok(())
     })?;
 
@@ -115,5 +130,6 @@ fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
         path: path.to_string(),
         yaz0_compressed,
         hashes,
+        kinds,
     })
 }

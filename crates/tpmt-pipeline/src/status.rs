@@ -55,7 +55,7 @@ mod tests {
 
         let iso = scratch.0.join("source.iso");
         fs::write(&iso, b"").unwrap();
-        metadata::write_store(&scratch.0, &iso, "0", &hashes).unwrap();
+        metadata::write_store(&scratch.0, &iso, "0", &hashes, &metadata::Formats::new()).unwrap();
         scratch
     }
 

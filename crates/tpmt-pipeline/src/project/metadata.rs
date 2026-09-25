@@ -7,6 +7,7 @@
 //! mod/mod.json        ModMetadata    id, name, version, author, ...
 //! .tpmt/source.toml   Source         where the ISO was last seen, plus its sha1
 //! .tpmt/hashes.toml   Hashes         vanilla sha1 of every base/ file
+//! .tpmt/formats.toml  Formats        which base/ files hold a known leaf format
 //! ```
 //!
 //! `disc.toml` and `mod.json` are safe to edit by hand. `.tpmt/` is not:
@@ -21,10 +22,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 
-use super::{DISC_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
-use crate::Result;
+use super::{DISC_TOML, FORMATS_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::fs::{io_at, read_toml, write_json, write_toml};
 use crate::progress::{Progress, Step};
+use crate::{Error, FileKind, Result};
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
 /// because a loose file never records its own wrapper (unlike containers).
@@ -116,10 +117,16 @@ pub fn write_store(
     iso: &Path,
     sha1: &str,
     hashes: &BTreeMap<String, String>,
+    formats: &Formats,
 ) -> Result<()> {
     let iso = iso.canonicalize().map_err(io_at(iso))?;
     let store = project.join(STORE_DIR);
     write_toml(&store.join(HASHES_TOML), hashes)?;
+    let named: BTreeMap<_, _> = formats
+        .iter()
+        .map(|(kind, paths)| (kind.name(), paths))
+        .collect();
+    write_toml(&store.join(FORMATS_TOML), &named)?;
     write_toml(
         &store.join(SOURCE_TOML),
         &Source {
@@ -150,6 +157,39 @@ pub fn read_store(project: &Path) -> Result<Store> {
         source: read_toml(&store.join(SOURCE_TOML))?,
         hashes: read_toml(&store.join(HASHES_TOML))?,
     })
+}
+
+/// `formats.toml`: every `base/` file whose magic a [`FileKind`] recognised,
+/// grouped by kind. A file no kind recognises isn't listed. On disk each kind
+/// is its [`FileKind::name`], since `tpmt-format` carries no serde.
+///
+/// It exists because a name on the disc can't be trusted: some files carry
+/// no extension, or one that doesn't match what's inside. Only the magic
+/// can. Unpack already holds every file's bytes, so it reads each magic once
+/// and records it here, and a lookup by kind never reopens `base/`.
+pub type Formats = BTreeMap<FileKind, BTreeSet<String>>;
+
+/// Reads back the `formats.toml` [`write_store`] wrote. Apart from
+/// [`read_store`], since a lookup by kind has no use for 27,000 hashes.
+///
+/// # Errors
+///
+/// - [`Error::Io`](crate::Error::Io) if it is missing
+/// - [`Error::Parse`](crate::Error::Parse) if it is not what it was, or names a
+///   kind this build doesn't know
+pub fn read_formats(project: &Path) -> Result<Formats> {
+    let path = project.join(STORE_DIR).join(FORMATS_TOML);
+    let named: BTreeMap<String, BTreeSet<String>> = read_toml(&path)?;
+    named
+        .into_iter()
+        .map(|(name, paths)| {
+            let kind = FileKind::from_name(&name).ok_or_else(|| Error::Parse {
+                path: path.clone(),
+                source: format!("no file kind is named `{name}`").into(),
+            })?;
+            Ok((kind, paths))
+        })
+        .collect()
 }
 
 /// The digest `hashes.toml` records per project file.

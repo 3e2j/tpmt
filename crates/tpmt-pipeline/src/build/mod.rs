@@ -223,7 +223,7 @@ mod tests {
         // path it can canonicalize.
         let iso = project.join("source.iso");
         fs::write(&iso, b"").unwrap();
-        metadata::write_store(project, &iso, "0", &hashes).unwrap();
+        metadata::write_store(project, &iso, "0", &hashes, &metadata::Formats::new()).unwrap();
 
         scratch
     }

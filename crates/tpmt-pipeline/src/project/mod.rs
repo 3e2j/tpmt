@@ -82,6 +82,7 @@ const TARGETS_DIR: &str = "targets";
 
 // TPMT specifics
 const STORE_DIR: &str = ".tpmt";
+const FORMATS_TOML: &str = "formats.toml";
 const HASHES_TOML: &str = "hashes.toml";
 const SOURCE_TOML: &str = "source.toml";
 

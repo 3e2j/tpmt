@@ -67,7 +67,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 mod header {
     pub const LEN: usize = 0x20;
-    pub const MAGIC: &[u8; 8] = b"MESGbmg1";
+    pub const MAGIC: &[u8] = tpmt_format::FileKind::Bmg.magic();
     /// The size of the file with the flow sections left out.
     pub const SIZE: usize = 0x08;
     pub const SECTION_COUNT: usize = 0x0C;

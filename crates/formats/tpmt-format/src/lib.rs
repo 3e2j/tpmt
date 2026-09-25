@@ -48,3 +48,47 @@ pub trait Format<'a>: Sized {
     /// won't encode, or similar.
     fn encode(&self) -> Result<Vec<u8>, Self::Error>;
 }
+
+/// A leaf format the toolkit decodes, and the magic that tells it apart.
+///
+/// Every format's [`Format::MAGIC`] is defined here and read back by its own
+/// crate, so something that only needs to tell formats apart, like an unpack
+/// sorting files, depends on this crate alone. Archives aren't here: an
+/// unpack turns them into directories, so no project file is one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FileKind {
+    Bmg,
+}
+
+impl FileKind {
+    pub const ALL: [Self; 1] = [Self::Bmg];
+
+    /// The kind whose magic `data` opens with, if any.
+    #[must_use]
+    pub fn identify(data: &[u8]) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| data.starts_with(kind.magic()))
+    }
+
+    #[must_use]
+    pub const fn magic(self) -> &'static [u8] {
+        match self {
+            Self::Bmg => b"MESGbmg1",
+        }
+    }
+
+    /// A stable lowercase name, for a file that records kinds.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bmg => "bmg",
+        }
+    }
+
+    /// The kind [`name`](Self::name) gave, if any.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+}

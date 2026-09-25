@@ -21,6 +21,7 @@
 // what gets packed (cheap, catches the common case, blind to whether anything
 // references it). The other is the linker (see `build::implode::archive`).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 mod build;
@@ -35,6 +36,7 @@ mod unpack;
 pub use build::{Built, EncodeError, Target};
 pub use progress::{Progress, Snapshot, Step, Unit};
 pub use project::{discover, is_project};
+pub use tpmt_format::FileKind;
 pub use unpack::explode::{DecodeError, file as explode};
 
 #[derive(Debug, thiserror::Error)]
@@ -136,6 +138,21 @@ pub enum ChangeKind {
 /// - [`Error::Io`] on any write
 pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(), Error> {
     unpack::run(iso, project, progress)
+}
+
+/// Every file the unpack recognised a leaf format in, by project path under
+/// `base/`, grouped by [`FileKind`]. Read from `.tpmt/formats.toml`, so no
+/// file in `base/` is opened.
+///
+/// Go through this, not file extensions, to find files of one kind. Names on
+/// the disc lie; the kinds here came from each file's magic.
+///
+/// # Errors
+///
+/// - [`Error::Io`] if `.tpmt/formats.toml` is missing
+/// - [`Error::Parse`] if it is not what an unpack wrote
+pub fn formats(project: &Path) -> Result<BTreeMap<FileKind, BTreeSet<String>>, Error> {
+    project::metadata::read_formats(project)
 }
 
 /// Hashes `mod/overlay/` against the vanilla hashes taken at [`unpack`], and
