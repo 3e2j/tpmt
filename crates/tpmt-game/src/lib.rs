@@ -18,7 +18,7 @@
 // width in `jsystem::jmessage::record::LEN` and the argument length each
 // `jsystem::jmessage::tag` row gives. A value a table doesn't name is not a
 // claim, so the test shouldn't demand one. It belongs beside the round trip
-// in `crates/formats/tpmt-tests`.
+// in `crates/tpmt-retail-tests`.
 
 pub mod jsystem;
 

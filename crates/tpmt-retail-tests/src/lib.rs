@@ -11,8 +11,8 @@
 //! tests, so they outlive a run and the next run only reads them back. A disc
 //! is unpacked again when its image changes, when [`FileKind`] gains a kind,
 //! or when the OS clears the directory. Delete `<disc>.stamp` in
-//! `tpmt-tests/` in the temp directory to force it after changing what an
-//! unpack writes. See [`unpacked`].
+//! `tpmt-retail-tests/` in the temp directory to force it after changing what
+//! an unpack writes. See [`unpacked`].
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -136,7 +136,7 @@ fn report(Tally { checked, failures }: &Tally) -> Result<(), Failed> {
 /// in their own processes, unpack it once between them. The stamp is written
 /// only after the unpack finishes, so one that fails part way is redone.
 fn unpacked(iso: &Path) -> Result<PathBuf, Failed> {
-    let root = std::env::temp_dir().join("tpmt-tests");
+    let root = std::env::temp_dir().join("tpmt-retail-tests");
     fs::create_dir_all(&root)?;
     let name = file_name(iso);
     let project = root.join(&name);

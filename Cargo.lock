@@ -537,7 +537,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tpmt-tests"
+name = "tpmt-retail-tests"
 version = "0.1.0"
 dependencies = [
  "libtest-mimic",

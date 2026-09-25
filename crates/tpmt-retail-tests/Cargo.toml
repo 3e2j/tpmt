@@ -1,5 +1,5 @@
 [package]
-name = "tpmt-tests"
+name = "tpmt-retail-tests"
 description = "Tests that read the retail discs in `discs/`. Nothing depends on this crate."
 version.workspace = true
 edition.workspace = true

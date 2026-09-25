@@ -11,13 +11,13 @@ use std::process::ExitCode;
 use tpmt_format::Format;
 use tpmt_jmessage::Bmg;
 use tpmt_pipeline::FileKind;
-use tpmt_tests::Checks;
+use tpmt_retail_tests::Checks;
 
 /// A new leaf format is one more row.
 static CHECKS: Checks = &[("jsystem::jmessage::bmg", FileKind::Bmg, round_trip::<Bmg>)];
 
 fn main() -> ExitCode {
-    tpmt_tests::run(CHECKS)
+    tpmt_retail_tests::run(CHECKS)
 }
 
 /// The one problem with `original`, if there is one.
