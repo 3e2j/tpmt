@@ -5,12 +5,21 @@
 //! are plain values. Performing an edit hands back the edit that undoes it, so
 //! undo and redo are two stacks of edits ([`History`]) rather than snapshots.
 //!
+//! An edit fails only when the format can't hold the result. Anything the
+//! format accepts goes through, even if the game wouldn't expect it, since a
+//! mod can change what the game expects. Those edits warn instead, like a
+//! branch node in a `jmessage` flow with more answers than its query returns.
+//! An edit built on the game's tables, like setting a named record field, has
+//! a raw counterpart that skips them.
+//!
 //! A document knows nothing about paths. It opens from bytes and saves to
 //! bytes, and the pipeline decides where those go: `mod/overlay/`, never
 //! `base/`.
 //!
 //! No UI framework here, so documents can be tested headless and reused by the
 //! CLI or an export.
+
+pub mod bmg;
 
 /// A decoded file that changes only through edits.
 pub trait Document {
