@@ -42,7 +42,7 @@ mod sections;
 mod unpack;
 
 pub use crate::sections::flow::{Flow, Node, NodeId, Root};
-pub use crate::sections::message::{Message, MessageId, Mid1Header, TextSegment};
+pub use crate::sections::message::{Message, MessageId, Mid1Header, TEXT_OFFSET_LEN, TextSegment};
 pub use tpmt_format::Format;
 
 #[derive(Debug, thiserror::Error)]

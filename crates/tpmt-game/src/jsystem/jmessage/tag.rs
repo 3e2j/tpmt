@@ -1,8 +1,7 @@
 //! Inline text tags: what each group and code does, and what arguments it
 //! takes.
 //!
-//! A tag is `0x1A`, a length byte covering the whole tag, a u8 group, a u16
-//! code, then the arguments.
+//! The group and code are the ones `tpmt_jmessage::TextSegment::Tag` holds.
 
 use super::COLORS;
 use crate::Entry;
@@ -268,6 +267,11 @@ mod tests {
     fn sound_and_camera_match_any_code() {
         assert_eq!(find(group::SOUND, 20), Some(&SOUND));
         assert_eq!(find(group::CAMERA, 7), Some(&CAMERA));
+    }
+
+    #[test]
+    fn a_named_code_is_found() {
+        assert_eq!(find(group::CONTROL, 7).map(|tag| tag.name), Some("Pause"));
     }
 
     #[test]

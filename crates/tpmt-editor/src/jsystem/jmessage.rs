@@ -1,7 +1,6 @@
 //! A BMG message file as an editable document.
 //!
-//! Text is kept as `jmessage`'s segments, with tags whole, so nothing is
-//! re-parsed on save.
+//! Text is kept as `jmessage`'s segments, so nothing is re-parsed on save.
 //!
 //! Edits are checked for what would leave the graph pointing at nothing: a
 //! removed message a text node still shows, a removed node an edge still
@@ -13,17 +12,11 @@ use std::ops::Range;
 
 use tpmt_format::Format;
 use tpmt_game::jsystem::jmessage::record::{self, Field};
-use tpmt_game::jsystem::jmessage::tag::{self, Tag};
-use tpmt_jmessage::{Bmg, Flow, Message, MessageId, Node, NodeId, Root, TextSegment};
+use tpmt_jmessage::{
+    Bmg, Flow, Message, MessageId, Node, NodeId, Root, TEXT_OFFSET_LEN, TextSegment,
+};
 
 use crate::Document;
-
-/// The text offset at the front of every INF1 record, which a message's
-/// attributes leave out.
-const TEXT_OFFSET_LEN: usize = 4;
-
-/// What opens every tag.
-const TAG_OPENER: u8 = 0x1A;
 
 /// One change to a message file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,7 +271,7 @@ impl BmgDocument {
     }
 
     fn attributes_len(&self) -> usize {
-        usize::from(self.bmg.record_len).saturating_sub(TEXT_OFFSET_LEN)
+        usize::from(self.bmg.record_len.saturating_sub(TEXT_OFFSET_LEN))
     }
 
     /// Checks `attributes` for width and copies `public_id` over the id in
@@ -728,7 +721,7 @@ fn edges(node: &Node) -> impl Iterator<Item = NodeId> + '_ {
 /// Where a record field sits in a message's attributes, or `None` when it
 /// sits in the text offset.
 fn field_bytes(field: &Field) -> Option<Range<usize>> {
-    let at = field.offset.checked_sub(TEXT_OFFSET_LEN)?;
+    let at = field.offset.checked_sub(usize::from(TEXT_OFFSET_LEN))?;
     Some(at..at + field.len)
 }
 
@@ -756,36 +749,6 @@ pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<(
         _ => return None,
     }
     Some(())
-}
-
-/// A tag's parts, as `JMessage::TProcessor::on_tag_` reads them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TagParts<'a> {
-    pub group: u8,
-    pub code: u16,
-    pub args: &'a [u8],
-}
-
-impl TagParts<'_> {
-    /// What the game does with the tag, or `None` when nothing names it.
-    #[must_use]
-    pub fn kind(&self) -> Option<&'static Tag> {
-        tag::find(self.group, self.code)
-    }
-}
-
-/// Splits a whole tag, as [`tpmt_jmessage::TextSegment::Tag`] holds it.
-/// `None` when it is too short to have a group and code.
-#[must_use]
-pub const fn split_tag(tag: &[u8]) -> Option<TagParts<'_>> {
-    match tag {
-        [TAG_OPENER, _len, group, high, low, args @ ..] => Some(TagParts {
-            group: *group,
-            code: u16::from_be_bytes([*high, *low]),
-            args,
-        }),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -1173,14 +1136,5 @@ mod tests {
         assert_eq!(&attributes[2..6], &[0x12, 0x34, 0, 13]);
         assert_eq!(read_field(&attributes, &box_kind), Some(13));
         assert_eq!(write_field(&mut attributes, &box_kind, 256), None);
-    }
-
-    #[test]
-    fn a_tag_splits_into_group_code_and_args() {
-        let pause = [0x1A, 7, 0, 0, 7, 0, 30];
-        let parts = split_tag(&pause).unwrap();
-        assert_eq!((parts.group, parts.code, parts.args), (0, 7, &[0, 30][..]));
-        assert_eq!(parts.kind().map(|kind| kind.name), Some("Pause"));
-        assert_eq!(split_tag(&[0x1A, 2]), None);
     }
 }

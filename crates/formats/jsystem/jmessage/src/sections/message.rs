@@ -8,10 +8,12 @@ use tpmt_bytes::{Reader, Writer};
 
 use crate::{Error, Result};
 
-/// What opens a message's text: 0x1A, then the whole tag's length.
+/// What opens a tag, followed by the whole tag's length.
 const TAG_OPENER: u8 = 0x1A;
-/// The smallest a tag can be, the opener and the length byte.
-const TAG_HEADER_LEN: usize = 2;
+/// The opener, the length byte, the group, and the code, which a tag's
+/// arguments follow. `JMessage::TProcessor::on_tag_` takes the length less
+/// this as the argument count.
+const TAG_HEADER_LEN: usize = 5;
 
 /// Stable internal handle for a message, held by whatever refers to one.
 ///
@@ -21,12 +23,17 @@ pub struct MessageId(pub u32);
 
 /// One stretch of a message's text.
 ///
-/// Text and tags are parsed (seperated), but neither decoded.
+/// Text stays encoded. A tag is split the way `JMessage::TProcessor::on_tag_`
+/// reads it, and its opener and length byte are worked out again on write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextSegment {
     Text(Vec<u8>),
-    /// One escape sequence whole, its leading 0x1A and length byte included.
-    Tag(Vec<u8>),
+    /// One escape sequence. What the group and code mean is game data.
+    Tag {
+        group: u8,
+        code: u16,
+        args: Vec<u8>,
+    },
 }
 
 /// One message: what it is called, how it is displayed, and what it says.
@@ -100,8 +107,9 @@ mod mid1_offsets {
     // 0x04, 4 bytes: padding.
 }
 
-/// The text offset at the front of every INF1 record.
-const TEXT_OFFSET_LEN: u16 = 4;
+/// The text offset at the front of every INF1 record, which
+/// [`Message::attributes`] leaves out.
+pub const TEXT_OFFSET_LEN: u16 = 4;
 
 /// The messages, and how wide one INF1 record is.
 ///
@@ -190,16 +198,20 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
                     .get(i + 1)
                     .ok_or(Error::Corrupt("a tag is cut off before its length byte"))?
                     as usize;
-                if len < TAG_HEADER_LEN {
-                    return Err(Error::Corrupt(
-                        "a tag claims to be shorter than its own header",
-                    ));
-                }
                 let end = i + len;
                 let tag = dat1
                     .get(i..end)
                     .ok_or(Error::Corrupt("a tag runs past the end of DAT1"))?;
-                segments.push(TextSegment::Tag(tag.to_vec()));
+                let [_, _, group, high, low, args @ ..] = tag else {
+                    return Err(Error::Corrupt(
+                        "a tag claims to be shorter than its own header",
+                    ));
+                };
+                segments.push(TextSegment::Tag {
+                    group: *group,
+                    code: u16::from_be_bytes([*high, *low]),
+                    args: args.to_vec(),
+                });
                 i = end;
                 text_start = end;
             }
@@ -299,14 +311,15 @@ fn write_text(dat1: &mut Writer, text: &[TextSegment]) -> Result<()> {
                 }
                 dat1.bytes(run);
             }
-            TextSegment::Tag(tag) => {
-                let stated = tag.get(1).map(|&len| len as usize);
-                if tag.first() != Some(&TAG_OPENER) || stated != Some(tag.len()) {
-                    return Err(Error::Unwritable(
-                        "a tag does not open with 0x1A and its own length",
-                    ));
-                }
-                dat1.bytes(tag);
+            TextSegment::Tag { group, code, args } => {
+                let len = u8::try_from(TAG_HEADER_LEN + args.len()).map_err(|_| {
+                    Error::Unwritable("a tag is longer than its length byte can state")
+                })?;
+                dat1.u8(TAG_OPENER);
+                dat1.u8(len);
+                dat1.u8(*group);
+                dat1.u16(*code);
+                dat1.bytes(args);
             }
         }
     }
@@ -346,7 +359,7 @@ mod tests {
     #[test]
     fn text_and_tags_split_correctly() {
         let mut dat1 = b"Hi ".to_vec();
-        dat1.extend([0x1A, 4, 0x01, 0x02]);
+        dat1.extend([0x1A, 6, 0x01, 0x00, 0x02, 0xAA]);
         dat1.extend(b" there\0");
 
         let segments = read_text(&dat1, 0).unwrap();
@@ -354,7 +367,11 @@ mod tests {
             segments,
             vec![
                 TextSegment::Text(b"Hi ".to_vec()),
-                TextSegment::Tag(vec![0x1A, 4, 0x01, 0x02]),
+                TextSegment::Tag {
+                    group: 0x01,
+                    code: 0x0002,
+                    args: vec![0xAA],
+                },
                 TextSegment::Text(b" there".to_vec()),
             ]
         );
@@ -364,14 +381,22 @@ mod tests {
     /// the second: no text segment has anywhere to come from.
     #[test]
     fn empty_runs_around_tags_are_dropped() {
-        let dat1 = [0x1A, 3, 0xAA, 0x1A, 3, 0xBB, 0x00];
+        let dat1 = [0x1A, 5, 0, 0, 0xAA, 0x1A, 5, 0, 0, 0xBB, 0x00];
 
         let segments = read_text(&dat1, 0).unwrap();
         assert_eq!(
             segments,
             vec![
-                TextSegment::Tag(vec![0x1A, 3, 0xAA]),
-                TextSegment::Tag(vec![0x1A, 3, 0xBB]),
+                TextSegment::Tag {
+                    group: 0,
+                    code: 0xAA,
+                    args: vec![],
+                },
+                TextSegment::Tag {
+                    group: 0,
+                    code: 0xBB,
+                    args: vec![],
+                },
             ]
         );
     }
@@ -389,10 +414,16 @@ mod tests {
         ));
     }
 
+    /// The game takes the length less 5 as the argument count, so a tag
+    /// without a whole group and code has a huge one.
     #[test]
     fn tag_shorter_than_its_own_header_is_corrupt() {
         assert!(matches!(
             read_text(&[0x1A, 1, 0x00], 0),
+            Err(Error::Corrupt(_))
+        ));
+        assert!(matches!(
+            read_text(&[0x1A, 4, 0x00, 0x00, 0x00], 0),
             Err(Error::Corrupt(_))
         ));
     }
@@ -543,7 +574,11 @@ mod tests {
                 10,
                 &[0x00, 0x0A],
                 &[
-                    TextSegment::Tag(vec![0x1A, 3, 0x01]),
+                    TextSegment::Tag {
+                        group: 0x01,
+                        code: 0x0002,
+                        args: vec![],
+                    },
                     TextSegment::Text(b"Yo".to_vec()),
                 ],
             ),
@@ -568,7 +603,7 @@ mod tests {
         expected.extend(4u32.to_be_bytes());
         expected.extend([0x00, 0x0A]);
         assert_eq!(inf1, expected);
-        assert_eq!(dat1, b"\0Hi\0\x1A\x03\x01Yo\0");
+        assert_eq!(dat1, b"\0Hi\0\x1A\x05\x01\x00\x02Yo\0");
         assert_eq!(
             mid1.unwrap(),
             [0, 2, 0x10, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 10]
@@ -619,17 +654,35 @@ mod tests {
         ));
     }
 
-    /// Either would be read back as something else: the run would end at
-    /// the terminator, and the tag would swallow whatever its length byte
-    /// said rather than what it holds.
+    /// The run would be read back ending at the terminator.
     #[test]
-    fn text_the_reader_would_split_differently_is_unwritable() {
+    fn a_text_run_holding_a_terminator_is_unwritable() {
         let terminator = [message(0, 0, &[], &[TextSegment::Text(b"a\0b".to_vec())])];
         assert!(matches!(
             write(&terminator, 4, None),
             Err(Error::Unwritable(_))
         ));
-        let tag = [message(0, 0, &[], &[TextSegment::Tag(vec![0x1A, 4, 0x01])])];
-        assert!(matches!(write(&tag, 4, None), Err(Error::Unwritable(_))));
+    }
+
+    #[test]
+    fn a_tag_too_long_for_its_length_byte_is_unwritable() {
+        let tag = |len| {
+            [message(
+                0,
+                0,
+                &[],
+                &[TextSegment::Tag {
+                    group: 0,
+                    code: 0,
+                    args: vec![0; len],
+                }],
+            )]
+        };
+        let (_, dat1, _) = write(&tag(250), 4, None).unwrap();
+        assert_eq!(dat1[2], 255);
+        assert!(matches!(
+            write(&tag(251), 4, None),
+            Err(Error::Unwritable(_))
+        ));
     }
 }
