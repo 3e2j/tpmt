@@ -45,7 +45,7 @@ fn main() -> ExitCode {
 }
 
 fn discs_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../discs")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../discs")
 }
 
 /// Every disc image in `discs/`, sorted. Empty if the directory is missing.

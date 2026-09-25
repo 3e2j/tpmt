@@ -2,8 +2,9 @@
 resolver = "3"
 members = [
     "crates/tpmt*",
-    "crates/jsystem/jmessage",
-    "crates/jsystem/jkernel/*",
+    "crates/formats/tpmt-*",
+    "crates/formats/jsystem/jmessage",
+    "crates/formats/jsystem/jkernel/*",
 ]
 
 [workspace.package]
@@ -12,15 +13,18 @@ edition = "2024"
 repository = "https://github.com/3e2j/tpmt"
 
 [workspace.dependencies]
+# Formats: the `Format` trait, every crate that implements it, and the golden
+# round trips against the retail discs, all under `crates/formats/`.
+#
 # JSystem: crates implementing a format or subsystem owned by a JSystem
 # module in the decomp (libs/JSystem/src/<Module>), nested to match.
-tpmt-jkernel-arc = { path = "crates/jsystem/jkernel/arc", version = "0.1.0" }
-tpmt-jkernel-compress = { path = "crates/jsystem/jkernel/compress", version = "0.1.0" }
-tpmt-jmessage = { path = "crates/jsystem/jmessage", version = "0.1.0" }
+tpmt-format = { path = "crates/formats/tpmt-format", version = "0.1.0" }
+tpmt-jkernel-arc = { path = "crates/formats/jsystem/jkernel/arc", version = "0.1.0" }
+tpmt-jkernel-compress = { path = "crates/formats/jsystem/jkernel/compress", version = "0.1.0" }
+tpmt-jmessage = { path = "crates/formats/jsystem/jmessage", version = "0.1.0" }
 
 tpmt-bytes = { path = "crates/tpmt-bytes", version = "0.1.0" }
 tpmt-disc = { path = "crates/tpmt-disc", version = "0.1.0" }
-tpmt-format = { path = "crates/tpmt-format", version = "0.1.0" }
 tpmt-pipeline = { path = "crates/tpmt-pipeline", version = "0.1.0" }
 
 thiserror = "2"
