@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rayon::prelude::*;
-use tpmt_disc::{Disc, Entry};
+use tpmt_disc::{Disc, Entry, Span};
 
 use crate::{Result, fs, project};
 
@@ -42,11 +42,8 @@ fn unpack_files(disc: &Disc, base: &Path) -> Result<(BTreeSet<String>, BTreeMap<
 
     let unpacked_files = entries
         .par_iter()
-        .filter_map(|entry| match entry {
-            Entry::File { path, offset, size } => Some((path, *offset, *size)),
-            Entry::Directory { .. } => None,
-        })
-        .map(|(path, offset, size)| unpack_file(disc, base, path, offset, size))
+        .filter_map(|entry| Some((entry.path(), entry.span()?)))
+        .map(|(path, span)| unpack_file(disc, base, path, span))
         .collect::<Result<Vec<_>>>()?;
 
     let yaz0_compressed = unpacked_files
@@ -76,8 +73,8 @@ struct Unpacked {
 
 /// Explodes one disc file into `base/`, hashing each project file as it
 /// lands.
-fn unpack_file(disc: &Disc, base: &Path, path: &str, offset: u64, size: u64) -> Result<Unpacked> {
-    let data = disc.read(offset, size)?;
+fn unpack_file(disc: &Disc, base: &Path, path: &str, span: Span) -> Result<Unpacked> {
+    let data = disc.read(span)?;
     let mut hashes = BTreeMap::new();
     let yaz0_compressed = explode::file(path, &data, &mut |path, data| {
         fs::write(&base.join(path), data)?;

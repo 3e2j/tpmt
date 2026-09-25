@@ -1,7 +1,7 @@
 //! Whole-image tests. Everything here goes in through `Disc::open` on a real
 //! file, because that is the only way the positional reads are exercised at all.
 
-use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, ciso, fst, sys};
+use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, Span, ciso, fst, sys};
 
 // The preamble positions are fixed by the format, the rest is packed in behind
 // it so a test image is kilobytes rather than 1.4 GB. `u32`, as the fields
@@ -151,14 +151,6 @@ fn open(data: &[u8]) -> Result<Disc> {
     disc
 }
 
-/// Where a file's bytes sit: its offset and size. A directory has none.
-fn span(entry: &Entry) -> Option<(u64, u64)> {
-    match entry {
-        Entry::File { offset, size, .. } => Some((*offset, *size)),
-        Entry::Directory { .. } => None,
-    }
-}
-
 fn paths(disc: &Disc) -> Vec<String> {
     disc.entries()
         .unwrap()
@@ -189,8 +181,10 @@ fn walks_the_file_table_depth_first() {
     assert!(matches!(
         entries[SYS_ENTRIES + 2],
         Entry::File {
-            offset: 0x2810,
-            size: 5,
+            span: Span {
+                offset: 0x2810,
+                size: 5
+            },
             ..
         }
     ));
@@ -206,8 +200,8 @@ fn preamble_lengths_come_out_of_their_own_headers() {
     let sizes: Vec<(&str, u64)> = entries[..SYS_ENTRIES]
         .iter()
         .map(|entry| {
-            let (_, size) = span(entry).expect("the preamble is all files");
-            (entry.path(), size)
+            let span = entry.span().expect("the preamble is all files");
+            (entry.path(), span.size)
         })
         .collect();
 
@@ -292,8 +286,8 @@ fn refuses_to_read_past_the_end_of_the_image() {
     let disc = open(&data).unwrap();
 
     let entries = disc.entries().expect("the table itself is still fine");
-    let (offset, size) = span(&entries[SYS_ENTRIES]).expect("a.bin is a file");
-    assert!(matches!(disc.read(offset, size), Err(Error::Read { .. })));
+    let span = entries[SYS_ENTRIES].span().expect("a.bin is a file");
+    assert!(matches!(disc.read(span), Err(Error::Read { .. })));
 }
 
 /// A title long enough to fill its field leaves no terminator, so the read has
@@ -460,8 +454,11 @@ fn a_container_reads_as_the_image_inside_it() {
     assert_eq!(paths(&packed), paths(&raw));
 
     // Out of the hole and into the block behind it.
-    let (at, len) = (BLOCK as u64 * 2 - 4, 12);
-    assert_eq!(packed.read(at, len).unwrap(), raw.read(at, len).unwrap());
+    let span = Span {
+        offset: BLOCK as u64 * 2 - 4,
+        size: 12,
+    };
+    assert_eq!(packed.read(span).unwrap(), raw.read(span).unwrap());
 }
 
 #[test]
@@ -631,14 +628,14 @@ fn a_built_image_reads_back_as_the_project_it_came_from() {
 
     // Every file still holds what it was handed, at the offset the layout said.
     for entry in built.entries().unwrap() {
-        let Entry::File { path, offset, size } = entry else {
+        let Entry::File { path, span } = entry else {
             continue;
         };
         let (_, data) = project(&apploader, &dol, files)
             .into_iter()
             .find(|(at, _)| *at == path)
             .expect("the disc reports only what was built");
-        assert_eq!(built.read(offset, size).unwrap(), data.unwrap(), "{path}");
+        assert_eq!(built.read(span).unwrap(), data.unwrap(), "{path}");
     }
 
     assert_eq!(built.metadata().boot.title, metadata.boot.title);
@@ -662,8 +659,10 @@ fn everything_lands_where_the_layout_rules_put_it() {
     let entries = built.entries().unwrap();
 
     let offset = |at: usize| {
-        let (offset, _) = span(&entries[at]).expect("every entry here is a file");
-        offset
+        entries[at]
+            .span()
+            .expect("every entry here is a file")
+            .offset
     };
 
     // The apploader is where the format fixes it, the executable on the first
@@ -675,9 +674,9 @@ fn everything_lands_where_the_layout_rules_put_it() {
     );
     let fst = (offset(1) + DOL_LEN as u64).next_multiple_of(sys::PREAMBLE_ALIGN);
     assert_eq!(
-        sys::fst_range(&built.read(0, sys::BOOT_LEN as u64).unwrap())
+        sys::fst_range(&built.read(sys::BOOT).unwrap())
             .unwrap()
-            .0,
+            .offset,
         fst
     );
 

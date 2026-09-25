@@ -137,6 +137,13 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A run of bytes on the disc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub offset: u64,
+    pub size: u64,
+}
+
 /// One thing the disc holds, at the path it will be unpacked to.
 ///
 /// Everything is one of these, the preamble included, so a caller can walk the
@@ -145,11 +152,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone)]
 pub enum Entry {
     /// A byte range on the disc.
-    File {
-        path: String,
-        offset: u64,
-        size: u64,
-    },
+    File { path: String, span: Span },
     /// A directory, holding no bytes of its own. Listed so an empty one is not
     /// lost on the way out.
     Directory { path: String },
@@ -160,6 +163,15 @@ impl Entry {
     pub fn path(&self) -> &str {
         match self {
             Self::File { path, .. } | Self::Directory { path } => path,
+        }
+    }
+
+    /// Where a file's bytes sit. A directory has none.
+    #[must_use]
+    pub const fn span(&self) -> Option<Span> {
+        match self {
+            Self::File { span, .. } => Some(*span),
+            Self::Directory { .. } => None,
         }
     }
 }
@@ -208,13 +220,13 @@ impl Disc {
         let len = file.metadata().map_err(open)?.len();
 
         let handle = Handle::open(file, len)?;
-        let boot = read_at(&handle, 0, sys::BOOT_LEN as u64)?;
+        let boot = read_at(&handle, sys::BOOT)?;
         sys::identify(&boot)?;
 
         // The apploader's length is one of the values the header is checked
         // against, so it has to be in hand before the header can be read.
-        let apploader = read_at(&handle, sys::APPLOADER_OFFSET, sys::APPLOADER_HEADER_LEN)?;
-        let bi2 = read_at(&handle, sys::BI2_OFFSET, sys::BI2_LEN as u64)?;
+        let apploader = read_at(&handle, sys::APPLOADER_HEADER)?;
+        let bi2 = read_at(&handle, sys::BI2)?;
         let metadata = Metadata {
             boot: sys::boot(&boot, sys::apploader_len(&apploader)?)?,
             bi2: sys::bi2(&bi2)?,
@@ -237,7 +249,7 @@ impl Disc {
     ///
     /// Returns [`Error::Read`].
     pub fn boot_bin(&self) -> Result<Vec<u8>> {
-        self.read(0, sys::BOOT_LEN as u64)
+        self.read(sys::BOOT)
     }
 
     /// The disc metadata exactly as this disc holds it.
@@ -246,7 +258,7 @@ impl Disc {
     ///
     /// Returns [`Error::Read`].
     pub fn bi2_bin(&self) -> Result<Vec<u8>> {
-        self.read(sys::BI2_OFFSET, sys::BI2_LEN as u64)
+        self.read(sys::BI2)
     }
 
     /// The length of the image, which is not the length of the file it came out
@@ -268,8 +280,8 @@ impl Disc {
     /// # Errors
     ///
     /// Returns [`Error::Read`].
-    pub fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
-        read_at(&self.handle, offset, len)
+    pub fn read(&self, span: Span) -> Result<Vec<u8>> {
+        read_at(&self.handle, span)
     }
 
     /// The SHA-1 of the image, which is what says whether a project's source
@@ -287,9 +299,9 @@ impl Disc {
         let mut hash = Sha1::new();
         let mut at = 0;
         while at < self.handle.len {
-            let take = CHUNK.min(self.handle.len - at);
-            hash.update(&self.read(at, take)?);
-            at += take;
+            let size = CHUNK.min(self.handle.len - at);
+            hash.update(&self.read(Span { offset: at, size })?);
+            at += size;
         }
         Ok(format!("{:x}", hash.finalize()))
     }
@@ -311,8 +323,7 @@ impl Disc {
     }
 
     fn file_entries(&self) -> Result<Vec<Entry>> {
-        let boot = self.read(0, sys::BOOT_LEN as u64)?;
-        let (offset, size) = sys::fst_range(&boot)?;
-        fst::walk(&self.read(offset, size)?)
+        let boot = self.read(sys::BOOT)?;
+        fst::walk(&self.read(sys::fst_range(&boot)?)?)
     }
 }

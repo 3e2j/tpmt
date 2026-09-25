@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use tpmt_bytes::{Reader, Writer};
 
-use crate::{Disc, Entry, Error, Result};
+use crate::{Disc, Entry, Error, Result, Span};
 
 // Boot header. The magic is what makes this a GameCube disc rather than
 // anything else that happens to be 1.4 GB.
@@ -76,6 +76,19 @@ pub const APPLOADER_OFFSET: u64 = 0x2440;
 pub const APPLOADER_HEADER_LEN: u64 = 0x20;
 pub const APPLOADER_SIZE_FIELD: usize = 0x14;
 pub const APPLOADER_TRAILER_FIELD: usize = 0x18;
+
+pub const BOOT: Span = Span {
+    offset: 0,
+    size: BOOT_LEN as u64,
+};
+pub const BI2: Span = Span {
+    offset: BI2_OFFSET,
+    size: BI2_LEN as u64,
+};
+pub const APPLOADER_HEADER: Span = Span {
+    offset: APPLOADER_OFFSET,
+    size: APPLOADER_HEADER_LEN,
+};
 
 pub const BI2_SIMULATED_MEMORY_SIZE: usize = 0x04;
 pub const BI2_DEBUG_FLAG: usize = 0x0C;
@@ -469,12 +482,12 @@ fn text(raw: &[u8], what: &'static str) -> Result<String> {
 }
 
 /// Where the file table sits, out of the boot header.
-pub fn fst_range(boot: &[u8]) -> Result<(u64, u64)> {
+pub fn fst_range(boot: &[u8]) -> Result<Span> {
     let reader = Reader::new(boot);
-    Ok((
-        reader.u32_at(FST_OFFSET_FIELD)? as u64,
-        reader.u32_at(FST_SIZE_FIELD)? as u64,
-    ))
+    Ok(Span {
+        offset: reader.u32_at(FST_OFFSET_FIELD)? as u64,
+        size: reader.u32_at(FST_SIZE_FIELD)? as u64,
+    })
 }
 
 /// The apploader states its own length in two parts, neither of which counts
@@ -492,9 +505,9 @@ pub fn apploader_len(header: &[u8]) -> Result<u64> {
 /// The other three are not files. The boot header and the disc metadata are a
 /// few values each, kept as `Metadata`. `fst` derives the file table.
 pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
-    let boot = disc.read(0, BOOT_LEN as u64)?;
+    let boot = disc.read(BOOT)?;
     let dol_offset = Reader::new(&boot).u32_at(DOL_OFFSET_FIELD)? as u64;
-    let (fst_offset, _) = fst_range(&boot)?;
+    let fst_offset = fst_range(&boot)?.offset;
 
     // A game disc with nowhere to boot from is a header that did not survive
     // whatever produced it.
@@ -511,11 +524,10 @@ pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
         ));
     }
 
-    let apploader = disc.read(APPLOADER_OFFSET, APPLOADER_HEADER_LEN)?;
+    let apploader = disc.read(APPLOADER_HEADER)?;
     let entry = |path: &str, offset, size| Entry::File {
         path: path.to_string(),
-        offset,
-        size,
+        span: Span { offset, size },
     };
 
     Ok(vec![
@@ -528,7 +540,10 @@ pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
 /// offsets and 18 lengths sit in two runs in the header, in step with each
 /// other, so a section that is not present reads as zero and reaches nowhere.
 fn dol_len(disc: &Disc, offset: u64) -> Result<u64> {
-    let header = disc.read(offset, DOL_HEADER_LEN)?;
+    let header = disc.read(Span {
+        offset,
+        size: DOL_HEADER_LEN,
+    })?;
     let reader = Reader::new(&header);
 
     let mut end = DOL_HEADER_LEN;

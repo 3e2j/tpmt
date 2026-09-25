@@ -18,7 +18,7 @@ use std::io::Write;
 
 use sha1::{Digest, Sha1};
 
-use crate::{Entry, Error, Item, Metadata, Result, fst, sys};
+use crate::{Entry, Error, Item, Metadata, Result, Span, fst, sys};
 
 /// A disc laid out but not yet written.
 pub struct Layout {
@@ -96,13 +96,17 @@ impl Layout {
         let mut entries = vec![
             Entry::File {
                 path: sys::APPLOADER_PATH.to_string(),
-                offset: sys::APPLOADER_OFFSET,
-                size: apploader,
+                span: Span {
+                    offset: sys::APPLOADER_OFFSET,
+                    size: apploader,
+                },
             },
             Entry::File {
                 path: sys::DOL_PATH.to_string(),
-                offset: dol_offset,
-                size: dol,
+                span: Span {
+                    offset: dol_offset,
+                    size: dol,
+                },
             },
         ];
 
@@ -129,7 +133,10 @@ impl Layout {
                     // `offset` fits a `u32` the same way `last` does.
                     #[allow(clippy::cast_possible_truncation)]
                     bytes.u32_at(offset_field, offset as u32);
-                    Entry::File { path, offset, size }
+                    Entry::File {
+                        path,
+                        span: Span { offset, size },
+                    }
                 }
             });
         }
@@ -240,12 +247,12 @@ impl<W: Write> Image<'_, W> {
                 .get(self.next)
                 .ok_or(Error::Mismatch("more files than the layout holds"))?;
             self.next += 1;
-            if let Entry::File { path, offset, size } = entry {
-                break (path, *offset, *size);
+            if let Entry::File { path, span } = entry {
+                break (path, *span);
             }
         };
 
-        let (path, offset, size) = file;
+        let (path, Span { offset, size }) = file;
         if bytes.len() as u64 != size {
             return Err(Error::WrongSize {
                 path: path.clone(),

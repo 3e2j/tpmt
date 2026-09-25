@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::io;
 
-use crate::{Error, Result, ciso};
+use crate::{Error, Result, Span, ciso};
 
 /// Where an offset on the disc lands in the file holding it.
 enum Layout {
@@ -39,11 +39,12 @@ impl Handle {
     /// than being one.
     pub(crate) fn open(file: File, len: u64) -> Result<Self> {
         let handle = Self::raw(file, len);
-        if read_at(&handle, 0, ciso::MAGIC.len() as u64)? != ciso::MAGIC {
+        let head = |size| read_at(&handle, Span { offset: 0, size });
+        if head(ciso::MAGIC.len() as u64)? != ciso::MAGIC {
             return Ok(handle);
         }
 
-        let map = ciso::Map::read(&read_at(&handle, 0, ciso::HEADER_LEN)?, len)?;
+        let map = ciso::Map::read(&head(ciso::HEADER_LEN)?, len)?;
         Ok(Self {
             len: map.image_len(),
             layout: Layout::Ciso(map),
@@ -109,7 +110,8 @@ impl Handle {
     }
 }
 
-pub fn read_at(handle: &Handle, offset: u64, len: u64) -> Result<Vec<u8>> {
+pub fn read_at(handle: &Handle, span: Span) -> Result<Vec<u8>> {
+    let Span { offset, size: len } = span;
     // Checked before the buffer is allocated, not by the read itself. Lengths
     // come out of the file table, and a corrupt one asks for up to 4 GB before
     // the read that would have refused it ever runs.

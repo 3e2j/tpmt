@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use tpmt_disc::{Disc, Entry, Item, Layout};
+use tpmt_disc::{Disc, Entry, Item, Layout, Span};
 
 use crate::build::{Job, rebuild};
 use crate::project::metadata::Source;
@@ -48,7 +48,7 @@ pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
         };
 
         let bytes = match sources.get(at.as_str()) {
-            Some(Bytes::Disc { offset, size }) => disc.read(*offset, *size)?,
+            Some(Bytes::Disc(span)) => disc.read(*span)?,
             Some(Bytes::Staged { .. }) => fs::read(&staged.join(at))?,
             None => return Err(Error::MissingFile(at.clone())),
         };
@@ -64,7 +64,7 @@ pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
 enum Bytes {
     /// Untouched, so read straight off the source disc. The layout holds the
     /// offset it is going to, which is not this one.
-    Disc { offset: u64, size: u64 },
+    Disc(Span),
     /// Rebuilt, and waiting under the staging directory.
     Staged { size: u64 },
 }
@@ -72,7 +72,7 @@ enum Bytes {
 impl Bytes {
     const fn size(&self) -> u64 {
         match *self {
-            Self::Disc { size, .. } | Self::Staged { size } => size,
+            Self::Disc(Span { size, .. }) | Self::Staged { size } => size,
         }
     }
 }
@@ -89,9 +89,8 @@ fn sources<'a>(
 ) -> Result<BTreeMap<&'a str, Bytes>> {
     let mut sources = BTreeMap::new();
     for entry in original {
-        if let Entry::File { path, offset, size } = entry {
-            let (offset, size) = (*offset, *size);
-            sources.insert(path.as_str(), Bytes::Disc { offset, size });
+        if let Entry::File { path, span } = entry {
+            sources.insert(path.as_str(), Bytes::Disc(*span));
         }
     }
     for path in changed {

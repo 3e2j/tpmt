@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use tpmt_bytes::{Reader, Writer};
 
-use crate::{Entry, Error, Item, Result};
+use crate::{Entry, Error, Item, Result, Span};
 
 // A flags-and-name word, then two fields whose meaning depends on whether the
 // entry is a directory.
@@ -67,8 +67,10 @@ pub fn walk(fst: &[u8]) -> Result<Vec<Entry>> {
         } else {
             entries.push(Entry::File {
                 path,
-                offset: record.offset_or_parent as u64,
-                size: record.end_or_size as u64,
+                span: Span {
+                    offset: record.offset_or_parent as u64,
+                    size: record.end_or_size as u64,
+                },
             });
         }
     }
