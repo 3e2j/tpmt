@@ -84,6 +84,7 @@ pub enum Node {
 }
 
 impl Node {
+    #[must_use]
     pub const fn id(&self) -> NodeId {
         match self {
             Self::Text { id, .. } | Self::Branch { id, .. } | Self::Event { id, .. } => *id,
