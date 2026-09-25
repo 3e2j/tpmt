@@ -1,0 +1,278 @@
+//! Inline text tags: what each group and code does, and what arguments it
+//! takes.
+//!
+//! A tag is `0x1A`, a length byte covering the whole tag, a u8 group, a u16
+//! code, then the arguments.
+
+use super::COLORS;
+use crate::Entry;
+
+/// What a tag's argument bytes hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Args {
+    None,
+    /// One byte, which some tags carry but no handler reads.
+    U8,
+    U16,
+    U32,
+    /// A u8, then the reading as 2-byte characters. The renderer keeps the
+    /// u8, likely the base character count. The reading can end on half a
+    /// character.
+    Ruby,
+}
+
+impl Args {
+    /// How many argument bytes a tag with these carries, or `None` for a
+    /// length that varies.
+    #[must_use]
+    pub const fn fixed_len(self) -> Option<usize> {
+        match self {
+            Self::None => Some(0),
+            Self::U8 => Some(1),
+            Self::U16 => Some(2),
+            Self::U32 => Some(4),
+            Self::Ruby => None,
+        }
+    }
+}
+
+/// Tag groups, the byte after the length.
+pub mod group {
+    pub const CONTROL: u8 = 0;
+    /// The code's low byte is a sound effect id.
+    pub const SOUND: u8 = 1;
+    /// The code's low byte goes to `dComIfGp_setMesgCameraTagInfo`.
+    pub const CAMERA: u8 = 2;
+    pub const WII: u8 = 3;
+    pub const SYMBOL: u8 = 4;
+    pub const VALUE: u8 = 5;
+    pub const PAL: u8 = 6;
+    pub const FORMAT: u8 = 255;
+}
+
+/// Formatting codes, in [`group::FORMAT`].
+pub mod format {
+    pub const COLOR: u16 = 0;
+    pub const SCALE: u16 = 1;
+    pub const RUBY: u16 = 2;
+}
+
+/// One kind of tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tag {
+    pub group: u8,
+    /// For [`group::SOUND`] and [`group::CAMERA`], 0 and meaningless: the code
+    /// is the tag's value, not its kind.
+    pub code: u16,
+    pub name: &'static str,
+    pub args: Args,
+    pub notes: &'static str,
+    /// The table naming the argument's values, for a 1-byte argument that has
+    /// one.
+    pub values: Option<&'static [Entry<u8>]>,
+}
+
+const fn tag(group: u8, code: u16, name: &'static str, args: Args) -> Tag {
+    Tag {
+        group,
+        code,
+        name,
+        args,
+        notes: "",
+        values: None,
+    }
+}
+
+impl Tag {
+    const fn notes(self, notes: &'static str) -> Self {
+        Self { notes, ..self }
+    }
+
+    const fn values(self, values: &'static [Entry<u8>]) -> Self {
+        Self {
+            values: Some(values),
+            ..self
+        }
+    }
+}
+
+/// The tag for `group` and `code`, or `None` when nothing names it. Any code
+/// in [`group::SOUND`] or [`group::CAMERA`] is that group's one entry.
+#[must_use]
+pub fn find(group: u8, code: u16) -> Option<&'static Tag> {
+    match group {
+        group::SOUND => Some(&SOUND),
+        group::CAMERA => Some(&CAMERA),
+        _ => TAGS
+            .binary_search_by_key(&(group, code), |tag| (tag.group, tag.code))
+            .ok()
+            .and_then(|at| TAGS.get(at)),
+    }
+}
+
+pub static SOUND: Tag =
+    tag(group::SOUND, 0, "Sound", Args::None).notes("Plays the code's sound effect at the speaker");
+
+pub static CAMERA: Tag =
+    tag(group::CAMERA, 0, "Camera", Args::None).notes("Passes the code to the talk camera");
+
+/// Every tag kind outside [`group::SOUND`] and [`group::CAMERA`], sorted by
+/// group then code so [`find`] can binary search.
+#[rustfmt::skip]
+pub static TAGS: &[Tag] = &[
+    tag(0,   0,  "Player name",            Args::None).notes("Inserts the player's name"),
+    tag(0,   1,  "Instant",                Args::None).notes("Rest of the page appears at once"),
+    tag(0,   2,  "Type",                   Args::None).notes("Back to per-character typing"),
+    tag(0,   3,  "Auto box (unknown)",     Args::U16) .notes("Handled the same as auto box"),
+    tag(0,   4,  "Auto box",               Args::U16) .notes("Page advances by itself after the frames. 0 advances at once"),
+    tag(0,   5,  "Box at most",            Args::U16) .notes("Page advances after the frames, or earlier on A"),
+    tag(0,   6,  "Unknown pause",          Args::U16) .notes("Pauses typing, and sets the per-character pause to the frames"),
+    tag(0,   7,  "Pause",                  Args::U16) .notes("Pauses typing for the frames"),
+    tag(0,   8,  "Select 2",               Args::U8)  .notes("Two-way choice option. 1 makes it the cursor's start"),
+    tag(0,   9,  "Select 3",               Args::U8)  .notes("Three-way choice option. 1 makes it the cursor's start"),
+    tag(0,   10, "A button",               Args::None),
+    tag(0,   11, "B button",               Args::None),
+    tag(0,   12, "C stick",                Args::None),
+    tag(0,   13, "L button",               Args::None),
+    tag(0,   14, "R button",               Args::None),
+    tag(0,   15, "X button",               Args::None),
+    tag(0,   16, "Y button",               Args::None),
+    tag(0,   17, "Z button",               Args::None),
+    tag(0,   18, "D-pad",                  Args::None),
+    tag(0,   19, "Stick, all directions",  Args::None),
+    tag(0,   20, "Left arrow",             Args::None),
+    tag(0,   21, "Right arrow",            Args::None),
+    tag(0,   22, "Up arrow",               Args::None),
+    tag(0,   23, "Down arrow",             Args::None),
+    tag(0,   24, "Stick up",               Args::None),
+    tag(0,   25, "Stick down",             Args::None),
+    tag(0,   26, "Stick left",             Args::None),
+    tag(0,   27, "Stick right",            Args::None),
+    tag(0,   28, "Stick vertical",         Args::None),
+    tag(0,   29, "Stick horizontal",       Args::None),
+    tag(0,   30, "Inline select 2, next",  Args::U8)  .notes("Second option of an inline two-way choice"),
+    tag(0,   31, "Inline select 2, first", Args::U8)  .notes("First option of an inline two-way choice"),
+    tag(0,   32, "Await choice",           Args::None).notes("Line break, then shows the choice options"),
+    tag(0,   33, "Unknown name",           Args::None).notes("Calls `do_name1`, which does nothing"),
+    tag(0,   34, "Horse name",             Args::None).notes("Inserts Epona's name"),
+    tag(0,   35, "Red target",             Args::None),
+    tag(0,   36, "Yellow target",          Args::None),
+    tag(0,   37, "Input value",            Args::U32) .notes("Number entry prompt. 1 also sets temp flag label 80"),
+    tag(0,   38, "Acknowledge",            Args::None).notes("Waits for a button before continuing"),
+    tag(0,   39, "A button, star",         Args::None),
+    tag(0,   40, "Demo box",               Args::U32) .notes("Box closes after the frames (cutscene captions)"),
+    tag(0,   41, "Scent name",             Args::None).notes("Inserts the current scent's name"),
+    tag(0,   42, "White target",           Args::None),
+    tag(0,   43, "Portal name",            Args::None).notes("Inserts a warp portal's name"),
+    tag(0,   44, "Warp icon",              Args::None),
+    tag(0,   45, "Bomb name",              Args::None).notes("Inserts the selected bomb type's name"),
+    tag(0,   46, "X/Y buttons",            Args::None),
+    tag(0,   47, "Y/X buttons",            Args::None),
+    tag(0,   48, "Bomb bag icon",          Args::U8)  .notes("Adds bag `arg - 1` to the bomb selection"),
+    tag(0,   49, "Bomb count",             Args::None).notes("Inserts the selected bomb count"),
+    tag(0,   50, "Bomb price",             Args::None).notes("Inserts the selected bomb price"),
+    tag(0,   51, "Inline select 3, next",  Args::U8)  .notes("Later option of an inline three-way choice"),
+    tag(0,   52, "Inline select 3, first", Args::U8)  .notes("First option of an inline three-way choice"),
+    tag(0,   53, "Unknown",                Args::None),
+    tag(0,   54, "Box at least",           Args::U16) .notes("A can't advance the page until the frames pass"),
+    tag(0,   55, "Bomb max",               Args::U8)  .notes("Bag capacity: 0 bombs, 1 water bombs, 2 bomblings"),
+    tag(0,   56, "Arrow max",              Args::None).notes("Inserts the quiver capacity"),
+    tag(0,   57, "Heart",                  Args::None),
+    tag(0,   58, "Quaver",                 Args::None).notes("Music note"),
+    tag(0,   59, "Insect name",            Args::None).notes("Inserts a golden bug's name"),
+    tag(0,   60, "Letter name",            Args::None).notes("Inserts a letter's name (query 47 stores it)"),
+    tag(0,   61, "Line down",              Args::None),
+    tag(0,   62, "Letter page",            Args::None).notes("Inserts the current letter page"),
+    tag(0,   63, "Letter page count",      Args::None).notes("Inserts the letter's page count"),
+    tag(3,   0,  "Message id override",    Args::U32),
+    tag(3,   1,  "Wii A",                  Args::None),
+    tag(3,   2,  "Wii B",                  Args::None),
+    tag(3,   3,  "Wii Home",               Args::None),
+    tag(3,   4,  "Wii minus",              Args::None),
+    tag(3,   5,  "Wii plus",               Args::None),
+    tag(3,   6,  "Wii 1",                  Args::None),
+    tag(3,   7,  "Wii 2",                  Args::None),
+    tag(3,   8,  "Wii D-pad, item",        Args::None),
+    tag(3,   9,  "Wii D-pad up",           Args::None),
+    tag(3,   10, "Wii D-pad down",         Args::None),
+    tag(3,   11, "Wii D-pad horizontal",   Args::None),
+    tag(3,   12, "Wii D-pad right",        Args::None),
+    tag(3,   13, "Wii D-pad left",         Args::None),
+    tag(3,   14, "Wii Remote",             Args::None),
+    tag(3,   15, "Wii reticule",           Args::None),
+    tag(3,   16, "Nunchuk",                Args::None),
+    tag(3,   17, "Wii Remote, second",     Args::None),
+    tag(3,   18, "Wii fairy",              Args::None),
+    tag(3,   19, "Wii C",                  Args::None),
+    tag(3,   20, "Wii Z",                  Args::None),
+    tag(4,   0,  "Dollar sign",            Args::None).notes("$"),
+    tag(4,   1,  "Backslash",              Args::None).notes("\\"),
+    tag(4,   2,  "At mark",                Args::None).notes("@"),
+    tag(4,   3,  "Sharp",                  Args::None),
+    tag(4,   4,  "Flat",                   Args::None),
+    tag(4,   5,  "Square root",            Args::None),
+    tag(4,   6,  "Percent",                Args::None).notes("%"),
+    tag(4,   7,  "Hectare",                Args::None),
+    tag(4,   8,  "Are",                    Args::None),
+    tag(4,   9,  "Litre",                  Args::None),
+    tag(4,   10, "Watt",                   Args::None),
+    tag(4,   11, "Calorie",                Args::None),
+    tag(4,   12, "Dollar",                 Args::None),
+    tag(4,   13, "Cent",                   Args::None),
+    tag(5,   0,  "Time",                   Args::U8)  .notes("0 message timer, 2 race time, else the meter timer"),
+    tag(5,   1,  "Count",                  Args::None).notes("Message count number"),
+    tag(5,   2,  "Count, second unit",     Args::None).notes("Message count number, unit 1"),
+    tag(5,   3,  "Insect info",            Args::U8)  .notes("0 golden bugs found, else bugs left of 24"),
+    tag(5,   4,  "Unknown value",          Args::None).notes("Unit 3 with value 0"),
+    tag(5,   5,  "Tears needed",           Args::None).notes("Tears of light still needed"),
+    tag(5,   6,  "Unknown register",       Args::None).notes("20 minus event register 0xFF1F"),
+    tag(5,   7,  "River points",           Args::None).notes("Current count"),
+    tag(5,   8,  "Fish length",            Args::None).notes("Message count number"),
+    tag(5,   9,  "Donations remaining",    Args::U32) .notes("The argument minus donations so far"),
+    tag(5,   10, "New letter count",       Args::None),
+    tag(5,   11, "Poe souls",              Args::None),
+    tag(5,   12, "Balloon score",          Args::U8)  .notes("0 message count number, else the balloon score"),
+    tag(5,   13, "Fish count",             Args::None).notes("Message count number"),
+    tag(5,   14, "Rollgoal level",         Args::None).notes("Message count number"),
+    tag(6,   0,  "Player genitive",        Args::None).notes("Player's name in the possessive"),
+    tag(6,   1,  "Horse genitive",         Args::None).notes("Epona's name in the possessive"),
+    tag(6,   2,  "Male icon",              Args::None),
+    tag(6,   3,  "Female icon",            Args::None),
+    tag(6,   4,  "Star icon",              Args::None),
+    tag(6,   5,  "Reference mark",         Args::None),
+    tag(6,   6,  "Thin left arrow",        Args::None),
+    tag(6,   7,  "Thin right arrow",       Args::None),
+    tag(6,   8,  "Thin up arrow",          Args::None),
+    tag(6,   9,  "Thin down arrow",        Args::None),
+    tag(6,   10, "Bullet",                 Args::None),
+    tag(6,   11, "Bullet space",           Args::None),
+    tag(255, 0,  "Color",                  Args::U8)  .values(COLORS).notes("Text color from here on, see `COLORS`"),
+    tag(255, 1,  "Scale",                  Args::U16) .notes("Text scale percent from here on. 100 is normal"),
+    tag(255, 2,  "Ruby",                   Args::Ruby).notes("Furigana. The argument is the reading"),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_table_is_sorted_for_binary_search() {
+        assert!(TAGS.is_sorted_by_key(|tag| (tag.group, tag.code)));
+        assert!(
+            TAGS.windows(2)
+                .all(|pair| (pair[0].group, pair[0].code) != (pair[1].group, pair[1].code))
+        );
+    }
+
+    #[test]
+    fn sound_and_camera_match_any_code() {
+        assert_eq!(find(group::SOUND, 20), Some(&SOUND));
+        assert_eq!(find(group::CAMERA, 7), Some(&CAMERA));
+    }
+
+    #[test]
+    fn an_unnamed_code_is_none() {
+        assert_eq!(find(group::CONTROL, 64), None);
+        assert_eq!(find(7, 0), None);
+    }
+}

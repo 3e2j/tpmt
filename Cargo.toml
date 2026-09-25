@@ -26,6 +26,7 @@ tpmt-jmessage = { path = "crates/formats/jsystem/jmessage", version = "0.1.0" }
 
 tpmt-bytes = { path = "crates/tpmt-bytes", version = "0.1.0" }
 tpmt-disc = { path = "crates/tpmt-disc", version = "0.1.0" }
+tpmt-game = { path = "crates/tpmt-game", version = "0.1.0" }
 tpmt-pipeline = { path = "crates/tpmt-pipeline", version = "0.1.0" }
 
 thiserror = "2"

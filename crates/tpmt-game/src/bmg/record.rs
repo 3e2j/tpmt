@@ -1,0 +1,128 @@
+//! The INF1 record, `JMSMesgEntry_c`: how one message is displayed.
+//!
+//! `zel_unit.bmg` uses a different record, which `dMsgUnit_c` reads with its
+//! own struct. [`FIELDS`] names the 20-byte record only.
+
+use crate::{Entry, entry};
+
+/// How wide the record [`FIELDS`] describes is, text offset included.
+pub const LEN: u16 = 20;
+
+/// One field of the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    /// Byte offset into the whole record, where 0x00 is the text offset.
+    pub offset: usize,
+    /// 1 or 2 bytes, big-endian.
+    pub len: usize,
+    pub name: &'static str,
+    pub notes: &'static str,
+    /// The table naming the field's values, for a 1-byte field that has one.
+    pub values: Option<&'static [Entry<u8>]>,
+}
+
+const fn field(offset: usize, len: usize, name: &'static str) -> Field {
+    Field {
+        offset,
+        len,
+        name,
+        notes: "",
+        values: None,
+    }
+}
+
+impl Field {
+    const fn notes(self, notes: &'static str) -> Self {
+        Self { notes, ..self }
+    }
+
+    const fn values(self, values: &'static [Entry<u8>]) -> Self {
+        Self {
+            values: Some(values),
+            ..self
+        }
+    }
+}
+
+/// Every field after the 4-byte text offset, in record order.
+#[rustfmt::skip]
+pub static FIELDS: &[Field] = &[
+    field(0x04, 2, "Message id")    .notes("Id the game looks the message up by. Same as the MID1 id"),
+    field(0x06, 2, "Event label")   .notes("`saveBitLabels` index set when the message displays"),
+    field(0x08, 1, "Speaker")       .notes("`Z2SpeechMgr2` voice bank id"),
+    field(0x09, 1, "Box kind")      .values(BOX_KINDS),
+    field(0x0A, 1, "Draw type")     .values(DRAW_TYPES).notes("Text pacing"),
+    field(0x0B, 1, "Box position")  .values(BOX_POSITIONS),
+    field(0x0C, 1, "Item")          .notes("Unused. Legacy `dItemNo`, 0xFF for none"),
+    field(0x0D, 1, "Line alignment").values(LINE_ALIGNMENTS).notes("Also copied to `jmessage_tReference::mForm`"),
+    field(0x0E, 1, "Speaker mood")  .notes("Grunt emotion index for the voice bank"),
+    field(0x0F, 1, "Camera")        .notes("1 to 10 talk-actor slot, 11 and up talk-camera style"),
+    field(0x10, 1, "Talk animation").notes("NPC talk motion attribute"),
+    field(0x11, 1, "Face animation").notes("NPC talk face attribute"),
+    field(0x12, 1, "Lines per page").notes("Unused. The runtime uses `getLineMax()`"),
+    field(0x13, 1, "Padding"),
+];
+
+/// Screen class, see `dMsgObject_c::talkStartInit`.
+#[rustfmt::skip]
+pub static BOX_KINDS: &[Entry<u8>] = &[
+    entry(0,  "Talk")        .notes("Ordinary dialogue box"),
+    entry(1,  "Demo caption").notes("Boxless cutscene caption"),
+    entry(2,  "Sign")        .notes("Signs and posted notices"),
+    entry(5,  "Plain")       .notes("Boxless system text"),
+    entry(6,  "Kanban")      .notes("Signboard screen class, unused"),
+    entry(7,  "Staff roll"),
+    entry(8,  "Light spirit").notes("Spirit text window and glow"),
+    entry(9,  "Item get")    .notes("Centered item-get box"),
+    entry(11, "Item name")   .notes("UI string fetch, no box"),
+    entry(12, "Place name")  .notes("Area intro banner"),
+    entry(13, "Midna")       .notes("Midna dialogue colors and glow"),
+    entry(14, "Animal")      .notes("Wolf-form animal speech glow"),
+    entry(15, "Notice")      .notes("Floating gameplay notice, can't be used during dialogue"),
+    entry(16, "Save")        .notes("Save and memory card prompts"),
+    entry(17, "Howl")        .notes("Howling stone UI"),
+    entry(19, "Boss name")   .notes("Boss intro banner"),
+];
+
+/// Text pacing, see `jmessage_tSequenceProcessor::do_begin`.
+#[rustfmt::skip]
+pub static DRAW_TYPES: &[Entry<u8>] = &[
+    entry(0, "Typed")         .notes("Types per character, A skips typing"),
+    entry(1, "Instant")       .notes("Whole page at once (menus, prompts)"),
+    entry(2, "Typed, no skip").notes("Types per character, A does not skip"),
+    entry(3, "Fade")          .notes("Page fades in"),
+    entry(4, "UI name")       .notes("UI string fetch (item names), no box pacing"),
+    entry(5, "Typed slow")    .notes("Weighted slow typing (light spirit speech)"),
+    entry(7, "UI action")     .notes("UI string fetch (action button labels)"),
+    entry(9, "Fade slow")     .notes("Slow page fade (staff credits)"),
+];
+
+/// See `dMsgObject_c::fukiPosCalc`.
+#[rustfmt::skip]
+pub static BOX_POSITIONS: &[Entry<u8>] = &[
+    entry(0, "Bottom"),
+    entry(1, "Top"),
+    entry(2, "Middle"),
+    entry(3, "Auto")  .notes("Top or bottom, whichever avoids the speaker on screen"),
+];
+
+#[rustfmt::skip]
+pub static LINE_ALIGNMENTS: &[Entry<u8>] = &[
+    entry(0, "Centered").notes("JP only"),
+    entry(1, "Left"),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fields tile the record after the text offset, with no gap or
+    /// overlap.
+    #[test]
+    fn the_fields_cover_the_record() {
+        let end = FIELDS.iter().try_fold(4, |at, field| {
+            (field.offset == at).then_some(at + field.len)
+        });
+        assert_eq!(end, Some(LEN as usize));
+    }
+}

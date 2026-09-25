@@ -1,0 +1,10 @@
+[package]
+name = "tpmt-game"
+description = "What the raw values in Twilight Princess's files mean, shared by every format that stores them."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
