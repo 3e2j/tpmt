@@ -39,6 +39,11 @@ pub enum MessageEdit {
     Remove(MessageId),
 }
 
+// TODO: text changes only whole, so retagging one tag sends every segment and
+// undo keeps the old list in full. A `Segment(ListEdit<TextSegment>)` change
+// would edit one segment at a time, like `NodeChange::Answer` and
+// `FlowEdit::Root` do for their lists.
+
 /// A new value for one part of a message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageChange {
