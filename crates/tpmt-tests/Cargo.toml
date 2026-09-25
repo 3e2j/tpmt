@@ -7,19 +7,20 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
-[dev-dependencies]
-tpmt-disc.workspace = true
-tpmt-format.workspace = true
-tpmt-jmessage.workspace = true
+[dependencies]
 tpmt-pipeline.workspace = true
 
-rayon.workspace = true
 libtest-mimic.workspace = true
+rayon.workspace = true
 
-# Its own `main`, so it can make one trial per image in `discs/`, or an
-# ignored one when there are none.
+[dev-dependencies]
+tpmt-format.workspace = true
+tpmt-jmessage.workspace = true
+
+# Its own `main`, so it can make one trial per check and image in
+# `discs/`, or an ignored one per check when there are none.
 [[test]]
-name = "golden"
+name = "formats"
 harness = false
 
 [lints]

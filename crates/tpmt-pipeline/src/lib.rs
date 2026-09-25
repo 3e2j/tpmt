@@ -35,7 +35,7 @@ mod unpack;
 
 pub use build::{Built, EncodeError, Target};
 pub use progress::{Progress, Snapshot, Step, Unit};
-pub use project::{discover, is_project};
+pub use project::{base, discover, is_project};
 pub use tpmt_format::FileKind;
 pub use unpack::explode::{DecodeError, file as explode};
 

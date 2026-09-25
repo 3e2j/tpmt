@@ -542,7 +542,6 @@ version = "0.1.0"
 dependencies = [
  "libtest-mimic",
  "rayon",
- "tpmt-disc",
  "tpmt-format",
  "tpmt-jmessage",
  "tpmt-pipeline",

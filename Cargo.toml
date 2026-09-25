@@ -14,8 +14,8 @@ repository = "https://github.com/3e2j/tpmt"
 license = "CC0-1.0"
 
 [workspace.dependencies]
-# Formats: the `Format` trait, every crate that implements it, and the golden
-# round trips against the retail discs, all under `crates/formats/`.
+# Formats: the `Format` trait and every crate that implements it, all under
+# `crates/formats/`.
 #
 # JSystem: crates implementing a format or subsystem owned by a JSystem
 # module in the decomp (libs/JSystem/src/<Module>), nested to match.
