@@ -4,6 +4,7 @@ description = "Tests that read the retail discs in `discs/`. Nothing depends on 
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 publish = false
 
 [dev-dependencies]

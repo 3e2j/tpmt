@@ -4,6 +4,7 @@ description = "Bounds-checked big-endian byte cursors."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 thiserror.workspace = true

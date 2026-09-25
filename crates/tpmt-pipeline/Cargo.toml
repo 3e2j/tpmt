@@ -4,6 +4,7 @@ description = "Unpacking a disc to a mod folder and building it back."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 # Every format the toolkit understands. This crate is the conveyor belt: it

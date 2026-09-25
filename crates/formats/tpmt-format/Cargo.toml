@@ -4,6 +4,7 @@ description = "The trait every file format crate implements."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 # Deliberately dependency-free
 [dependencies]

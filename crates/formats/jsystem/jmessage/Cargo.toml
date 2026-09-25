@@ -4,6 +4,7 @@ description = "JMessage: BMG binary message files."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 tpmt-bytes.workspace = true

@@ -4,6 +4,7 @@ description = "Modding toolkit for The Legend of Zelda: Twilight Princess."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
+license.workspace = true
 
 [dependencies]
 tpmt-pipeline.workspace = true

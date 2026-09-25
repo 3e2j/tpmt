@@ -11,6 +11,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/3e2j/tpmt"
+license = "CC0-1.0"
 
 [workspace.dependencies]
 # Formats: the `Format` trait, every crate that implements it, and the golden
