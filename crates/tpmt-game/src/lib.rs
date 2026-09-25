@@ -1,10 +1,12 @@
-//! What the game's values mean, as static tables.
+//! What the game's values and layouts mean. Most of it is static tables of
+//! named values. The rest is facts a table can't hold, like how many bytes a
+//! value takes.
 //!
 //! Split by game subsystem, not by file format, because formats share values.
-//! One item id can appear in several file formats. Every table is a
-//! slice a picker can list whole, and every lookup returns `Option`, since a
-//! mod can change the game's tables and an unknown value should show as its
-//! raw number rather than fail.
+//!
+//! Every table is a slice a picker can list whole, and every lookup returns
+//! `Option`, since a mod can change the game's tables and an unknown value
+//! should show as its raw number rather than fail.
 //!
 //! A table is written as one constructor call per row. The constructor takes
 //! the columns every row has, and a method sets each column a row can leave
