@@ -13,6 +13,7 @@ use std::ops::Range;
 
 use tpmt_format::Format;
 use tpmt_game::bmg::record::{self, Field};
+use tpmt_game::bmg::tag::{self, Tag};
 use tpmt_jmessage::{Bmg, Flow, Message, MessageId, Node, NodeId, Root, TextSegment};
 
 use crate::Document;
@@ -23,6 +24,9 @@ const TEXT_OFFSET_LEN: usize = 4;
 
 /// Where a file with a MID1 repeats each message's id in its attributes.
 const RECORD_ID: Range<usize> = 0..2;
+
+/// What opens every tag.
+const TAG_OPENER: u8 = 0x1A;
 
 /// One change to a message file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -717,4 +721,34 @@ pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<(
         _ => return None,
     }
     Some(())
+}
+
+/// A tag's parts, as `JMessage::TProcessor::on_tag_` reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TagParts<'a> {
+    pub group: u8,
+    pub code: u16,
+    pub args: &'a [u8],
+}
+
+impl TagParts<'_> {
+    /// What the game does with the tag, or `None` when nothing names it.
+    #[must_use]
+    pub fn kind(&self) -> Option<&'static Tag> {
+        tag::find(self.group, self.code)
+    }
+}
+
+/// Splits a whole tag, as [`tpmt_jmessage::TextSegment::Tag`] holds it.
+/// `None` when it is too short to have a group and code.
+#[must_use]
+pub const fn split_tag(tag: &[u8]) -> Option<TagParts<'_>> {
+    match tag {
+        [TAG_OPENER, _len, group, high, low, args @ ..] => Some(TagParts {
+            group: *group,
+            code: u16::from_be_bytes([*high, *low]),
+            args,
+        }),
+        _ => None,
+    }
 }
