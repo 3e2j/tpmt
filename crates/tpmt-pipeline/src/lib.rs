@@ -1,10 +1,20 @@
-//! Unpacking a disc to a project folder, and building it back. This is the
-//! conveyor belt that carries every game format through unpack and build.
-//! The `tpmt` CLI is a thin wrapper around this crate.
+//! Unpacking a disc to a project folder, and building it back. The `tpmt`
+//! CLI is a thin wrapper around this crate.
 //!
-//! A format crate owns its own conversion to and from an editable form and
-//! knows nothing about unpacking, building, or cross-references. This crate
-//! only hands each format crate its bytes.
+//! Unpack and build only handle containers: compression and archives.
+//! A leaf format (BMG, ...) passes through both as raw bytes. Unpack sniffs
+//! each file's magic to record its kind in `.tpmt/formats.toml`, but never
+//! decodes it.
+//!
+//! A caller edits a leaf through three calls, none of which decode it.
+//! [`formats`] lists every leaf by kind. [`read()`] returns one leaf's bytes,
+//! the `mod/overlay/` copy when there is one and the `base/` copy otherwise.
+//! [`write()`] puts new bytes in `mod/overlay/`. The caller hands the bytes to
+//! `tpmt-editor`, which decodes them.
+//!
+//! This crate owns what it takes to get from a disc to a project and back:
+//! the disc image, archives, compression, and anything that spans files, like
+//! cross-references. A leaf's own layout belongs to its format crate.
 //!
 //! Project layout: see `project/mod.rs`.
 
@@ -26,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 mod build;
 mod fs;
+mod leaf;
 mod progress;
 mod project;
 mod status;
@@ -153,6 +164,33 @@ pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(), Err
 /// - [`Error::Parse`] if it is not what an unpack wrote
 pub fn formats(project: &Path) -> Result<BTreeMap<FileKind, BTreeSet<String>>, Error> {
     project::metadata::read_formats(project)
+}
+
+/// One project file's bytes, from `mod/overlay/` when it holds `path` and
+/// from `base/` otherwise. `path` is a project path, as [`formats`] lists.
+///
+/// A `base/` copy isn't checked against its vanilla hash here, since that
+/// means reading every hash the unpack recorded. [`build`] refuses one that
+/// drifted.
+///
+/// # Errors
+///
+/// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
+/// - [`Error::MissingFile`] if neither layer holds a file at `path`
+/// - [`Error::Io`] if the file can't be read
+pub fn read(project: &Path, path: &str) -> Result<Vec<u8>> {
+    leaf::read(project, path)
+}
+
+/// Writes `data` to `path` under `mod/overlay/`, creating any missing
+/// directories. `base/` is never written.
+///
+/// # Errors
+///
+/// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
+/// - [`Error::Io`] on the write
+pub fn write(project: &Path, path: &str, data: &[u8]) -> Result<()> {
+    leaf::write(project, path, data)
 }
 
 /// Hashes `mod/overlay/` against the vanilla hashes taken at [`unpack`], and

@@ -63,7 +63,8 @@ pub fn file(
     if Archive::recognises(bare) {
         archive(path, bare, sink)?;
     } else {
-        // Leaf formats pass through as raw bytes. Editing is the UI's job.
+        // Leaf formats pass through as raw bytes. Decoding one is a separate,
+        // on-demand call.
         sink(path, bare)?;
     }
 
