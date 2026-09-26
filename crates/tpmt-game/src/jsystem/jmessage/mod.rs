@@ -5,7 +5,7 @@ pub mod record;
 pub mod tag;
 pub mod unit;
 
-use crate::{Entry, entry};
+use crate::{Edition, Entry, entry};
 
 /// One field of an INF1 record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,14 +65,21 @@ pub struct Layout {
     pub id: Option<Field>,
 }
 
-/// Every layout the game reads. The game reads each file with a fixed struct
-/// and no two share a width, so the width picks the layout.
-pub static LAYOUTS: &[Layout] = &[record::LAYOUT, unit::LAYOUT, unit::JPN_LAYOUT];
-
-/// The layout `record_len` wide, or `None` when the game reads none that wide.
+/// The layouts `edition` reads message files with. The game reads each file
+/// with a fixed struct and no two of these share a width, so a file's record
+/// width picks among them.
 #[must_use]
-pub fn layout(record_len: u16) -> Option<&'static Layout> {
-    LAYOUTS.iter().find(|layout| layout.len == record_len)
+pub const fn layouts(edition: Edition) -> [&'static Layout; 2] {
+    [&record::LAYOUT, unit::layout(edition)]
+}
+
+/// The layout `edition` reads `record_len` wide records with, or `None` when
+/// it reads none that wide.
+#[must_use]
+pub fn layout(edition: Edition, record_len: u16) -> Option<&'static Layout> {
+    layouts(edition)
+        .into_iter()
+        .find(|layout| layout.len == record_len)
 }
 
 /// Rows of `(value, name, rgb)`, where `None` is the box's own default.
@@ -132,7 +139,11 @@ pub static LANGUAGES: &[Entry<u8>] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::find;
+    use crate::{Version, find};
+
+    fn editions() -> impl Iterator<Item = Edition> {
+        Version::ALL.into_iter().map(Edition::default_language)
+    }
 
     /// [`RGB`] is indexed by value, so the palette has to be dense from 0.
     #[test]
@@ -144,7 +155,7 @@ mod tests {
     /// gap or overlap.
     #[test]
     fn the_fields_cover_the_record() {
-        for layout in LAYOUTS {
+        for layout in editions().flat_map(layouts) {
             let end = layout.fields.iter().try_fold(4, |at, field| {
                 (field.offset == at).then_some(at + field.len)
             });
@@ -154,24 +165,30 @@ mod tests {
 
     /// [`layout`] picks by width alone.
     #[test]
-    fn no_two_layouts_share_a_width() {
-        for layout in LAYOUTS {
-            assert_eq!(super::layout(layout.len), Some(layout));
+    fn no_two_layouts_of_an_edition_share_a_width() {
+        for edition in editions() {
+            for layout in layouts(edition) {
+                assert_eq!(super::layout(edition, layout.len), Some(layout));
+            }
         }
     }
 
     /// A layout's id is one of its fields, so it tiles with the rest.
     #[test]
     fn the_id_is_a_field() {
-        for layout in LAYOUTS {
+        for layout in editions().flat_map(layouts) {
             assert!(layout.id.is_none_or(|id| layout.fields.contains(&id)));
         }
     }
 
     #[test]
     fn the_palette_ends_at_orange() {
-        assert_eq!(find(COLORS, 8).map(|color| color.name), Some("Orange"));
-        assert_eq!(find(COLORS, 9), None);
+        let edition = Edition::default_language(Version::GcnUsa);
+        assert_eq!(
+            find(COLORS, 8, edition).map(|color| color.name),
+            Some("Orange")
+        );
+        assert_eq!(find(COLORS, 9, edition), None);
         assert_eq!(RGB.get(8), Some(&Some([0xDC, 0xAA, 0x78])));
     }
 }

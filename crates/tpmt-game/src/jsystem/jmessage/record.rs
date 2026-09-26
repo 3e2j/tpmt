@@ -4,7 +4,7 @@
 //! `zel_unit.bmg` uses its own records, which [`super::unit`] names.
 
 use super::{Field, Layout, field};
-use crate::{Entry, entry};
+use crate::{Entry, Versions, entry};
 
 /// The message id, which a file with a MID1 repeats from its MID1 entry.
 pub const ID: Field =
@@ -74,6 +74,20 @@ pub static BOX_POSITIONS: &[Entry<u8>] = &[
 
 #[rustfmt::skip]
 pub static LINE_ALIGNMENTS: &[Entry<u8>] = &[
-    entry(0, "Centered").notes("JP only"),
+    entry(0, "Centered").only(Versions::JPN),
+    entry(0, "Left")    .only(Versions::JPN.complement()).notes("Outside JPN the game draws 0 as 1"),
     entry(1, "Left"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assert_one_meaning;
+
+    #[test]
+    fn each_value_has_one_meaning_per_version() {
+        for table in [BOX_KINDS, DRAW_TYPES, BOX_POSITIONS, LINE_ALIGNMENTS] {
+            assert_one_meaning(table, |entry| (entry.value, entry.versions));
+        }
+    }
+}

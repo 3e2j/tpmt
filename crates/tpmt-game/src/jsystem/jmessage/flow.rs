@@ -5,7 +5,7 @@
 //! read big-endian as one u32 `p`, two u16 `p0` and `p1`, or four u8,
 //! depending on the event.
 
-use crate::{Entry, entry};
+use crate::{Entry, Versions, entry};
 
 /// Branch queries, by the id a branch node stores.
 #[rustfmt::skip]
@@ -30,7 +30,8 @@ pub static QUERIES: &[Entry<u16>] = &[
     entry(17, "Zone item flag"),
     entry(18, "One-zone switch"),
     entry(19, "One-zone item flag"),
-    entry(20, "Equipped")             .notes("1 if item `param` is equipped or on an item slot"),
+    entry(20, "Equipped")             .only(Versions::GCN).notes("1 if item `param` is equipped or on one of 3 item slots"),
+    entry(20, "Equipped")             .only(Versions::WII).notes("1 if item `param` is equipped or on one of 4 item slots"),
     entry(21, "Item owned")           .notes("0 if item `param` is owned"),
     entry(22, "Bomb bag count")       .notes("Bomb bags owned: 0 to 3"),
     entry(23, "Arrows")               .notes("0 if arrows >= `param`"),
@@ -116,12 +117,24 @@ pub static EVENTS: &[Entry<u8>] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Edition, Version, entries};
 
-    /// Both tables are dense from 0, so a value's position is its id. A gap
-    /// or a duplicate here is a transcription slip.
+    /// On every version both tables are dense from 0, so a value's position
+    /// among that version's rows is its id. A gap or a duplicate here is a
+    /// transcription slip.
     #[test]
     fn the_tables_are_dense() {
-        assert!((0..).zip(QUERIES).all(|(id, query)| query.value == id));
-        assert!((0..).zip(EVENTS).all(|(id, event)| event.value == id));
+        for edition in Version::ALL.map(Edition::default_language) {
+            assert!(
+                (0..)
+                    .zip(entries(QUERIES, edition))
+                    .all(|(id, query)| query.value == id)
+            );
+            assert!(
+                (0..)
+                    .zip(entries(EVENTS, edition))
+                    .all(|(id, event)| event.value == id)
+            );
+        }
     }
 }

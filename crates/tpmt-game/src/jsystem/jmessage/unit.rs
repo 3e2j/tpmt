@@ -3,15 +3,9 @@
 //!
 //! The file has no MID1, so the game finds a record by its position. That
 //! position is the unit [`UNITS`] names. Every field is an offset into STR1.
-//!
-//! Records follow the game's `#if REGION_JPN` split. USA and PAL use
-//! [`LAYOUT`]: a singular and a plural, with DAT1 text that is empty and never
-//! read. JPN uses [`JPN_LAYOUT`]: the DAT1 text is the counter word, and the
-//! fields hold the reading the game shows over it as ruby, which depends on
-//! the count's last digit. An empty reading shows no ruby.
 
 use super::{Layout, field};
-use crate::{Entry, entry};
+use crate::{Edition, Entry, Versions, entry};
 
 /// Units, by the record position the game passes to `dMsgUnit_setTag`. The
 /// game handles 0x10000 and 0x10001 in code without reading the file.
@@ -34,16 +28,29 @@ pub static UNITS: &[Entry<u16>] = &[
     entry(14, "Fish")          .notes("Fish caught"),
 ];
 
-/// `dMsgUnit_inf1_entry`, the USA and PAL record. The decomp names the two
-/// fields `startFrame` and `endFrame`, but they're STR1 offsets.
+/// The layout `edition` reads the file with.
+#[must_use]
+pub const fn layout(edition: Edition) -> &'static Layout {
+    if Versions::JPN.contains(edition.version()) {
+        &JPN_LAYOUT
+    } else {
+        &LAYOUT
+    }
+}
+
+/// `dMsgUnit_inf1_entry`. The decomp names the fields `startFrame` and
+/// `endFrame`. The DAT1 text is empty and never read.
 #[rustfmt::skip]
 pub const LAYOUT: Layout = Layout { len: 8, id: None, fields: &[
     field(0x04, 2, "Singular").string().notes("Shown for 1. On PAL, also for 0 when the language is French"),
     field(0x06, 2, "Plural")  .string().notes("Shown for every other count"),
 ]};
 
-/// The JPN record. The decomp's retail `REGION_JPN` struct stops at 0x1A, but
-/// the file's records are 28 bytes.
+/// The JPN record.
+///
+/// The DAT1 text is the counter word, and the game shows the reading over it
+/// as ruby. An empty reading shows none. The decomp's retail `REGION_JPN`
+/// struct stops at 0x1A, but the file's records are 28 bytes.
 #[rustfmt::skip]
 pub const JPN_LAYOUT: Layout = Layout { len: 28, id: None, fields: &[
     field(0x04, 2, "Reading for 0")     .string(),

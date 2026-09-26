@@ -4,7 +4,7 @@
 //! The group and code are the ones `tpmt_jmessage::TextSegment::Tag` holds.
 
 use super::COLORS;
-use crate::Entry;
+use crate::{Edition, Entry, Versions};
 
 /// What a tag's argument bytes hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +69,8 @@ pub struct Tag {
     /// The table naming the argument's values, for a 1-byte argument that has
     /// one.
     pub values: Option<&'static [Entry<u8>]>,
+    /// As [`Entry::versions`].
+    pub versions: Versions,
 }
 
 const fn tag(group: u8, code: u16, name: &'static str, args: Args) -> Tag {
@@ -79,6 +81,7 @@ const fn tag(group: u8, code: u16, name: &'static str, args: Args) -> Tag {
         args,
         notes: "",
         values: None,
+        versions: Versions::ALL,
     }
 }
 
@@ -93,19 +96,28 @@ impl Tag {
             ..self
         }
     }
+
+    const fn only(self, versions: Versions) -> Self {
+        Self { versions, ..self }
+    }
 }
 
-/// The tag for `group` and `code`, or `None` when nothing names it. Any code
-/// in [`group::SOUND`] or [`group::CAMERA`] is that group's one entry.
+/// The tag for `group` and `code` on `edition`, or `None` when nothing names
+/// it there. Any code in [`group::SOUND`] or [`group::CAMERA`] is that
+/// group's one entry.
 #[must_use]
-pub fn find(group: u8, code: u16) -> Option<&'static Tag> {
+pub fn find(group: u8, code: u16, edition: Edition) -> Option<&'static Tag> {
     match group {
         group::SOUND => Some(&SOUND),
         group::CAMERA => Some(&CAMERA),
-        _ => TAGS
-            .binary_search_by_key(&(group, code), |tag| (tag.group, tag.code))
-            .ok()
-            .and_then(|at| TAGS.get(at)),
+        _ => {
+            let key = |tag: &Tag| (tag.group, tag.code);
+            let start = TAGS.partition_point(|tag| key(tag) < (group, code));
+            TAGS.get(start..)?
+                .iter()
+                .take_while(|tag| key(tag) == (group, code))
+                .find(|tag| tag.versions.contains(edition.version()))
+        }
     }
 }
 
@@ -152,7 +164,8 @@ pub static TAGS: &[Tag] = &[
     tag(0,   30, "Inline select 2, next",  Args::U8)  .notes("Second option of an inline two-way choice"),
     tag(0,   31, "Inline select 2, first", Args::U8)  .notes("First option of an inline two-way choice"),
     tag(0,   32, "Await choice",           Args::None).notes("Line break, then shows the choice options"),
-    tag(0,   33, "Unknown name",           Args::None).notes("Calls `do_name1`, which does nothing"),
+    tag(0,   33, "Kana initial",           Args::None).only(Versions::JPN).notes("Inserts the player name's first character when it is kana"),
+    tag(0,   33, "Unknown name",           Args::None).only(Versions::JPN.complement()).notes("Calls `do_name1`, which does nothing outside JPN"),
     tag(0,   34, "Horse name",             Args::None).notes("Inserts Epona's name"),
     tag(0,   35, "Red target",             Args::None),
     tag(0,   36, "Yellow target",          Args::None),
@@ -233,8 +246,10 @@ pub static TAGS: &[Tag] = &[
     tag(5,   12, "Balloon score",          Args::U8)  .notes("0 message count number, else the balloon score"),
     tag(5,   13, "Fish count",             Args::None).notes("Message count number"),
     tag(5,   14, "Rollgoal level",         Args::None).notes("Message count number"),
-    tag(6,   0,  "Player genitive",        Args::None).notes("Player's name in the possessive"),
-    tag(6,   1,  "Horse genitive",         Args::None).notes("Epona's name in the possessive"),
+    tag(6,   0,  "Player genitive",        Args::None).only(Versions::GCN_PAL).notes("Player's name in the possessive, German rules when German"),
+    tag(6,   0,  "Player genitive",        Args::None).only(Versions::GCN_PAL.complement()).notes("Only GCN PAL fills it in. Elsewhere the game prints an uninitialized buffer"),
+    tag(6,   1,  "Horse genitive",         Args::None).only(Versions::GCN_PAL).notes("Epona's name in the possessive, German rules when German"),
+    tag(6,   1,  "Horse genitive",         Args::None).only(Versions::GCN_PAL.complement()).notes("Only GCN PAL fills it in. Elsewhere the game prints an uninitialized buffer"),
     tag(6,   2,  "Male icon",              Args::None),
     tag(6,   3,  "Female icon",            Args::None),
     tag(6,   4,  "Star icon",              Args::None),
@@ -253,30 +268,50 @@ pub static TAGS: &[Tag] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Version, assert_one_meaning};
+
+    const USA: Edition = Edition::default_language(Version::GcnUsa);
 
     #[test]
     fn the_table_is_sorted_for_binary_search() {
         assert!(TAGS.is_sorted_by_key(|tag| (tag.group, tag.code)));
-        assert!(
-            TAGS.windows(2)
-                .all(|pair| (pair[0].group, pair[0].code) != (pair[1].group, pair[1].code))
-        );
+    }
+
+    #[test]
+    fn each_code_has_one_meaning_per_version() {
+        assert_one_meaning(TAGS, |tag| ((tag.group, tag.code), tag.versions));
     }
 
     #[test]
     fn sound_and_camera_match_any_code() {
-        assert_eq!(find(group::SOUND, 20), Some(&SOUND));
-        assert_eq!(find(group::CAMERA, 7), Some(&CAMERA));
+        assert_eq!(find(group::SOUND, 20, USA), Some(&SOUND));
+        assert_eq!(find(group::CAMERA, 7, USA), Some(&CAMERA));
     }
 
     #[test]
     fn a_named_code_is_found() {
-        assert_eq!(find(group::CONTROL, 7).map(|tag| tag.name), Some("Pause"));
+        assert_eq!(
+            find(group::CONTROL, 7, USA).map(|tag| tag.name),
+            Some("Pause")
+        );
     }
 
     #[test]
     fn an_unnamed_code_is_none() {
-        assert_eq!(find(group::CONTROL, 64), None);
-        assert_eq!(find(7, 0), None);
+        assert_eq!(find(group::CONTROL, 64, USA), None);
+        assert_eq!(find(7, 0, USA), None);
+    }
+
+    #[test]
+    fn a_code_is_read_as_its_version_means_it() {
+        let jpn = Edition::default_language(Version::WiiJpn);
+        assert_eq!(
+            find(group::CONTROL, 33, jpn).map(|tag| tag.name),
+            Some("Kana initial")
+        );
+        assert_eq!(
+            find(group::CONTROL, 33, USA).map(|tag| tag.name),
+            Some("Unknown name")
+        );
     }
 }

@@ -11,6 +11,7 @@ use std::mem;
 use std::ops::Range;
 
 use tpmt_format::Format;
+use tpmt_game::Edition;
 use tpmt_game::jsystem::jmessage::{self, Field, Layout};
 use tpmt_jmessage::{
     Bmg, Flow, Message, MessageId, Node, NodeId, Root, TEXT_OFFSET_LEN, TextSegment,
@@ -195,6 +196,9 @@ pub enum EditError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BmgDocument {
     bmg: Bmg,
+    /// The version and language the file is from, which pick the layouts
+    /// its records can have.
+    edition: Edition,
 }
 
 impl BmgDocument {
@@ -202,8 +206,8 @@ impl BmgDocument {
     ///
     /// When the bytes aren't a BMG, or are a broken one, or a message's
     /// record holds a different id than its MID1 entry.
-    pub fn open(bytes: &[u8]) -> Result<Self, OpenError> {
-        let document = Self::from(Bmg::decode(bytes)?);
+    pub fn open(bytes: &[u8], edition: Edition) -> Result<Self, OpenError> {
+        let document = Self::new(Bmg::decode(bytes)?, edition);
         if let Some(id) = document.id_field() {
             for message in &document.bmg.messages {
                 if let Some(record) = read_field(&message.attributes, &id)
@@ -218,6 +222,12 @@ impl BmgDocument {
             }
         }
         Ok(document)
+    }
+
+    /// A document over an already decoded file, with no id check.
+    #[must_use]
+    pub const fn new(bmg: Bmg, edition: Edition) -> Self {
+        Self { bmg, edition }
     }
 
     /// The file as bytes, for the pipeline to write into the overlay.
@@ -240,11 +250,11 @@ impl BmgDocument {
         self.bmg.messages.iter().find(|message| message.id == id)
     }
 
-    /// The layout of this file's records, or `None` when the game reads none
-    /// as wide. See [`jmessage::layout`].
+    /// The layout of this file's records, or `None` when the document's
+    /// edition reads none as wide. See [`jmessage::layout`].
     #[must_use]
     pub fn layout(&self) -> Option<&'static Layout> {
-        jmessage::layout(self.bmg.record_len)
+        jmessage::layout(self.edition, self.bmg.record_len)
     }
 
     /// An internal id no message holds yet, for [`MessageEdit::Insert`].
@@ -699,12 +709,6 @@ impl BmgDocument {
     }
 }
 
-impl From<Bmg> for BmgDocument {
-    fn from(bmg: Bmg) -> Self {
-        Self { bmg }
-    }
-}
-
 impl Document for BmgDocument {
     type Edit = BmgEdit;
     type Error = EditError;
@@ -761,11 +765,14 @@ pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<(
 
 #[cfg(test)]
 mod tests {
+    use tpmt_game::Version;
     use tpmt_game::jsystem::jmessage::{record, unit};
     use tpmt_jmessage::{Encoding, Mid1Header};
 
     use super::*;
     use crate::History;
+
+    const EDITION: Edition = Edition::default_language(Version::GcnUsa);
 
     fn message(id: u32, text: &[u8]) -> Message {
         Message {
@@ -806,43 +813,49 @@ mod tests {
 
     /// Two messages, and a flow whose one root shows the first.
     fn document() -> BmgDocument {
-        BmgDocument::from(Bmg {
-            encoding: Encoding::ShiftJis,
-            record_len: record::LAYOUT.len,
-            mid1: Some(Mid1Header::default()),
-            messages: vec![message(0, b"Hello"), message(1, b"Unused")],
-            flow: Some(Flow {
-                nodes: vec![Node::Text {
-                    id: NodeId(0),
-                    message: MessageId(0),
-                    next: None,
-                }],
-                roots: vec![Root {
-                    public_id: 1,
-                    node: NodeId(0),
-                }],
-            }),
-            strings: None,
-        })
+        BmgDocument::new(
+            Bmg {
+                encoding: Encoding::ShiftJis,
+                record_len: record::LAYOUT.len,
+                mid1: Some(Mid1Header::default()),
+                messages: vec![message(0, b"Hello"), message(1, b"Unused")],
+                flow: Some(Flow {
+                    nodes: vec![Node::Text {
+                        id: NodeId(0),
+                        message: MessageId(0),
+                        next: None,
+                    }],
+                    roots: vec![Root {
+                        public_id: 1,
+                        node: NodeId(0),
+                    }],
+                }),
+                strings: None,
+            },
+            EDITION,
+        )
     }
 
-    /// A unit file shaped like `zel_unit.bmg`: records `record_len` wide, no
-    /// MID1 or flow, and a string pool.
-    fn unit_document(record_len: u16) -> BmgDocument {
+    /// A unit file shaped like `zel_unit.bmg`, from `edition`: records
+    /// `record_len` wide, no MID1 or flow, and a string pool.
+    fn unit_document(edition: Edition, record_len: u16) -> BmgDocument {
         let attributes = usize::from(record_len - TEXT_OFFSET_LEN);
-        BmgDocument::from(Bmg {
-            encoding: Encoding::ShiftJis,
-            record_len,
-            mid1: None,
-            messages: vec![Message {
-                public_id: 0,
-                id: MessageId(0),
-                attributes: vec![0; attributes],
-                text: Vec::new(),
-            }],
-            flow: None,
-            strings: Some(vec![Vec::new(), b"arrow".to_vec(), b"arrows".to_vec()]),
-        })
+        BmgDocument::new(
+            Bmg {
+                encoding: Encoding::ShiftJis,
+                record_len,
+                mid1: None,
+                messages: vec![Message {
+                    public_id: 0,
+                    id: MessageId(0),
+                    attributes: vec![0; attributes],
+                    text: Vec::new(),
+                }],
+                flow: None,
+                strings: Some(vec![Vec::new(), b"arrow".to_vec(), b"arrows".to_vec()]),
+            },
+            edition,
+        )
     }
 
     #[test]
@@ -1085,7 +1098,7 @@ mod tests {
             &[0x12, 0x34]
         );
         assert_eq!(
-            BmgDocument::open(&document.save().unwrap()).unwrap(),
+            BmgDocument::open(&document.save().unwrap(), EDITION).unwrap(),
             document
         );
 
@@ -1132,7 +1145,7 @@ mod tests {
         bmg.messages[1].attributes[field_bytes(&record::ID).unwrap()]
             .copy_from_slice(&7u16.to_be_bytes());
         assert!(matches!(
-            BmgDocument::open(&bmg.encode().unwrap()),
+            BmgDocument::open(&bmg.encode().unwrap(), EDITION),
             Err(OpenError::IdMismatch {
                 message: MessageId(1),
                 public_id: 1,
@@ -1142,36 +1155,46 @@ mod tests {
 
         // Without a MID1 the record's id is the game's to use.
         bmg.mid1 = None;
-        assert!(BmgDocument::open(&bmg.encode().unwrap()).is_ok());
+        assert!(BmgDocument::open(&bmg.encode().unwrap(), EDITION).is_ok());
     }
 
     #[test]
     fn saving_and_opening_gives_the_same_document() {
         let document = document();
         assert_eq!(
-            BmgDocument::open(&document.save().unwrap()).unwrap(),
+            BmgDocument::open(&document.save().unwrap(), EDITION).unwrap(),
             document
         );
     }
 
     #[test]
     fn a_unit_file_gets_its_region_layout() {
-        for layout in [unit::LAYOUT, unit::JPN_LAYOUT] {
-            let document = unit_document(layout.len);
+        for (version, layout) in [
+            (Version::GcnUsa, unit::LAYOUT),
+            (Version::GcnJpn, unit::JPN_LAYOUT),
+        ] {
+            let edition = Edition::default_language(version);
+            let document = unit_document(edition, layout.len);
             assert_eq!(document.layout(), Some(&layout));
             assert_eq!(
-                BmgDocument::open(&document.save().unwrap()).unwrap(),
+                BmgDocument::open(&document.save().unwrap(), edition).unwrap(),
                 document
             );
         }
-        assert_eq!(unit_document(12).layout(), None);
+    }
+
+    /// A JPN unit file in a USA project isn't named with the JPN layout.
+    #[test]
+    fn a_layout_from_another_region_is_not_used() {
+        let document = unit_document(EDITION, unit::JPN_LAYOUT.len);
+        assert_eq!(document.layout(), None);
     }
 
     /// A unit record's first field sits where the story record keeps its id,
     /// so setting it and the public id must leave each other alone.
     #[test]
     fn a_unit_field_is_not_the_id() {
-        let mut document = unit_document(unit::LAYOUT.len);
+        let mut document = unit_document(EDITION, unit::LAYOUT.len);
         let mut history = History::default();
         let singular = unit::LAYOUT.fields[0];
         let edits = [
