@@ -15,13 +15,6 @@
 //! Names and notes come from Dusklight and the decomp, they've not been manually
 //! tested/verified in game.
 
-// TODO: a golden test that holds every fact these tables state about retail
-// data against every retail file on every disc. Today that is the record
-// width of each layout `jsystem::jmessage::layouts` returns for the disc's
-// version, and the argument length each `jsystem::jmessage::tag` row gives.
-// A value a table doesn't name is not a claim, so the test shouldn't demand
-// one. It belongs beside the round trip in `crates/tpmt-retail-tests`.
-
 pub mod jsystem;
 mod version;
 

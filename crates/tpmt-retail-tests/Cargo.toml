@@ -24,5 +24,10 @@ tpmt-jmessage.workspace = true
 name = "formats"
 harness = false
 
+# What the game makes of retail files, as `tpmt-game`'s tables claim it.
+[[test]]
+name = "game"
+harness = false
+
 [lints]
 workspace = true
