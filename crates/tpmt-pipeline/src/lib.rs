@@ -166,6 +166,17 @@ pub fn formats(project: &Path) -> Result<BTreeMap<FileKind, BTreeSet<String>>, E
     project::metadata::read_formats(project)
 }
 
+/// Who the unpacked disc says it is, from `base/disc.toml`. Its game id and
+/// revision pick the version, through `tpmt_game::Version::from_disc`.
+///
+/// # Errors
+///
+/// - [`Error::Io`] if `base/disc.toml` is missing
+/// - [`Error::Parse`] if it is not what an unpack wrote
+pub fn boot(project: &Path) -> Result<tpmt_disc::Boot> {
+    project::metadata::read_boot(&project::base(project))
+}
+
 /// One project file's bytes, from `mod/overlay/` when it holds `path` and
 /// from `base/` otherwise. `path` is a project path, as [`formats`] lists.
 ///

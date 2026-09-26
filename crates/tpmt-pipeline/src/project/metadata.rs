@@ -79,6 +79,17 @@ pub fn read_base(base: &Path) -> Result<Base> {
     })
 }
 
+/// The disc's boot header from `disc.toml`, without reading `yaz0.toml`.
+///
+/// # Errors
+///
+/// - [`Error::Io`](crate::Error::Io) if `disc.toml` is missing
+/// - [`Error::Parse`](crate::Error::Parse) if it is not what it was
+pub fn read_boot(base: &Path) -> Result<tpmt_disc::Boot> {
+    let metadata: tpmt_disc::Metadata = read_toml(&base.join(DISC_TOML))?;
+    Ok(metadata.boot)
+}
+
 /// `mod.json`: what a mod says about itself.
 ///
 /// Fields are the target-agnostic subset only. Dusklight reads a few more
