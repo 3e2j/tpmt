@@ -1,8 +1,7 @@
 //! `JMSMesgEntry_c`, the INF1 record for every message file but
 //! `zel_unit.bmg`: how one message is displayed.
 //!
-//! `zel_unit.bmg` uses a different record, which `dMsgUnit_c` reads with its
-//! own struct.
+//! `zel_unit.bmg` uses its own records, which [`super::unit`] names.
 
 use super::{Field, Layout, field};
 use crate::{Entry, entry};

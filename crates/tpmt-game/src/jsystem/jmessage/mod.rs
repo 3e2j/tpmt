@@ -3,6 +3,7 @@
 pub mod flow;
 pub mod record;
 pub mod tag;
+pub mod unit;
 
 use crate::{Entry, entry};
 
@@ -17,6 +18,9 @@ pub struct Field {
     pub notes: &'static str,
     /// The table naming the field's values, for a 1-byte field that has one.
     pub values: Option<&'static [Entry<u8>]>,
+    /// The value is a byte offset into STR1, and the string there is what the
+    /// game uses.
+    pub string: bool,
 }
 
 const fn field(offset: usize, len: usize, name: &'static str) -> Field {
@@ -26,6 +30,7 @@ const fn field(offset: usize, len: usize, name: &'static str) -> Field {
         name,
         notes: "",
         values: None,
+        string: false,
     }
 }
 
@@ -37,6 +42,13 @@ impl Field {
     const fn values(self, values: &'static [Entry<u8>]) -> Self {
         Self {
             values: Some(values),
+            ..self
+        }
+    }
+
+    const fn string(self) -> Self {
+        Self {
+            string: true,
             ..self
         }
     }
@@ -55,7 +67,7 @@ pub struct Layout {
 
 /// Every layout the game reads. The game reads each file with a fixed struct
 /// and no two share a width, so the width picks the layout.
-pub static LAYOUTS: &[Layout] = &[record::LAYOUT];
+pub static LAYOUTS: &[Layout] = &[record::LAYOUT, unit::LAYOUT, unit::JPN_LAYOUT];
 
 /// The layout `record_len` wide, or `None` when the game reads none that wide.
 #[must_use]

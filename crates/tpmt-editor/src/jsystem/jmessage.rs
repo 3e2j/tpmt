@@ -761,7 +761,7 @@ pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<(
 
 #[cfg(test)]
 mod tests {
-    use tpmt_game::jsystem::jmessage::record;
+    use tpmt_game::jsystem::jmessage::{record, unit};
     use tpmt_jmessage::{Encoding, Mid1Header};
 
     use super::*;
@@ -823,6 +823,25 @@ mod tests {
                 }],
             }),
             strings: None,
+        })
+    }
+
+    /// A unit file shaped like `zel_unit.bmg`: records `record_len` wide, no
+    /// MID1 or flow, and a string pool.
+    fn unit_document(record_len: u16) -> BmgDocument {
+        let attributes = usize::from(record_len - TEXT_OFFSET_LEN);
+        BmgDocument::from(Bmg {
+            encoding: Encoding::ShiftJis,
+            record_len,
+            mid1: None,
+            messages: vec![Message {
+                public_id: 0,
+                id: MessageId(0),
+                attributes: vec![0; attributes],
+                text: Vec::new(),
+            }],
+            flow: None,
+            strings: Some(vec![Vec::new(), b"arrow".to_vec(), b"arrows".to_vec()]),
         })
     }
 
@@ -1133,6 +1152,44 @@ mod tests {
             BmgDocument::open(&document.save().unwrap()).unwrap(),
             document
         );
+    }
+
+    #[test]
+    fn a_unit_file_gets_its_region_layout() {
+        for layout in [unit::LAYOUT, unit::JPN_LAYOUT] {
+            let document = unit_document(layout.len);
+            assert_eq!(document.layout(), Some(&layout));
+            assert_eq!(
+                BmgDocument::open(&document.save().unwrap()).unwrap(),
+                document
+            );
+        }
+        assert_eq!(unit_document(12).layout(), None);
+    }
+
+    /// A unit record's first field sits where the story record keeps its id,
+    /// so setting it and the public id must leave each other alone.
+    #[test]
+    fn a_unit_field_is_not_the_id() {
+        let mut document = unit_document(unit::LAYOUT.len);
+        let mut history = History::default();
+        let singular = unit::LAYOUT.fields[0];
+        let edits = [
+            set_message(
+                MessageId(0),
+                MessageChange::Field {
+                    field: singular,
+                    value: 7,
+                },
+            ),
+            set_message(MessageId(0), MessageChange::PublicId(9)),
+        ];
+        for edit in edits {
+            history.apply(&mut document, edit).unwrap();
+        }
+        let message = document.message(MessageId(0)).unwrap();
+        assert_eq!(read_field(&message.attributes, &singular), Some(7));
+        assert_eq!(message.public_id, 9);
     }
 
     #[test]
