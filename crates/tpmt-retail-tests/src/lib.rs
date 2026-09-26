@@ -1,7 +1,8 @@
 //! What the tests against retail data share: each disc in `discs/`, unpacked
 //! once by the real [`tpmt_pipeline::unpack`], and a way to run a check over
 //! every file of one [`FileKind`] in it, found through the unpack's own
-//! [`tpmt_pipeline::formats`] rather than by name.
+//! [`tpmt_pipeline::formats`] rather than by name. A check also gets the
+//! disc's [`Version`], for what the game makes of a file.
 //!
 //! Each check gets one trial per `.iso` and `.ciso`, because each region
 //! ships different files. With no discs, one ignored trial per check stands
@@ -22,14 +23,15 @@ use std::process::ExitCode;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
+use tpmt_game::Version;
 use tpmt_pipeline::{FileKind, Progress};
 
 /// Reports past this many are counted but not printed.
 const REPORT_LIMIT: usize = 50;
 
-/// Checks one file, given its path in the unpack and its bytes, and returns
-/// its problems, empty for a pass.
-pub type Check = fn(&str, &[u8]) -> Vec<String>;
+/// Checks one file, given the disc's version, the file's path in the unpack
+/// and its bytes, and returns its problems, empty for a pass.
+pub type Check = fn(Version, &str, &[u8]) -> Vec<String>;
 
 /// One check: its trial name, the kind of file it reads, and the check itself.
 pub type Checks = &'static [(&'static str, FileKind, Check)];
@@ -89,10 +91,22 @@ fn trial((name, kind, check): (&str, FileKind, Check), iso: &Path) -> Trial {
     let iso = iso.to_path_buf();
     Trial::test(name, move || {
         let project = unpacked(&iso)?;
+        let boot = tpmt_pipeline::boot(&project)?;
+        let version = Version::from_disc(&boot.id, boot.revision).ok_or_else(|| {
+            format!(
+                "`{}` revision {} is no known version",
+                boot.id, boot.revision
+            )
+        })?;
         let paths = tpmt_pipeline::formats(&project)?
             .remove(&kind)
             .unwrap_or_default();
-        report(&each(&tpmt_pipeline::base(&project), &paths, check)?)
+        report(&each(
+            version,
+            &tpmt_pipeline::base(&project),
+            &paths,
+            check,
+        )?)
     })
 }
 
@@ -168,13 +182,18 @@ fn unpacked(iso: &Path) -> Result<PathBuf, Failed> {
 }
 
 /// Every one of `paths` under `base` through `check`.
-fn each(base: &Path, paths: &BTreeSet<String>, check: Check) -> io::Result<Tally> {
+fn each(
+    version: Version,
+    base: &Path,
+    paths: &BTreeSet<String>,
+    check: Check,
+) -> io::Result<Tally> {
     let failures = paths
         .par_iter()
         .map(|path| {
             let mut bytes = Vec::new();
             File::open(base.join(path))?.read_to_end(&mut bytes)?;
-            let problems = check(path, &bytes).into_iter();
+            let problems = check(version, path, &bytes).into_iter();
             Ok(problems
                 .map(|problem| format!("`{path}`: {problem}"))
                 .collect())

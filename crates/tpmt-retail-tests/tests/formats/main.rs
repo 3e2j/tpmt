@@ -9,6 +9,7 @@
 use std::process::ExitCode;
 
 use tpmt_format::Format;
+use tpmt_game::Version;
 use tpmt_jmessage::Bmg;
 use tpmt_pipeline::FileKind;
 use tpmt_retail_tests::Checks;
@@ -21,7 +22,7 @@ fn main() -> ExitCode {
 }
 
 /// The one problem with `original`, if there is one.
-fn round_trip<F: for<'a> Format<'a>>(_path: &str, original: &[u8]) -> Vec<String> {
+fn round_trip<F: for<'a> Format<'a>>(_: Version, _path: &str, original: &[u8]) -> Vec<String> {
     let result = (|| {
         if !F::recognises(original) {
             return Err("not recognised".to_owned());

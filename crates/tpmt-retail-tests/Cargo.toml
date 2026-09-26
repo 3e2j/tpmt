@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+tpmt-game.workspace = true
 tpmt-pipeline.workspace = true
 
 libtest-mimic.workspace = true

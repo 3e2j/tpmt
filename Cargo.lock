@@ -543,6 +543,7 @@ dependencies = [
  "libtest-mimic",
  "rayon",
  "tpmt-format",
+ "tpmt-game",
  "tpmt-jmessage",
  "tpmt-pipeline",
 ]
