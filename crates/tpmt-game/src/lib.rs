@@ -17,7 +17,7 @@
 
 // TODO: a golden test that holds every fact these tables state about retail
 // data against every retail file on every disc. Today that is the record
-// width in `jsystem::jmessage::record::LEN` and the argument length each
+// width of each `jsystem::jmessage::LAYOUTS` row and the argument length each
 // `jsystem::jmessage::tag` row gives. A value a table doesn't name is not a
 // claim, so the test shouldn't demand one. It belongs beside the round trip
 // in `crates/tpmt-retail-tests`.

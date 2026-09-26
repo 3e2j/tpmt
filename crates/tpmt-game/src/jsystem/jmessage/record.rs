@@ -1,56 +1,19 @@
-//! The INF1 record, `JMSMesgEntry_c`: how one message is displayed.
+//! `JMSMesgEntry_c`, the INF1 record for every message file but
+//! `zel_unit.bmg`: how one message is displayed.
 //!
 //! `zel_unit.bmg` uses a different record, which `dMsgUnit_c` reads with its
-//! own struct. [`FIELDS`] names the 20-byte record only.
+//! own struct.
 
+use super::{Field, Layout, field};
 use crate::{Entry, entry};
-
-/// How wide the record [`FIELDS`] describes is, text offset included.
-pub const LEN: u16 = 20;
-
-/// One field of the record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Field {
-    /// Byte offset into the whole record, where 0x00 is the text offset.
-    pub offset: usize,
-    /// 1 or 2 bytes, big-endian.
-    pub len: usize,
-    pub name: &'static str,
-    pub notes: &'static str,
-    /// The table naming the field's values, for a 1-byte field that has one.
-    pub values: Option<&'static [Entry<u8>]>,
-}
-
-const fn field(offset: usize, len: usize, name: &'static str) -> Field {
-    Field {
-        offset,
-        len,
-        name,
-        notes: "",
-        values: None,
-    }
-}
-
-impl Field {
-    const fn notes(self, notes: &'static str) -> Self {
-        Self { notes, ..self }
-    }
-
-    const fn values(self, values: &'static [Entry<u8>]) -> Self {
-        Self {
-            values: Some(values),
-            ..self
-        }
-    }
-}
 
 /// The message id, which a file with a MID1 repeats from its MID1 entry.
 pub const ID: Field =
     field(0x04, 2, "Message id").notes("Id the game looks the message up by. Same as the MID1 id");
 
-/// Every field after the 4-byte text offset, in record order.
+/// The record every message file but `zel_unit.bmg` uses.
 #[rustfmt::skip]
-pub static FIELDS: &[Field] = &[
+pub const LAYOUT: Layout = Layout { len: 20, id: Some(ID), fields: &[
     ID,
     field(0x06, 2, "Event label")   .notes("`saveBitLabels` index set when the message displays"),
     field(0x08, 1, "Speaker")       .notes("`Z2SpeechMgr2` voice bank id"),
@@ -65,7 +28,7 @@ pub static FIELDS: &[Field] = &[
     field(0x11, 1, "Face animation").notes("NPC talk face attribute"),
     field(0x12, 1, "Lines per page").notes("Unused. The runtime uses `getLineMax()`"),
     field(0x13, 1, "Padding"),
-];
+]};
 
 /// Screen class, see `dMsgObject_c::talkStartInit`.
 #[rustfmt::skip]
@@ -115,18 +78,3 @@ pub static LINE_ALIGNMENTS: &[Entry<u8>] = &[
     entry(0, "Centered").notes("JP only"),
     entry(1, "Left"),
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The fields tile the record after the text offset, with no gap or
-    /// overlap.
-    #[test]
-    fn the_fields_cover_the_record() {
-        let end = FIELDS.iter().try_fold(4, |at, field| {
-            (field.offset == at).then_some(at + field.len)
-        });
-        assert_eq!(end, Some(LEN as usize));
-    }
-}

@@ -11,7 +11,7 @@ use std::mem;
 use std::ops::Range;
 
 use tpmt_format::Format;
-use tpmt_game::jsystem::jmessage::record::{self, Field};
+use tpmt_game::jsystem::jmessage::{self, Field, Layout};
 use tpmt_jmessage::{
     Bmg, Flow, Message, MessageId, Node, NodeId, Root, TEXT_OFFSET_LEN, TextSegment,
 };
@@ -204,9 +204,9 @@ impl BmgDocument {
     /// record holds a different id than its MID1 entry.
     pub fn open(bytes: &[u8]) -> Result<Self, OpenError> {
         let document = Self::from(Bmg::decode(bytes)?);
-        if document.id_bytes().is_some() {
+        if let Some(id) = document.id_field() {
             for message in &document.bmg.messages {
-                if let Some(record) = read_field(&message.attributes, &record::ID)
+                if let Some(record) = read_field(&message.attributes, &id)
                     && record != message.public_id
                 {
                     return Err(OpenError::IdMismatch {
@@ -240,11 +240,11 @@ impl BmgDocument {
         self.bmg.messages.iter().find(|message| message.id == id)
     }
 
-    /// The named fields of this file's records, or `None` when its records
-    /// aren't the game's 20-byte message record (`zel_unit.bmg`).
+    /// The layout of this file's records, or `None` when the game reads none
+    /// as wide. See [`jmessage::layout`].
     #[must_use]
-    pub fn fields(&self) -> Option<&'static [Field]> {
-        (self.bmg.record_len == record::LEN).then_some(record::FIELDS)
+    pub fn layout(&self) -> Option<&'static Layout> {
+        jmessage::layout(self.bmg.record_len)
     }
 
     /// An internal id no message holds yet, for [`MessageEdit::Insert`].
@@ -267,12 +267,15 @@ impl BmgDocument {
         NodeId(highest.map_or(0, |id| id + 1))
     }
 
-    /// Where the attributes repeat [`Message::public_id`], which only the
-    /// game's own record does, and only in a file with a MID1.
-    fn id_bytes(&self) -> Option<Range<usize>> {
+    /// The field that repeats [`Message::public_id`], which only a layout
+    /// with an id has, and only in a file with a MID1.
+    fn id_field(&self) -> Option<Field> {
         self.bmg.mid1?;
-        self.fields()?;
-        field_bytes(&record::ID)
+        self.layout()?.id
+    }
+
+    fn id_bytes(&self) -> Option<Range<usize>> {
+        field_bytes(&self.id_field()?)
     }
 
     fn attributes_len(&self) -> usize {
@@ -758,6 +761,7 @@ pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<(
 
 #[cfg(test)]
 mod tests {
+    use tpmt_game::jsystem::jmessage::record;
     use tpmt_jmessage::{Encoding, Mid1Header};
 
     use super::*;
@@ -777,7 +781,8 @@ mod tests {
     }
 
     fn field(offset: usize) -> Field {
-        *record::FIELDS
+        *record::LAYOUT
+            .fields
             .iter()
             .find(|field| field.offset == offset)
             .unwrap()
@@ -803,7 +808,7 @@ mod tests {
     fn document() -> BmgDocument {
         BmgDocument::from(Bmg {
             encoding: Encoding::ShiftJis,
-            record_len: record::LEN,
+            record_len: record::LAYOUT.len,
             mid1: Some(Mid1Header::default()),
             messages: vec![message(0, b"Hello"), message(1, b"Unused")],
             flow: Some(Flow {
