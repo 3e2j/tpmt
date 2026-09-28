@@ -855,7 +855,11 @@ mod tests {
                     text: Vec::new(),
                 }],
                 flow: None,
-                strings: Some(vec![Vec::new(), b"arrow".to_vec(), b"arrows".to_vec()]),
+                strings: Some(vec![
+                    Box::default(),
+                    Box::from(*b"arrow"),
+                    Box::from(*b"arrows"),
+                ]),
             },
             edition,
         )

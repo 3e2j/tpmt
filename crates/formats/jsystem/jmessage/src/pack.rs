@@ -73,7 +73,7 @@ pub fn pack(bmg: &Bmg) -> Result<Vec<u8>> {
 /// The string pool rejoined on its terminators, the inverse of
 /// `unpack::read_strings`. A terminator inside an entry would come back as
 /// two entries, so it is refused.
-fn write_strings(strings: &[Vec<u8>]) -> Result<Vec<u8>> {
+fn write_strings(strings: &[Box<[u8]>]) -> Result<Vec<u8>> {
     if strings.iter().any(|string| string.contains(&0)) {
         return Err(Error::Unwritable("a string holds a terminator"));
     }
@@ -172,8 +172,8 @@ mod tests {
 
         // The pool is its bytes, padding included, so one that fills its
         // section is the one that comes back as it went in.
-        let mut strings = vec![b"".to_vec(), b"arrow".to_vec()];
-        strings.resize(20, Vec::new());
+        let mut strings: Vec<Box<[u8]>> = vec![Box::from(*b""), Box::from(*b"arrow")];
+        strings.resize(20, Box::default());
         let bmg = Bmg {
             flow: None,
             strings: Some(strings),
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn a_string_holding_a_terminator_is_unwritable() {
         let bmg = Bmg {
-            strings: Some(vec![b"a\0b".to_vec()]),
+            strings: Some(vec![Box::from(*b"a\0b")]),
             ..sample()
         };
         assert!(matches!(pack(&bmg), Err(Error::Unwritable(_))));

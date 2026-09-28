@@ -130,8 +130,8 @@ pub fn unpack(data: &[u8]) -> Result<Bmg> {
 /// Splitting and rejoining are the same operation backwards, so trailing empty
 /// entries are kept rather than trimmed: they are how a pool that ends in
 /// several terminators comes back as the bytes it was.
-fn read_strings(str1: &[u8]) -> Vec<Vec<u8>> {
-    str1.split(|&byte| byte == 0).map(<[u8]>::to_vec).collect()
+fn read_strings(str1: &[u8]) -> Vec<Box<[u8]>> {
+    str1.split(|&byte| byte == 0).map(Box::from).collect()
 }
 
 #[cfg(test)]
@@ -198,7 +198,12 @@ mod tests {
     fn the_string_pool_keeps_its_empty_entries() {
         assert_eq!(
             read_strings(b"\0arrow\0arrows\0"),
-            [b"".as_slice(), b"arrow", b"arrows", b""]
+            [
+                Box::default(),
+                Box::from(*b"arrow"),
+                Box::from(*b"arrows"),
+                Box::default()
+            ]
         );
     }
 }

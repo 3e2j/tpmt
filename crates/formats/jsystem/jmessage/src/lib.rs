@@ -158,7 +158,7 @@ pub struct Bmg {
     /// STR1: a flat pool of null terminated strings that attributes point into
     /// by byte offset, such as common used item names. One entry per string,
     /// terminators excluded.
-    pub strings: Option<Vec<Vec<u8>>>,
+    pub strings: Option<Vec<Box<[u8]>>>,
 }
 
 impl Format<'_> for Bmg {
