@@ -71,12 +71,13 @@ pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
             // sits in `out` and can be copied in one shot.
             out.extend_from_within(start..start + length as usize);
         } else {
-            // One byte at a time here: a run this short repeats a pattern
-            // shorter than itself, so the bytes this copy writes are bytes
-            // it then goes on to read.
-            for i in 0..length {
-                let byte = out[start + i as usize];
-                out.push(byte);
+            // A run longer than its distance repeats the `distance` bytes behind
+            // it, so everything from `start` on has that period. Copying from
+            // `start` again after each pass doubles the chunk and keeps the period.
+            let end = out.len() + length as usize;
+            while out.len() < end {
+                let chunk = (out.len() - start).min(end - out.len());
+                out.extend_from_within(start..start + chunk);
             }
         }
     }
