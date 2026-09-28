@@ -6,6 +6,8 @@
 //! builds one up and backpatches the offsets that were not knowable at the
 //! point they were reserved.
 
+use std::fmt;
+
 /// A read that could not be satisfied from the buffer it was aimed at.
 ///
 /// Every offset here comes out of a file header, which is to say out of a file
@@ -21,6 +23,94 @@ pub enum ByteError {
 }
 
 pub type Result<T> = std::result::Result<T, ByteError>;
+
+/// A big-endian `u16` as it sits in a file: two bytes, aligned to one.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
+pub struct Be16([u8; 2]);
+
+impl Be16 {
+    #[must_use]
+    pub const fn new(value: u16) -> Self {
+        Self(value.to_be_bytes())
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        u16::from_be_bytes(self.0)
+    }
+}
+
+impl fmt::Debug for Be16 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#X}", self.get())
+    }
+}
+
+/// A big-endian `u32` as it sits in a file: four bytes, aligned to one.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
+pub struct Be32([u8; 4]);
+
+impl Be32 {
+    #[must_use]
+    pub const fn new(value: u32) -> Self {
+        Self(value.to_be_bytes())
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        u32::from_be_bytes(self.0)
+    }
+}
+
+impl fmt::Debug for Be32 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#X}", self.get())
+    }
+}
+
+/// A one-byte flag as it sits in a file. Any byte is a valid `Flag`, unlike
+/// a `bool`, and any nonzero byte reads as set.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
+pub struct Flag(u8);
+
+impl Flag {
+    #[must_use]
+    pub const fn new(value: bool) -> Self {
+        Self(value as u8)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> bool {
+        self.0 != 0
+    }
+}
+
+impl fmt::Debug for Flag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.get())
+    }
+}
+
+/// A record whose memory layout is its file layout, so
+/// [`Reader::view_at`] can borrow one straight out of the buffer and
+/// [`Writer::record`] can append one as it stands.
+///
+/// # Safety
+///
+/// The implementor **must**:
+///
+/// - be `#[repr(C)]`, so fields keep declaration order and add no padding;
+/// - hold only `u8`, `[u8; N]`, [`Be16`], [`Be32`], [`Flag`], or other
+///   `Layout` types,
+///   so it has alignment 1 and every bit pattern is valid.
+///
+/// A compile-time check catches a native `u16` or `u32` field. Nothing
+/// catches a `bool` or an enum, which have alignment 1 but invalid bit
+/// patterns.
+pub unsafe trait Layout: Sized {}
 
 /// A cursor over a borrowed buffer.
 ///
@@ -160,6 +250,45 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// Borrows a whole record at an absolute position. Its fields decode on
+    /// access, and nothing is copied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if the record runs past the end of
+    /// the buffer.
+    pub fn view_at<T: Layout>(&self, pos: usize) -> Result<&'a T> {
+        const { assert!(align_of::<T>() == 1, "a Layout type must be aligned to 1") };
+        let bytes = self.slice_at(pos, size_of::<T>())?;
+        // SAFETY: `bytes` is exactly `size_of::<T>()` long and outlives `'a`.
+        // `T` is aligned to 1 (checked above), so any address suits it, and
+        // `Layout` promises every bit pattern is a valid `T`.
+        Ok(unsafe { &*bytes.as_ptr().cast::<T>() })
+    }
+
+    /// Borrows `count` records laid end to end at an absolute position, the
+    /// way a file stores a table of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ByteError::OutOfBounds`] if the table runs past the end of
+    /// the buffer, or its length overflows.
+    pub fn slice_of<T: Layout>(&self, pos: usize, count: usize) -> Result<&'a [T]> {
+        const { assert!(align_of::<T>() == 1, "a Layout type must be aligned to 1") };
+        let len = count
+            .checked_mul(size_of::<T>())
+            .ok_or(ByteError::OutOfBounds {
+                pos,
+                len: usize::MAX,
+                size: self.data.len(),
+            })?;
+        let bytes = self.slice_at(pos, len)?;
+        // SAFETY: `bytes` is exactly `count * size_of::<T>()` long and outlives
+        // `'a`. `T` is aligned to 1 (checked above), so any address suits it,
+        // and `Layout` promises every bit pattern is a valid `T`.
+        Ok(unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<T>(), count) })
+    }
+
     /// Borrows the null-terminated bytes at an absolute position, terminator
     /// excluded. What encoding they are in is the caller's business.
     ///
@@ -236,6 +365,17 @@ impl Writer {
 
     pub fn u32(&mut self, value: u32) {
         self.bytes(&value.to_be_bytes());
+    }
+
+    /// Appends a whole record, fields in declaration order.
+    pub fn record<T: Layout>(&mut self, record: &T) {
+        const { assert!(align_of::<T>() == 1, "a Layout type must be aligned to 1") };
+        // SAFETY: `Layout` rules out padding, so all `size_of::<T>()` bytes
+        // behind `record` are initialized, and a `u8` slice needs no alignment.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(std::ptr::from_ref(record).cast::<u8>(), size_of::<T>())
+        };
+        self.bytes(bytes);
     }
 
     /// Appends `len` bytes of nothing. Whole regions of the preamble are zero,
@@ -325,6 +465,58 @@ mod tests {
             reader.slice_at(4, usize::MAX),
             Err(ByteError::OutOfBounds { .. })
         ));
+    }
+
+    #[repr(C)]
+    struct Record {
+        tag: u8,
+        wide: Be32,
+        narrow: Be16,
+    }
+
+    // SAFETY: repr(C), and every field is a byte or a big-endian wrapper.
+    unsafe impl Layout for Record {}
+
+    /// Starting at an odd position proves the view never needed alignment.
+    #[test]
+    fn views_decode_big_endian_at_any_offset() {
+        let reader = Reader::new(&[0xFF, 0x0D, 0x00, 0x01, 0x02, 0x03, 0xAC, 0xED]);
+        let record: &Record = reader.view_at(1).unwrap();
+        assert_eq!(record.tag, 0x0D);
+        assert_eq!(record.wide.get(), 0x0001_0203);
+        assert_eq!(record.narrow.get(), 0xACED);
+        assert!(matches!(
+            reader.view_at::<Record>(2),
+            Err(ByteError::OutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn tables_borrow_every_record_in_place() {
+        let reader = Reader::new(&[
+            0xFF, 0x0D, 0x00, 0x01, 0x02, 0x03, 0xAC, 0xED, 0x0E, 0, 0, 0, 1, 0, 2,
+        ]);
+        let records: &[Record] = reader.slice_of(1, 2).unwrap();
+        assert_eq!(records[0].wide.get(), 0x0001_0203);
+        assert_eq!(records[1].tag, 0x0E);
+        assert_eq!(records[1].narrow.get(), 2);
+        assert!(reader.slice_of::<Record>(2, 2).is_err());
+        assert!(reader.slice_of::<Record>(0, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn a_written_record_reads_back() {
+        let mut writer = Writer::new();
+        writer.u8(0xFF);
+        writer.record(&Record {
+            tag: 0x0D,
+            wide: Be32::new(0x0001_0203),
+            narrow: Be16::new(0xACED),
+        });
+        assert_eq!(
+            writer.finish(),
+            [0xFF, 0x0D, 0x00, 0x01, 0x02, 0x03, 0xAC, 0xED]
+        );
     }
 
     #[test]

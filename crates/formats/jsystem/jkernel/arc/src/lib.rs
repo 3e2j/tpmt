@@ -213,63 +213,106 @@ impl<'a> Format<'a> for Archive<'a> {
 /// The fixed 0x20 at the front of the archive. Everything else is found
 /// through it.
 mod top_header {
+    use tpmt_bytes::{Be32, Layout};
+
+    #[repr(C)]
+    pub struct TopHeader {
+        /// Always [`MAGIC`], the only field that identifies an archive.
+        pub magic: [u8; 4],
+        pub file_size: Be32,
+        pub data_header_ptr: Be32,
+        /// Counted from the data header, like the offsets below. Some
+        /// references count it from 0x20 instead. Retail archives always put
+        /// the data header at 0x20, so both readings agree.
+        pub file_data_ptr: Be32,
+        pub total_data_size: Be32,
+        pub mram_size: Be32,
+        pub aram_size: Be32,
+        /// Unnamed, and zero on every retail archive.
+        pub unnamed: [u8; 4],
+    }
+
+    // SAFETY: repr(C), and every field is bytes or a big-endian wrapper.
+    unsafe impl Layout for TopHeader {}
+
     pub const LEN: usize = 0x20;
-    /// What 0x00 holds, which is the only way to tell an archive from anything
-    /// else handed to [`decode`](super::Archive::decode).
+    const _: () = assert!(size_of::<TopHeader>() == LEN);
     pub const MAGIC: &[u8; 4] = b"RARC";
-    pub const FILE_SIZE: usize = 0x04;
-    pub const DATA_HEADER_PTR: usize = 0x08;
-    /// A field of this header, but counted from the data header like
-    /// everything below. References disagree on whether the anchor is the data
-    /// header or 0x20; every retail archive pins the data header at 0x20,
-    /// where nothing distinguishes the two.
-    pub const FILE_DATA_PTR: usize = 0x0C;
-    pub const TOTAL_DATA_SIZE: usize = 0x10;
-    pub const MRAM_SIZE: usize = 0x14;
-    pub const ARAM_SIZE: usize = 0x18;
-    // Nothing names 0x1C, which is zero on every retail archive.
 }
 
 /// What the top header points at. Every offset in it, and the file data offset
 /// above, is counted from where this header starts.
 mod data_header {
+    use tpmt_bytes::{Be16, Be32, Flag, Layout};
+
+    #[repr(C)]
+    pub struct DataHeader {
+        pub node_count: Be32,
+        pub node_list_ptr: Be32,
+        pub entry_count: Be32,
+        pub entry_list_ptr: Be32,
+        pub string_pool_size: Be32,
+        pub string_pool_ptr: Be32,
+        pub next_free_id: Be16,
+        pub synced_ids: Flag,
+        /// Unnamed, and zero.
+        pub unnamed: [u8; 5],
+    }
+
+    // SAFETY: repr(C), and every field is bytes or a big-endian wrapper.
+    unsafe impl Layout for DataHeader {}
+
     /// It follows the top header, so it starts one header in.
     pub const AT: usize = super::top_header::LEN;
     pub const LEN: usize = 0x20;
-    pub const NODE_COUNT: usize = 0x00;
-    pub const NODE_LIST_PTR: usize = 0x04;
-    pub const ENTRY_COUNT: usize = 0x08;
-    pub const ENTRY_LIST_PTR: usize = 0x0C;
-    pub const STRING_POOL_SIZE: usize = 0x10;
-    pub const STRING_POOL_PTR: usize = 0x14;
-    pub const NEXT_FREE_ID: usize = 0x18;
-    pub const SYNCED_IDS: usize = 0x1A;
-    // The five bytes after the sync flag are unnamed and zero.
+    const _: () = assert!(size_of::<DataHeader>() == LEN);
 }
 
 /// One directory's record, in the list the data header points at.
 mod node {
+    use tpmt_bytes::{Be16, Be32, Layout};
+
+    #[repr(C)]
+    pub struct Node {
+        /// A four character tag.
+        pub tag: [u8; 4],
+        pub name: Be32,
+        pub name_hash: Be16,
+        /// Counts `.`, `..` and subdirectories as well as files.
+        pub entry_count: Be16,
+        pub first_entry: Be32,
+    }
+
+    // SAFETY: repr(C), and every field is bytes or a big-endian wrapper.
+    unsafe impl Layout for Node {}
+
     pub const LEN: usize = 0x10;
-    // 0x00 is a four character tag, so the first named field is 0x04.
-    pub const NAME: usize = 0x04;
-    pub const NAME_HASH: usize = 0x08;
-    /// `.`, `..` and subdirectories are counted here too, not just files.
-    pub const ENTRY_COUNT: usize = 0x0A;
-    pub const FIRST_ENTRY: usize = 0x0C;
+    const _: () = assert!(size_of::<Node>() == LEN);
 }
 
 /// One file's or one directory's record. A directory's points at its node, a
 /// file's at its bytes.
 mod entry {
+    use tpmt_bytes::{Be16, Be32, Layout};
+
+    #[repr(C)]
+    pub struct Entry {
+        pub id: Be16,
+        pub name_hash: Be16,
+        /// Flags in the top byte, and the name's string pool offset in the
+        /// low three.
+        pub flags_and_name: Be32,
+        pub data_or_node: Be32,
+        pub data_size: Be32,
+        /// Always zero.
+        pub unnamed: [u8; 4],
+    }
+
+    // SAFETY: repr(C), and every field is bytes or a big-endian wrapper.
+    unsafe impl Layout for Entry {}
+
     pub const LEN: usize = 0x14;
-    pub const ID: usize = 0x00;
-    pub const NAME_HASH: usize = 0x02;
-    /// Carries two things: the flags in the top byte, the offset of the
-    /// entry's name in the string pool in the remaining three.
-    pub const FLAGS_AND_NAME: usize = 0x04;
-    pub const DATA_OR_NODE: usize = 0x08;
-    pub const DATA_SIZE: usize = 0x0C;
-    // The last 0x04 of a record are always zero.
+    const _: () = assert!(size_of::<Entry>() == LEN);
 
     // What splits the field above into its two halves.
     pub const FLAGS_SHIFT: u32 = 24;

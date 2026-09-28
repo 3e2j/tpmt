@@ -1,11 +1,15 @@
 //! The read path: turns an archive's bytes back into an [`Archive`], nothing
 //! copied out of the input.
 
-use tpmt_bytes::Reader;
+use tpmt_bytes::{Be32, Reader};
 
 use crate::{
-    Archive, Error, File, Format, Preload, Result, data_header, entry, name_hash, next_free_id,
-    node, top_header,
+    Archive, Error, File, Format, Preload, Result,
+    data_header::DataHeader,
+    entry::{self, Entry},
+    name_hash, next_free_id,
+    node::Node,
+    top_header::TopHeader,
 };
 
 /// One archive opened for reading: its bytes, and where each section starts.
@@ -18,13 +22,12 @@ use crate::{
 struct ArchiveReader<'a> {
     /// The whole archive, every read out of it bounds checked.
     reader: Reader<'a>,
-    /// One 0x10 record per directory, naming the run of entries it holds.
-    nodes_at: usize,
-    node_count: usize,
-    /// One 0x14 record per file and per directory, `.` and `..` included. A
+    /// One record per directory, naming the run of entries it holds. Never
+    /// empty, since node 0 is the root.
+    nodes: &'a [Node],
+    /// One record per file and per directory, `.` and `..` included. A
     /// directory's record points at its node, a file's at its bytes.
-    entries_at: usize,
-    entry_count: usize,
+    entries: &'a [Entry],
     /// Every name, null terminated and Shift-JIS, referred to by offset from
     /// the start of it.
     string_pool_at: usize,
@@ -38,7 +41,8 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
     }
 
     let reader = Reader::new(data);
-    if reader.u32_at(top_header::FILE_SIZE)? as usize != data.len() {
+    let top: &TopHeader = reader.view_at(0)?;
+    if top.file_size.get() as usize != data.len() {
         return Err(Error::Corrupt("the stated size is not the actual size"));
     }
 
@@ -46,49 +50,38 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
     // the archive. A nonsense offset saturates rather than wrapping to something
     // small, so it stays out of bounds and is caught by the checks below or by
     // the first read that follows it.
-    let header = reader.u32_at(top_header::DATA_HEADER_PTR)? as usize;
-    let relative = |field| -> Result<usize> {
-        Ok(header.saturating_add(reader.u32_at(header + field)? as usize))
-    };
+    let header = top.data_header_ptr.get() as usize;
+    let relative = |field: Be32| header.saturating_add(field.get() as usize);
 
-    let node_count = reader.u32_at(header + data_header::NODE_COUNT)? as usize;
-    let nodes_at = relative(data_header::NODE_LIST_PTR)?;
-    let entry_count = reader.u32_at(header + data_header::ENTRY_COUNT)? as usize;
-    let entries_at = relative(data_header::ENTRY_LIST_PTR)?;
+    let data_header: &DataHeader = reader.view_at(header)?;
 
-    // A bad count is refused before it can size an allocation or a walk, so
-    // past here the node list and the entry list are known to sit inside the
-    // buffer.
-    let fits = |offset: usize, count: usize, record: usize| {
-        count
-            .checked_mul(record)
-            .and_then(|len| offset.checked_add(len))
-            .is_some_and(|end| end <= data.len())
-    };
-    if node_count == 0 {
+    // A bad count is refused before it can size an allocation or a walk.
+    let nodes: &[Node] = reader
+        .slice_of(
+            relative(data_header.node_list_ptr),
+            data_header.node_count.get() as usize,
+        )
+        .map_err(|_| Error::Corrupt("more directories than the archive could hold"))?;
+    let Some(root_node) = nodes.first() else {
         return Err(Error::Corrupt("there is no root directory"));
-    }
-    if !fits(nodes_at, node_count, node::LEN) {
-        return Err(Error::Corrupt(
-            "more directories than the archive could hold",
-        ));
-    }
-    if !fits(entries_at, entry_count, entry::LEN) {
-        return Err(Error::Corrupt("more entries than the archive could hold"));
-    }
+    };
+    let entries: &[Entry] = reader
+        .slice_of(
+            relative(data_header.entry_list_ptr),
+            data_header.entry_count.get() as usize,
+        )
+        .map_err(|_| Error::Corrupt("more entries than the archive could hold"))?;
 
-    let file_data_at = header.saturating_add(reader.u32_at(top_header::FILE_DATA_PTR)? as usize);
+    let file_data_at = relative(top.file_data_ptr);
     // The three fields below are never read again once this passes: nothing
     // downstream needs a stated size, only the actual bytes.
-    if reader.u32_at(top_header::TOTAL_DATA_SIZE)? as usize
-        != data.len().saturating_sub(file_data_at)
-    {
+    if top.total_data_size.get() as usize != data.len().saturating_sub(file_data_at) {
         return Err(Error::Corrupt(
             "the stated data size does not match the file",
         ));
     }
-    let mram_size = reader.u32_at(top_header::MRAM_SIZE)? as usize;
-    let aram_size = reader.u32_at(top_header::ARAM_SIZE)? as usize;
+    let mram_size = top.mram_size.get() as usize;
+    let aram_size = top.aram_size.get() as usize;
     if mram_size
         .checked_add(aram_size)
         .is_none_or(|preloaded| preloaded > data.len() - file_data_at)
@@ -99,22 +92,18 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
     }
 
     let opened = ArchiveReader {
-        nodes_at,
-        node_count,
-        entries_at,
-        entry_count,
-        string_pool_at: relative(data_header::STRING_POOL_PTR)?,
+        nodes,
+        entries,
+        string_pool_at: relative(data_header.string_pool_ptr),
         file_data_at,
         reader,
     };
     // The root is node 0, and its name is the one thing read outside the walk.
-    let name_at = opened.reader.u32_at(nodes_at + node::NAME)?;
-    let hash = opened.reader.u16_at(nodes_at + node::NAME_HASH)?;
-    let root = opened.name(name_at, hash)?;
+    let root = opened.name(root_node.name.get(), root_node.name_hash.get())?;
 
     // Only used for the verification below, never again: this is the one
     // place anything reads the stored counter back.
-    let stored = opened.reader.u16_at(header + data_header::NEXT_FREE_ID)?;
+    let stored = data_header.next_free_id.get();
     let (files, derived) = opened.walk()?;
     Ok(Archive {
         root,
@@ -131,8 +120,8 @@ impl<'a> ArchiveReader<'a> {
     // Hands back the next-free-id counter the files come to, since the ids they
     // came to it under are gone by the time anything else could work it out.
     fn walk(&self) -> Result<(Vec<File<'a>>, u16)> {
-        let mut files = Vec::with_capacity(self.entry_count);
-        let mut visited = vec![false; self.node_count];
+        let mut files = Vec::with_capacity(self.entries.len());
+        let mut visited = vec![false; self.nodes.len()];
         let mut highest = None;
         let mut synced = true;
         // Each frame is a directory mid-walk: the entries it still owes, and
@@ -145,11 +134,10 @@ impl<'a> ArchiveReader<'a> {
                 continue;
             };
 
-            let record = self.entries_at + index * entry::LEN;
-            let flags_and_name = self.reader.u32_at(record + entry::FLAGS_AND_NAME)?;
+            let record = &self.entries[index];
+            let flags_and_name = record.flags_and_name.get();
             let flags = flags_and_name >> entry::FLAGS_SHIFT;
-            let hash = self.reader.u16_at(record + entry::NAME_HASH)?;
-            let name = self.name(flags_and_name & entry::NAME_MASK, hash)?;
+            let name = self.name(flags_and_name & entry::NAME_MASK, record.name_hash.get())?;
 
             // Every directory carries a `.` entry pointing at itself and a
             // `..` pointing at its parent, the only link back up.
@@ -166,7 +154,7 @@ impl<'a> ArchiveReader<'a> {
             } else {
                 format!("{prefix}/{name}")
             };
-            let target = self.reader.u32_at(record + entry::DATA_OR_NODE)? as usize;
+            let target = record.data_or_node.get() as usize;
 
             if flags & entry::FLAG_DIRECTORY != 0 {
                 let range = self.open_node(target, &mut visited)?;
@@ -174,7 +162,7 @@ impl<'a> ArchiveReader<'a> {
             } else {
                 // A file's target is the offset of its bytes within the data
                 // section, and exactly one of the three memory bits is set.
-                let size = self.reader.u32_at(record + entry::DATA_SIZE)? as usize;
+                let size = record.data_size.get() as usize;
                 let preload = if flags & entry::FLAG_MRAM != 0 {
                     Preload::Mram
                 } else if flags & entry::FLAG_ARAM != 0 {
@@ -184,7 +172,7 @@ impl<'a> ArchiveReader<'a> {
                 } else {
                     return Err(Error::Corrupt("a file is marked for no memory at all"));
                 };
-                let id = self.reader.u16_at(record + entry::ID)?;
+                let id = record.id.get();
                 highest = highest.max(Some(id));
                 synced &= usize::from(id) == index;
                 files.push(File {
@@ -196,7 +184,7 @@ impl<'a> ArchiveReader<'a> {
             }
         }
 
-        Ok((files, next_free_id(self.entry_count, highest, synced)?))
+        Ok((files, next_free_id(self.entries.len(), highest, synced)?))
     }
 
     /// Marks a node visited and hands back the run of entries it owns.
@@ -214,12 +202,12 @@ impl<'a> ArchiveReader<'a> {
             Some(seen) => *seen = true,
         }
 
-        let record = self.nodes_at + index * node::LEN;
-        let first = self.reader.u32_at(record + node::FIRST_ENTRY)? as usize;
-        let count = self.reader.u16_at(record + node::ENTRY_COUNT)? as usize;
+        let record = &self.nodes[index];
+        let first = record.first_entry.get() as usize;
+        let count = record.entry_count.get() as usize;
         first
             .checked_add(count)
-            .filter(|&end| end <= self.entry_count)
+            .filter(|&end| end <= self.entries.len())
             .map(|end| first..end)
             .ok_or(Error::Corrupt(
                 "a directory claims entries that do not exist",
@@ -249,9 +237,12 @@ impl<'a> ArchiveReader<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::mem::offset_of;
+
     use tpmt_bytes::Writer;
 
     use super::*;
+    use crate::data_header;
     use crate::pack::{
         self,
         tests::{ENTRIES, NAME_A, NODES, STRINGS, archive},
@@ -292,13 +283,9 @@ mod tests {
         let mut data = archive();
         assert!(unpack(&data).unwrap().next_free_id.is_none());
 
-        let derived = Reader::new(&data)
-            .u16_at(data_header::AT + data_header::NEXT_FREE_ID)
-            .unwrap();
-        let stored = derived + 3;
-        data[data_header::AT + data_header::NEXT_FREE_ID
-            ..data_header::AT + data_header::NEXT_FREE_ID + 2]
-            .copy_from_slice(&stored.to_be_bytes());
+        let at = data_header::AT + offset_of!(DataHeader, next_free_id);
+        let stored = Reader::new(&data).u16_at(at).unwrap() + 3;
+        data[at..at + 2].copy_from_slice(&stored.to_be_bytes());
 
         let opened = unpack(&data).unwrap();
         assert_eq!(opened.next_free_id, Some(stored));
@@ -310,7 +297,10 @@ mod tests {
         let mut w = Writer::from(archive());
         // Halfwidth katakana RI, one byte in Shift-JIS.
         w.u8_at(STRINGS + NAME_A, 0xD8);
-        w.u16_at(ENTRIES + entry::NAME_HASH, name_hash(b"\xD8.bin"));
+        w.u16_at(
+            ENTRIES + offset_of!(Entry, name_hash),
+            name_hash(b"\xD8.bin"),
+        );
         let data = w.finish();
         let opened = unpack(&data).unwrap();
         assert_eq!(opened.files[0].path, "ﾘ.bin");
@@ -340,7 +330,7 @@ mod tests {
     #[test]
     fn rejects_an_archive_with_no_nodes() {
         let mut w = Writer::from(archive());
-        w.u32_at(data_header::AT + data_header::NODE_COUNT, 0);
+        w.u32_at(data_header::AT + offset_of!(DataHeader, node_count), 0);
         let data = w.finish();
         assert!(matches!(
             unpack(&data),
@@ -355,11 +345,11 @@ mod tests {
     fn rejects_counts_that_cannot_fit() {
         let counts = [
             (
-                data_header::NODE_COUNT,
+                offset_of!(DataHeader, node_count),
                 "more directories than the archive could hold",
             ),
             (
-                data_header::ENTRY_COUNT,
+                offset_of!(DataHeader, entry_count),
                 "more entries than the archive could hold",
             ),
         ];
@@ -377,7 +367,7 @@ mod tests {
     #[test]
     fn rejects_a_directory_claiming_missing_entries() {
         let mut w = Writer::from(archive());
-        w.u16_at(NODES + node::ENTRY_COUNT, 100);
+        w.u16_at(NODES + offset_of!(Node, entry_count), 100);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
@@ -386,7 +376,7 @@ mod tests {
     fn a_directory_cycle_is_refused() {
         let mut w = Writer::from(archive());
         // Aim `sub`'s entry back at the root's node.
-        w.u32_at(ENTRIES + entry::LEN + entry::DATA_OR_NODE, 0);
+        w.u32_at(ENTRIES + entry::LEN + offset_of!(Entry, data_or_node), 0);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
@@ -394,7 +384,7 @@ mod tests {
     #[test]
     fn a_dangling_directory_is_refused() {
         let mut w = Writer::from(archive());
-        w.u32_at(ENTRIES + entry::LEN + entry::DATA_OR_NODE, 9);
+        w.u32_at(ENTRIES + entry::LEN + offset_of!(Entry, data_or_node), 9);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
@@ -403,7 +393,7 @@ mod tests {
     fn rejects_a_name_with_a_separator() {
         let mut w = Writer::from(archive());
         w.u8_at(STRINGS + NAME_A + 1, b'/');
-        w.u16_at(ENTRIES + entry::NAME_HASH, name_hash(b"a/bin"));
+        w.u16_at(ENTRIES + offset_of!(Entry, name_hash), name_hash(b"a/bin"));
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::UnusableName(_))));
     }
@@ -413,7 +403,10 @@ mod tests {
         let mut w = Writer::from(archive());
         // A lead byte with no trail byte after it.
         w.u8_at(STRINGS + NAME_A, 0x85);
-        w.u16_at(ENTRIES + entry::NAME_HASH, name_hash(b"\x85.bin"));
+        w.u16_at(
+            ENTRIES + offset_of!(Entry, name_hash),
+            name_hash(b"\x85.bin"),
+        );
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
@@ -421,7 +414,7 @@ mod tests {
     #[test]
     fn rejects_a_wrong_name_hash() {
         let mut w = Writer::from(archive());
-        w.u16_at(ENTRIES + entry::NAME_HASH, 0xBEEF);
+        w.u16_at(ENTRIES + offset_of!(Entry, name_hash), 0xBEEF);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
@@ -429,14 +422,14 @@ mod tests {
     #[test]
     fn rejects_a_file_marked_for_no_memory() {
         let mut data = archive();
-        data[ENTRIES + entry::FLAGS_AND_NAME] = 0x01;
+        data[ENTRIES + offset_of!(Entry, flags_and_name)] = 0x01;
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn rejects_a_wrong_total_data_size() {
         let mut w = Writer::from(archive());
-        w.u32_at(top_header::TOTAL_DATA_SIZE, 0);
+        w.u32_at(offset_of!(TopHeader, total_data_size), 0);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
@@ -444,7 +437,7 @@ mod tests {
     #[test]
     fn rejects_preload_sizes_bigger_than_the_data_section() {
         let mut w = Writer::from(archive());
-        w.u32_at(top_header::MRAM_SIZE, u32::MAX);
+        w.u32_at(offset_of!(TopHeader, mram_size), u32::MAX);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }

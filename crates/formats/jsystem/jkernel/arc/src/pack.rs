@@ -2,10 +2,14 @@
 
 use std::collections::HashSet;
 
-use tpmt_bytes::Writer;
+use tpmt_bytes::{Be16, Be32, Flag, Writer};
 
 use crate::{
-    Archive, Error, Preload, Result, data_header, entry, name_hash, next_free_id, node, top_header,
+    Archive, Error, Preload, Result,
+    data_header::{self, DataHeader},
+    entry, name_hash, next_free_id,
+    node::{self, Node},
+    top_header::{self, TopHeader},
 };
 
 // The string pool opens with `.` and `..`, in that order, so the offset
@@ -174,28 +178,13 @@ pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
 
     // Every length is known by now, so the whole archive is one allocation.
     let mut out = Writer::with_capacity(sections.data_at + placed.data_size);
-    write_headers(&mut out, &tree, &sections, next_free, placed.synced)?;
+    write_headers(&mut out, &tree, &sections, &placed, next_free)?;
     write_nodes(&mut out, &tree, &string_pool)?;
     write_entries(&mut out, archive, &tree, &string_pool, &placed)?;
     out.bytes(&string_pool.bytes);
     out.zeros(sections.string_pool_size - string_pool.bytes.len());
     write_file_data(&mut out, archive, &tree);
-
-    // The four fields that need the finished file's length.
-    let size = u32::try_from(out.len()).map_err(|_| Error::Oversized)?;
-    out.u32_at(top_header::FILE_SIZE, size);
-    out.u32_at(
-        top_header::TOTAL_DATA_SIZE,
-        size - u32::try_from(sections.data_at).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        top_header::MRAM_SIZE,
-        u32::try_from(placed.mram).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        top_header::ARAM_SIZE,
-        u32::try_from(placed.aram).map_err(|_| Error::Oversized)?,
-    );
+    debug_assert_eq!(out.len(), sections.data_at + placed.data_size);
     Ok(out.finish())
 }
 
@@ -383,54 +372,41 @@ impl SectionOffsets {
     }
 }
 
-/// Both headers, which go out as zeros and are then patched field by field.
-/// Whatever is never patched stays zero, which is what the unnamed fields hold
-/// on a retail archive anyway.
+/// Writes the top header and the data header.
 fn write_headers(
     out: &mut Writer,
     tree: &DirTree,
     sections: &SectionOffsets,
+    placed: &Placement,
     next_free: u16,
-    synced: bool,
 ) -> Result<()> {
+    let be32 = |value: usize| {
+        u32::try_from(value)
+            .map(Be32::new)
+            .map_err(|_| Error::Oversized)
+    };
     let header = data_header::AT;
-    out.bytes(top_header::MAGIC);
-    out.zeros(sections.nodes_at - top_header::MAGIC.len());
-    out.u32_at(
-        top_header::DATA_HEADER_PTR,
-        u32::try_from(header).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        top_header::FILE_DATA_PTR,
-        u32::try_from(sections.data_at - header).map_err(|_| Error::Oversized)?,
-    );
-
-    out.u32_at(
-        header + data_header::NODE_COUNT,
-        u32::try_from(tree.order.len()).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        header + data_header::NODE_LIST_PTR,
-        u32::try_from(sections.nodes_at - header).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        header + data_header::ENTRY_COUNT,
-        u32::try_from(tree.entry_count).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        header + data_header::ENTRY_LIST_PTR,
-        u32::try_from(sections.entries_at - header).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        header + data_header::STRING_POOL_SIZE,
-        u32::try_from(sections.string_pool_size).map_err(|_| Error::Oversized)?,
-    );
-    out.u32_at(
-        header + data_header::STRING_POOL_PTR,
-        u32::try_from(sections.string_pool_at - header).map_err(|_| Error::Oversized)?,
-    );
-    out.u16_at(header + data_header::NEXT_FREE_ID, next_free);
-    out.u8_at(header + data_header::SYNCED_IDS, synced as u8);
+    out.record(&TopHeader {
+        magic: *top_header::MAGIC,
+        file_size: be32(sections.data_at + placed.data_size)?,
+        data_header_ptr: be32(header)?,
+        file_data_ptr: be32(sections.data_at - header)?,
+        total_data_size: be32(placed.data_size)?,
+        mram_size: be32(placed.mram)?,
+        aram_size: be32(placed.aram)?,
+        unnamed: [0; 4],
+    });
+    out.record(&DataHeader {
+        node_count: be32(tree.order.len())?,
+        node_list_ptr: be32(sections.nodes_at - header)?,
+        entry_count: be32(tree.entry_count)?,
+        entry_list_ptr: be32(sections.entries_at - header)?,
+        string_pool_size: be32(sections.string_pool_size)?,
+        string_pool_ptr: be32(sections.string_pool_at - header)?,
+        next_free_id: Be16::new(next_free),
+        synced_ids: Flag::new(placed.synced),
+        unnamed: [0; 5],
+    });
     Ok(())
 }
 
@@ -439,19 +415,22 @@ fn write_nodes(out: &mut Writer, tree: &DirTree, string_pool: &StringPool) -> Re
     for (node, &dir) in tree.order.iter().enumerate() {
         // The fourcc: the name ASCII-uppercased, truncated to four, space
         // padded. The root is `ROOT` whatever its name is.
-        if node == 0 {
-            out.bytes(b"ROOT");
-        } else {
-            let mut fourcc = [b' '; 4];
-            for (at, byte) in tree.dirs[dir].name.iter().take(4).enumerate() {
-                fourcc[at] = byte.to_ascii_uppercase();
+        let mut tag = *b"ROOT";
+        if node != 0 {
+            tag = [b' '; 4];
+            for (slot, byte) in tag.iter_mut().zip(&tree.dirs[dir].name) {
+                *slot = byte.to_ascii_uppercase();
             }
-            out.bytes(&fourcc);
         }
-        out.u32(string_pool.dir_name_ats[dir]);
-        out.u16(name_hash(&tree.dirs[dir].name));
-        out.u16(u16::try_from(tree.dirs[dir].children.len() + 2).map_err(|_| Error::Oversized)?);
-        out.u32(tree.first_entry[node]);
+        out.record(&Node {
+            tag,
+            name: Be32::new(string_pool.dir_name_ats[dir]),
+            name_hash: Be16::new(name_hash(&tree.dirs[dir].name)),
+            entry_count: Be16::new(
+                u16::try_from(tree.dirs[dir].children.len() + 2).map_err(|_| Error::Oversized)?,
+            ),
+            first_entry: Be32::new(tree.first_entry[node]),
+        });
     }
     out.align(ALIGN);
     Ok(())
@@ -529,12 +508,14 @@ fn write_file_data(out: &mut Writer, archive: &Archive, tree: &DirTree) {
 /// `name_at`, and is only needed for its hash. Directories share the id that
 /// is no id.
 fn dir_entry(out: &mut Writer, name: &[u8], name_at: u32, node: u32) {
-    out.u16(entry::NO_ID);
-    out.u16(name_hash(name));
-    out.u32(entry::FLAG_DIRECTORY << entry::FLAGS_SHIFT | name_at);
-    out.u32(node);
-    out.u32(entry::DIRECTORY_SIZE);
-    out.u32(0);
+    out.record(&entry::Entry {
+        id: Be16::new(entry::NO_ID),
+        name_hash: Be16::new(name_hash(name)),
+        flags_and_name: Be32::new(entry::FLAG_DIRECTORY << entry::FLAGS_SHIFT | name_at),
+        data_or_node: Be32::new(node),
+        data_size: Be32::new(entry::DIRECTORY_SIZE),
+        unnamed: [0; 4],
+    });
 }
 
 /// The four fields a file's entry states about itself that nothing else on
@@ -564,12 +545,14 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
             0
         };
 
-    out.u16(entry.id);
-    out.u16(entry.hash);
-    out.u32(flags << entry::FLAGS_SHIFT | entry.name_at);
-    out.u32(entry.offset);
-    out.u32(size);
-    out.u32(0);
+    out.record(&entry::Entry {
+        id: Be16::new(entry.id),
+        name_hash: Be16::new(entry.hash),
+        flags_and_name: Be32::new(flags << entry::FLAGS_SHIFT | entry.name_at),
+        data_or_node: Be32::new(entry.offset),
+        data_size: Be32::new(size),
+        unnamed: [0; 4],
+    });
     Ok(())
 }
 
@@ -587,11 +570,13 @@ fn encode(name: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 pub mod tests {
+    use std::mem::offset_of;
+
     use tpmt_bytes::Reader;
 
     use super::*;
-    use crate::File;
     use crate::unpack::unpack;
+    use crate::{File, entry::Entry};
 
     pub fn fixture() -> Vec<File<'static>> {
         vec![
@@ -639,66 +624,39 @@ pub mod tests {
         let r = Reader::new(&data);
         assert_eq!(data.len(), 0x160);
 
-        assert_eq!(&data[..4], b"RARC");
-        assert_eq!(r.u32_at(top_header::FILE_SIZE).unwrap(), 0x160);
-        assert_eq!(r.u32_at(top_header::DATA_HEADER_PTR).unwrap(), 0x20);
-        assert_eq!(r.u32_at(top_header::FILE_DATA_PTR).unwrap(), 0x100);
-        assert_eq!(r.u32_at(top_header::TOTAL_DATA_SIZE).unwrap(), 0x40);
-        assert_eq!(r.u32_at(top_header::MRAM_SIZE).unwrap(), 0x40);
-        assert_eq!(r.u32_at(top_header::ARAM_SIZE).unwrap(), 0);
+        let top: &TopHeader = r.view_at(0).unwrap();
+        assert_eq!(&top.magic, b"RARC");
+        assert_eq!(top.file_size.get(), 0x160);
+        assert_eq!(top.data_header_ptr.get(), 0x20);
+        assert_eq!(top.file_data_ptr.get(), 0x100);
+        assert_eq!(top.total_data_size.get(), 0x40);
+        assert_eq!(top.mram_size.get(), 0x40);
+        assert_eq!(top.aram_size.get(), 0);
         // The unnamed tail of the top header, zero here as on the discs.
-        assert_eq!(r.u32_at(0x1C).unwrap(), 0);
+        assert_eq!(top.unnamed, [0; 4]);
 
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::NODE_COUNT).unwrap(),
-            2
-        );
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::NODE_LIST_PTR)
-                .unwrap(),
-            0x20
-        );
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::ENTRY_COUNT)
-                .unwrap(),
-            7
-        );
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::ENTRY_LIST_PTR)
-                .unwrap(),
-            0x40
-        );
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::STRING_POOL_SIZE)
-                .unwrap(),
-            0x20
-        );
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::STRING_POOL_PTR)
-                .unwrap(),
-            0xE0
-        );
-        assert_eq!(
-            r.u16_at(data_header::AT + data_header::NEXT_FREE_ID)
-                .unwrap(),
-            2
-        );
-        assert_eq!(data[data_header::AT + data_header::SYNCED_IDS], 0);
+        let header: &DataHeader = r.view_at(data_header::AT).unwrap();
+        assert_eq!(header.node_count.get(), 2);
+        assert_eq!(header.node_list_ptr.get(), 0x20);
+        assert_eq!(header.entry_count.get(), 7);
+        assert_eq!(header.entry_list_ptr.get(), 0x40);
+        assert_eq!(header.string_pool_size.get(), 0x20);
+        assert_eq!(header.string_pool_ptr.get(), 0xE0);
+        assert_eq!(header.next_free_id.get(), 2);
+        assert!(!header.synced_ids.get());
 
         // The root is `ROOT` whatever its name; other nodes uppercase theirs.
-        assert_eq!(&data[NODES..NODES + 4], b"ROOT");
-        assert_eq!(r.u32_at(NODES + node::NAME).unwrap(), 5);
-        assert_eq!(
-            r.u16_at(NODES + node::NAME_HASH).unwrap(),
-            name_hash(b"root")
-        );
-        assert_eq!(r.u16_at(NODES + node::ENTRY_COUNT).unwrap(), 4);
-        assert_eq!(r.u32_at(NODES + node::FIRST_ENTRY).unwrap(), 0);
-        let sub = NODES + node::LEN;
-        assert_eq!(&data[sub..sub + 4], b"SUB ");
-        assert_eq!(r.u32_at(sub + node::NAME).unwrap(), 16);
-        assert_eq!(r.u16_at(sub + node::ENTRY_COUNT).unwrap(), 3);
-        assert_eq!(r.u32_at(sub + node::FIRST_ENTRY).unwrap(), 4);
+        let root: &Node = r.view_at(NODES).unwrap();
+        assert_eq!(&root.tag, b"ROOT");
+        assert_eq!(root.name.get(), 5);
+        assert_eq!(root.name_hash.get(), name_hash(b"root"));
+        assert_eq!(root.entry_count.get(), 4);
+        assert_eq!(root.first_entry.get(), 0);
+        let sub: &Node = r.view_at(NODES + node::LEN).unwrap();
+        assert_eq!(&sub.tag, b"SUB ");
+        assert_eq!(sub.name.get(), 16);
+        assert_eq!(sub.entry_count.get(), 3);
+        assert_eq!(sub.first_entry.get(), 4);
 
         // Root's entries: `a.bin`, `sub`, then `.` and `..` last, the order
         // every retail directory uses. Directories share the id that is no
@@ -706,12 +664,12 @@ pub mod tests {
         // lowest first as files are met, not by entry index: a.bin claims 0,
         // and b.bin claims 1 rather than the 4 its entry sits at.
         let entry = |index: usize| {
-            let at = ENTRIES + index * entry::LEN;
+            let record: &Entry = r.view_at(ENTRIES + index * entry::LEN).unwrap();
             (
-                r.u16_at(at).unwrap(),
-                r.u32_at(at + entry::FLAGS_AND_NAME).unwrap(),
-                r.u32_at(at + entry::DATA_OR_NODE).unwrap(),
-                r.u32_at(at + entry::DATA_SIZE).unwrap(),
+                record.id.get(),
+                record.flags_and_name.get(),
+                record.data_or_node.get(),
+                record.data_size.get(),
             )
         };
         assert_eq!(entry(0), (0, 0x11 << 24 | 0x0A, 0, 5));
@@ -721,10 +679,8 @@ pub mod tests {
         assert_eq!(entry(4), (1, 0x11 << 24 | 0x14, 0x20, 3));
         assert_eq!(entry(5), (0xFFFF, 0x02 << 24, 1, 0x10));
         assert_eq!(entry(6), (0xFFFF, 0x02 << 24 | 2, 0, 0x10));
-        assert_eq!(
-            r.u16_at(ENTRIES + entry::NAME_HASH).unwrap(),
-            name_hash(b"a.bin")
-        );
+        let a: &Entry = r.view_at(ENTRIES).unwrap();
+        assert_eq!(a.name_hash.get(), name_hash(b"a.bin"));
 
         // The pool: dots once up front, then each directory's name followed by
         // its files' names, zero padded out to alignment.
@@ -779,42 +735,34 @@ pub mod tests {
         })
         .unwrap();
         let r = Reader::new(&data);
+        let header: &DataHeader = r.view_at(data_header::AT).unwrap();
 
         // Five directories, and the runs of entries they own: each node's
         // children, then its own `.` and `..`, laid out in node order.
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::NODE_COUNT).unwrap(),
-            5
-        );
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::ENTRY_COUNT)
-                .unwrap(),
-            17
-        );
+        assert_eq!(header.node_count.get(), 5);
+        assert_eq!(header.entry_count.get(), 17);
 
         let nodes = data_header::AT + data_header::LEN;
         let node = |index: usize| {
-            let at = nodes + index * node::LEN;
+            let record: &Node = r.view_at(nodes + index * node::LEN).unwrap();
             (
-                &data[at..at + 4],
-                r.u16_at(at + node::ENTRY_COUNT).unwrap(),
-                r.u32_at(at + node::FIRST_ENTRY).unwrap(),
+                &record.tag,
+                record.entry_count.get(),
+                record.first_entry.get(),
             )
         };
-        assert_eq!(node(0), (b"ROOT".as_slice(), 4, 0));
-        assert_eq!(node(1), (b"A   ".as_slice(), 4, 4));
-        assert_eq!(node(2), (b"SUB ".as_slice(), 3, 8));
-        assert_eq!(node(3), (b"B   ".as_slice(), 3, 11));
-        assert_eq!(node(4), (b"SUB ".as_slice(), 3, 14));
+        assert_eq!(node(0), (b"ROOT", 4, 0));
+        assert_eq!(node(1), (b"A   ", 4, 4));
+        assert_eq!(node(2), (b"SUB ", 3, 8));
+        assert_eq!(node(3), (b"B   ", 3, 11));
+        assert_eq!(node(4), (b"SUB ", 3, 14));
 
         // A nested directory's `..` names its own parent rather than the root:
         // it is the last entry of its run, and both `sub` nodes have one.
-        let entries = data_header::AT
-            + r.u32_at(data_header::AT + data_header::ENTRY_LIST_PTR)
-                .unwrap() as usize;
-        let parent_of = |entry: usize| {
-            r.u32_at(entries + entry * entry::LEN + entry::DATA_OR_NODE)
-                .unwrap()
+        let entries = data_header::AT + header.entry_list_ptr.get() as usize;
+        let parent_of = |index: usize| {
+            let record: &Entry = r.view_at(entries + index * entry::LEN).unwrap();
+            record.data_or_node.get()
         };
         assert_eq!(parent_of(10), 1);
         assert_eq!(parent_of(16), 3);
@@ -849,20 +797,12 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let r = Reader::new(&data);
+        let header: &DataHeader = Reader::new(&data).view_at(data_header::AT).unwrap();
 
-        assert_eq!(data[data_header::AT + data_header::SYNCED_IDS], 1);
+        assert!(header.synced_ids.get());
         // The two files, then the root's `.` and `..`.
-        assert_eq!(
-            r.u32_at(data_header::AT + data_header::ENTRY_COUNT)
-                .unwrap(),
-            4
-        );
-        assert_eq!(
-            r.u16_at(data_header::AT + data_header::NEXT_FREE_ID)
-                .unwrap(),
-            4
-        );
+        assert_eq!(header.entry_count.get(), 4);
+        assert_eq!(header.next_free_id.get(), 4);
 
         let opened = unpack(&data).unwrap();
         assert_eq!(opened.files[0].id, Some(0));
@@ -882,13 +822,9 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let r = Reader::new(&data);
-        assert_eq!(data[data_header::AT + data_header::SYNCED_IDS], 0);
-        assert_eq!(
-            r.u16_at(data_header::AT + data_header::NEXT_FREE_ID)
-                .unwrap(),
-            10
-        );
+        let header: &DataHeader = Reader::new(&data).view_at(data_header::AT).unwrap();
+        assert!(!header.synced_ids.get());
+        assert_eq!(header.next_free_id.get(), 10);
         assert_eq!(unpack(&data).unwrap().files[1].id, Some(9));
     }
 
@@ -923,7 +859,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(data[ENTRIES + entry::FLAGS_AND_NAME], 0x95);
+        assert_eq!(data[ENTRIES + offset_of!(Entry, flags_and_name)], 0x95);
     }
 
     /// The two sizes cover one run each, so they only mean anything with the
@@ -939,9 +875,9 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let r = Reader::new(&data);
-        assert_eq!(r.u32_at(top_header::MRAM_SIZE).unwrap(), 0x20);
-        assert_eq!(r.u32_at(top_header::ARAM_SIZE).unwrap(), 0x20);
+        let top: &TopHeader = Reader::new(&data).view_at(0).unwrap();
+        assert_eq!(top.mram_size.get(), 0x20);
+        assert_eq!(top.aram_size.get(), 0x20);
         assert_eq!(unpack(&data).unwrap().files[1].preload, Preload::Aram);
     }
 
@@ -988,9 +924,9 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let r = Reader::new(&data);
-        assert_eq!(r.u32_at(top_header::MRAM_SIZE).unwrap(), 0x20);
-        assert_eq!(r.u32_at(top_header::ARAM_SIZE).unwrap(), 0x20);
+        let top: &TopHeader = Reader::new(&data).view_at(0).unwrap();
+        assert_eq!(top.mram_size.get(), 0x20);
+        assert_eq!(top.aram_size.get(), 0x20);
     }
 
     #[test]
