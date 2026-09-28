@@ -1,6 +1,8 @@
 //! The read path: turns an archive's bytes back into an [`Archive`], nothing
 //! copied out of the input.
 
+use std::borrow::Cow;
+
 use tpmt_bytes::{Be32, Reader};
 
 use crate::{
@@ -91,7 +93,9 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
         reader,
     };
     // The root is node 0, and its name is the one thing read outside the walk.
-    let root = opened.name(root_node.name.get(), root_node.name_hash.get())?;
+    let root = opened
+        .name(root_node.name.get(), root_node.name_hash.get())?
+        .into_owned();
 
     // Only used for the verification below, never again: this is the one
     // place anything reads the stored counter back.
@@ -137,11 +141,11 @@ impl<'a> ArchiveReader<'a> {
                 continue;
             }
             if name.is_empty() || name.contains(['/', '\\']) {
-                return Err(Error::UnusableName(name));
+                return Err(Error::UnusableName(name.into_owned()));
             }
 
             let path = if prefix.is_empty() {
-                name
+                name.into_owned()
             } else {
                 format!("{prefix}/{name}")
             };
@@ -211,18 +215,15 @@ impl<'a> ArchiveReader<'a> {
     /// Every reference to a name sits beside a hash of it, so an offset that
     /// merely landed on something null-terminated is caught rather than
     /// trusted.
-    fn name(&self, offset: u32, hash: u16) -> Result<String> {
+    fn name(&self, offset: u32, hash: u16) -> Result<Cow<'a, str>> {
         let raw = self.reader.cstr_at(self.string_pool_at + offset as usize)?;
         if name_hash(raw) != hash {
             return Err(Error::Corrupt("a name does not match its stored hash"));
         }
 
-        let (name, _, malformed) = encoding_rs::SHIFT_JIS.decode(raw);
-        if malformed {
-            Err(Error::Corrupt("a name is not Shift-JIS"))
-        } else {
-            Ok(name.into_owned())
-        }
+        encoding_rs::SHIFT_JIS
+            .decode_without_bom_handling_and_without_replacement(raw)
+            .ok_or(Error::Corrupt("a name is not Shift-JIS"))
     }
 }
 
@@ -400,6 +401,22 @@ mod tests {
         data[STRINGS + NAME_A] = 0x85;
         entry(&mut data, 0).name_hash = Be16::new(name_hash(b"\x85.bin"));
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    /// A name opening with a UTF-16 byte order mark is still read as
+    /// Shift-JIS, where `FF` is never valid, rather than as the UTF-16 the
+    /// mark claims, which would pack back as different bytes.
+    #[test]
+    fn a_byte_order_mark_does_not_switch_encoding() {
+        let mut data = archive();
+        let name = b"\xFF\xFEAA";
+        data[STRINGS + NAME_A..][..name.len()].copy_from_slice(name);
+        data[STRINGS + NAME_A + name.len()] = 0;
+        entry(&mut data, 0).name_hash = Be16::new(name_hash(name));
+        assert!(matches!(
+            unpack(&data),
+            Err(Error::Corrupt("a name is not Shift-JIS"))
+        ));
     }
 
     #[test]
