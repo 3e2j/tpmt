@@ -13,42 +13,67 @@
 //! rebuilt into something else.
 
 use serde::{Deserialize, Serialize};
-use tpmt_bytes::{Reader, Writer};
+use std::mem::offset_of;
+
+use tpmt_bytes::{Be32, Reader, Writer};
 
 use crate::{Disc, Entry, Error, Result, Span};
 
 // Boot header. The magic is what makes this a GameCube disc rather than
 // anything else that happens to be 1.4 GB.
 pub const MAGIC: u32 = 0xC233_9F3D;
-pub const MAGIC_OFFSET: usize = 0x1C;
 pub const WII_MAGIC: u32 = 0x5D1C_9EA3;
-pub const WII_MAGIC_OFFSET: usize = 0x18;
 pub const BOOT_LEN: usize = 0x440;
-
-pub const ID_OFFSET: usize = 0x00;
 pub const ID_LEN: usize = 4;
-pub const MAKER_OFFSET: usize = 0x04;
 pub const MAKER_LEN: usize = 2;
-pub const DISC_NUMBER_OFFSET: usize = 0x06;
-pub const REVISION_OFFSET: usize = 0x07;
-pub const AUDIO_STREAMING_OFFSET: usize = 0x08;
-pub const STREAM_BUFFER_SIZE_OFFSET: usize = 0x09;
-pub const TITLE_OFFSET: usize = 0x20;
 pub const TITLE_LEN: usize = 0x40;
-/// Where the values a project keeps stop and the derived numbers start.
-const AUTHORED_LEN: usize = TITLE_OFFSET + TITLE_LEN;
 
-// The layout, all of it worked out again by a build rather than kept. `DVDBB2`
-// in the SDK covers the six from 0x420 on.
-pub const DEBUG_MONITOR_FIELD: usize = 0x400;
-pub const DEBUG_MONITOR_ADDRESS_FIELD: usize = 0x404;
-pub const DOL_OFFSET_FIELD: usize = 0x420;
-pub const FST_OFFSET_FIELD: usize = 0x424;
-pub const FST_SIZE_FIELD: usize = 0x428;
-pub const FST_MAX_SIZE_FIELD: usize = 0x42C;
-pub const FST_ADDRESS_FIELD: usize = 0x430;
-pub const USER_POSITION_FIELD: usize = 0x434;
-pub const USER_LENGTH_FIELD: usize = 0x438;
+tpmt_bytes::layout! {
+    /// The front of the boot header, where every value a project keeps sits.
+    #[derive(Clone, Copy)]
+    pub struct Authored {
+        pub id: [u8; ID_LEN],
+        pub maker: [u8; MAKER_LEN],
+        pub disc_number: u8,
+        pub revision: u8,
+        pub audio_streaming: u8,
+        pub stream_buffer_size: u8,
+        pub unnamed_0a: [u8; 0x0E],
+        /// [`WII_MAGIC`] on a Wii disc. Zero on this one.
+        pub wii_magic: Be32,
+        pub magic: Be32,
+        /// Only terminated when the title is short enough to leave room.
+        pub title: [u8; TITLE_LEN],
+    }
+}
+
+tpmt_bytes::layout! {
+    /// The boot header. Past [`Authored`] it is all layout, worked out again
+    /// by a build rather than kept. `DVDBB2` in the SDK covers the seven
+    /// fields from `dol_offset` on.
+    #[derive(Clone, Copy)]
+    pub struct BootBin {
+        pub authored: Authored,
+        pub unnamed_60: [u8; 0x3A0],
+        /// The mastering put the apploader's length here, whatever it meant
+        /// by it, and nothing on a retail disc reads it.
+        pub debug_monitor: Be32,
+        pub debug_monitor_address: Be32,
+        pub unnamed_408: [u8; 0x18],
+        pub dol_offset: Be32,
+        pub fst_offset: Be32,
+        pub fst_size: Be32,
+        /// Only ever different from `fst_size` on a game spanning several
+        /// discs.
+        pub fst_max_size: Be32,
+        pub fst_address: Be32,
+        pub user_position: Be32,
+        pub user_length: Be32,
+        pub unnamed_43c: [u8; 4],
+    }
+}
+
+const _: () = assert!(size_of::<Authored>() == 0x60 && size_of::<BootBin>() == BOOT_LEN);
 
 /// Where the debug monitor would be loaded. Nothing on a retail disc reads it.
 pub const DEBUG_MONITOR_ADDRESS: u32 = 0x8028_0060;
@@ -63,19 +88,83 @@ const USER_ALIGN: u32 = 0x8000;
 /// the layout put in front of them.
 pub const PREAMBLE_ALIGN: u64 = 0x100;
 
-/// The stretches of the boot header that hold nothing. Everything outside
-/// them is either kept or checked, so a disc with bytes in here is one this
-/// would not reproduce.
-const BOOT_RESERVED: [(usize, usize); 4] =
-    [(0x0A, 0x1C), (0x60, 0x400), (0x408, 0x420), (0x43C, 0x440)];
+/// The stretches of the boot header that hold nothing, the Wii magic among
+/// them. Everything outside them is either kept or checked, so a disc with
+/// bytes in here is one this would not reproduce.
+const BOOT_RESERVED: [(usize, usize); 4] = [
+    (
+        offset_of!(BootBin, authored.unnamed_0a),
+        offset_of!(BootBin, authored.magic),
+    ),
+    (
+        offset_of!(BootBin, unnamed_60),
+        offset_of!(BootBin, debug_monitor),
+    ),
+    (
+        offset_of!(BootBin, unnamed_408),
+        offset_of!(BootBin, dol_offset),
+    ),
+    (offset_of!(BootBin, unnamed_43c), BOOT_LEN),
+];
 
 // Disc metadata, then the apploader, at fixed positions after the boot header.
 pub const BI2_OFFSET: u64 = 0x440;
 pub const BI2_LEN: usize = 0x2000;
 pub const APPLOADER_OFFSET: u64 = 0x2440;
 pub const APPLOADER_HEADER_LEN: u64 = 0x20;
-pub const APPLOADER_SIZE_FIELD: usize = 0x14;
-pub const APPLOADER_TRAILER_FIELD: usize = 0x18;
+
+tpmt_bytes::layout! {
+    /// The disc metadata: six fields and then eight kilobytes of nothing.
+    pub struct Bi2Bin {
+        pub debug_monitor_size: Be32,
+        pub simulated_memory_size: Be32,
+        pub argument_offset: Be32,
+        pub debug_flag: Be32,
+        pub track_location: Be32,
+        pub track_size: Be32,
+        pub country: Be32,
+        pub unknown_1c: Be32,
+        pub unknown_20: Be32,
+        /// `__PADSpec`, which `OSInit` reads straight out of here.
+        pub pad_spec: Be32,
+        pub unnamed_28: [u8; 0x1FD8],
+    }
+}
+
+const _: () = assert!(size_of::<Bi2Bin>() == BI2_LEN);
+
+/// Everything bi2 does not use: the debug monitor size, the argument offset,
+/// the two track fields, and then eight kilobytes of nothing.
+const BI2_RESERVED: [(usize, usize); 4] = [
+    (
+        offset_of!(Bi2Bin, debug_monitor_size),
+        offset_of!(Bi2Bin, simulated_memory_size),
+    ),
+    (
+        offset_of!(Bi2Bin, argument_offset),
+        offset_of!(Bi2Bin, debug_flag),
+    ),
+    (
+        offset_of!(Bi2Bin, track_location),
+        offset_of!(Bi2Bin, country),
+    ),
+    (offset_of!(Bi2Bin, unnamed_28), BI2_LEN),
+];
+
+tpmt_bytes::layout! {
+    /// What the apploader opens with. It states its own length in two parts,
+    /// neither of which counts this header.
+    pub struct ApploaderHeader {
+        /// The build date, as text.
+        pub date: [u8; 0x10],
+        pub entry_point: Be32,
+        pub size: Be32,
+        pub trailer_size: Be32,
+        pub unnamed: [u8; 4],
+    }
+}
+
+const _: () = assert!(size_of::<ApploaderHeader>() as u64 == APPLOADER_HEADER_LEN);
 
 pub const BOOT: Span = Span {
     offset: 0,
@@ -89,19 +178,6 @@ pub const APPLOADER_HEADER: Span = Span {
     offset: APPLOADER_OFFSET,
     size: APPLOADER_HEADER_LEN,
 };
-
-pub const BI2_SIMULATED_MEMORY_SIZE: usize = 0x04;
-pub const BI2_DEBUG_FLAG: usize = 0x0C;
-pub const BI2_COUNTRY: usize = 0x18;
-pub const BI2_UNKNOWN_1C: usize = 0x1C;
-pub const BI2_UNKNOWN_20: usize = 0x20;
-/// `__PADSpec`, which `OSInit` reads straight out of here.
-pub const BI2_PAD_SPEC: usize = 0x24;
-
-/// Everything bi2 does not use: the debug monitor size, the argument offset,
-/// the two track fields, and then eight kilobytes of nothing.
-const BI2_RESERVED: [(usize, usize); 4] =
-    [(0x00, 0x04), (0x08, 0x0C), (0x10, 0x18), (0x28, BI2_LEN)];
 
 /// Where the two preamble files land in a project. A build looks for them by
 /// these names, so they are spelled once.
@@ -117,8 +193,23 @@ pub const BI2_PATH: &str = "sys/bi2.bin";
 // section reaches.
 pub const DOL_HEADER_LEN: u64 = 0x100;
 pub const DOL_SECTIONS: usize = 18;
-pub const DOL_SECTION_OFFSETS: usize = 0x00;
-pub const DOL_SECTION_SIZES: usize = 0x90;
+
+tpmt_bytes::layout! {
+    /// The executable's header. Its section offsets, load addresses and
+    /// lengths are three runs in step with each other, so a section that is
+    /// not present reads as zero in all three.
+    pub struct DolHeader {
+        pub section_offsets: [Be32; DOL_SECTIONS],
+        pub section_addresses: [Be32; DOL_SECTIONS],
+        pub section_sizes: [Be32; DOL_SECTIONS],
+        pub bss_address: Be32,
+        pub bss_size: Be32,
+        pub entry_point: Be32,
+        pub unnamed: [u8; 0x1C],
+    }
+}
+
+const _: () = assert!(size_of::<DolHeader>() as u64 == DOL_HEADER_LEN);
 
 /// What the preamble records that a build cannot work out for itself.
 ///
@@ -169,14 +260,14 @@ pub struct Bi2 {
 /// Called before the rest of the preamble is read, so a file that is not a disc
 /// says so rather than failing on a short read somewhere inside it.
 pub fn identify(boot: &[u8]) -> Result<()> {
-    let reader = Reader::new(boot);
-    if reader.u32_at(MAGIC_OFFSET)? == MAGIC {
+    let authored: &Authored = Reader::new(boot).view_at(0)?;
+    if authored.magic.get() == MAGIC {
         return Ok(());
     }
 
     // Both magics sit in the same header and only one is ever set, so a Wii
     // disc can be declined by name rather than as a mystery.
-    if reader.u32_at(WII_MAGIC_OFFSET)? == WII_MAGIC {
+    if authored.wii_magic.get() == WII_MAGIC {
         Err(Error::WiiDisc)
     } else {
         Err(Error::NotADisc)
@@ -196,26 +287,22 @@ pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
             });
         }
     }
-    check_layout(&reader, apploader_len)?;
+    let header: &BootBin = reader.view_at(0)?;
+    check_layout(header, apploader_len)?;
+    let authored = &header.authored;
 
     // A 64 byte field, only terminated when the title is short enough to leave
     // room, so the read stops at the end of the field either way.
-    let title = reader.slice_at(TITLE_OFFSET, TITLE_LEN)?;
+    let title = &authored.title;
     let title = &title[..title.iter().position(|&b| b == 0).unwrap_or(title.len())];
 
     Ok(Boot {
-        id: text(
-            reader.slice_at(ID_OFFSET, ID_LEN)?,
-            "the game id is not text",
-        )?,
-        maker: text(
-            reader.slice_at(MAKER_OFFSET, MAKER_LEN)?,
-            "the maker code is not text",
-        )?,
-        disc_number: reader.u8_at(DISC_NUMBER_OFFSET)?,
-        revision: reader.u8_at(REVISION_OFFSET)?,
-        audio_streaming: reader.u8_at(AUDIO_STREAMING_OFFSET)?,
-        stream_buffer_size: reader.u8_at(STREAM_BUFFER_SIZE_OFFSET)?,
+        id: text(&authored.id, "the game id is not text")?,
+        maker: text(&authored.maker, "the maker code is not text")?,
+        disc_number: authored.disc_number,
+        revision: authored.revision,
+        audio_streaming: authored.audio_streaming,
+        stream_buffer_size: authored.stream_buffer_size,
         title: text(title, "the title is not text")?,
     })
 }
@@ -230,10 +317,9 @@ pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
 /// build works out fresh ones and rewrites every field that mentions them, so
 /// a disc that packed its preamble differently still unpacks and rebuilds
 /// whole. The six here have no such second life: they are only ever derived.
-fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
-    let fst_offset = reader.u32_at(FST_OFFSET_FIELD)?;
-    let fst_len = reader.u32_at(FST_SIZE_FIELD)?;
-    let user = user_position(fst_offset, fst_len);
+fn check_layout(header: &BootBin, apploader_len: u64) -> Result<()> {
+    let fst_len = header.fst_size.get();
+    let user = user_position(header.fst_offset.get(), fst_len);
     // Two real u32 fields off the disc, summed, so a corrupt header can
     // genuinely claim more than a u32 field can hold — and the field this is
     // compared against is a real u32 on disk either way, so a failure here is
@@ -242,36 +328,33 @@ fn check_layout(reader: &Reader, apploader_len: u64) -> Result<()> {
         .map_err(|_| Error::CorruptHeader("the apploader is too long for its own header"))?;
 
     let derived = [
-        // The mastering put the apploader's length here, whatever it meant by
-        // it, and nothing on a retail disc reads it.
         (
-            DEBUG_MONITOR_FIELD,
+            header.debug_monitor,
             apploader_len,
             "the debug monitor offset",
         ),
         (
-            DEBUG_MONITOR_ADDRESS_FIELD,
+            header.debug_monitor_address,
             DEBUG_MONITOR_ADDRESS,
             "the debug monitor address",
         ),
         (
-            FST_ADDRESS_FIELD,
+            header.fst_address,
             fst_address(fst_len),
             "the file table's load address",
         ),
-        (USER_POSITION_FIELD, user, "the user area start"),
+        (header.user_position, user, "the user area start"),
         (
-            USER_LENGTH_FIELD,
+            header.user_length,
             USER_AREA_END.saturating_sub(user),
             "the user area length",
         ),
-        // Only ever different on a game spanning several discs, which this is
-        // not, so a build has nothing to take a maximum over.
-        (FST_MAX_SIZE_FIELD, fst_len, "the largest file table"),
+        // A build has nothing to take a maximum over.
+        (header.fst_max_size, fst_len, "the largest file table"),
     ];
 
-    for (at, want, what) in derived {
-        let found = reader.u32_at(at)?;
+    for (field, want, what) in derived {
+        let found = field.get();
         if found != want {
             return Err(Error::DerivedValueDiffers { what, found, want });
         }
@@ -310,13 +393,14 @@ pub fn bi2(bytes: &[u8]) -> Result<Bi2> {
         }
     }
 
+    let bi2: &Bi2Bin = reader.view_at(0)?;
     Ok(Bi2 {
-        simulated_memory_size: reader.u32_at(BI2_SIMULATED_MEMORY_SIZE)?,
-        debug_flag: reader.u32_at(BI2_DEBUG_FLAG)?,
-        country: reader.u32_at(BI2_COUNTRY)?,
-        unknown_1c: reader.u32_at(BI2_UNKNOWN_1C)?,
-        unknown_20: reader.u32_at(BI2_UNKNOWN_20)?,
-        pad_spec: reader.u32_at(BI2_PAD_SPEC)?,
+        simulated_memory_size: bi2.simulated_memory_size.get(),
+        debug_flag: bi2.debug_flag.get(),
+        country: bi2.country.get(),
+        unknown_1c: bi2.unknown_1c.get(),
+        unknown_20: bi2.unknown_20.get(),
+        pad_spec: bi2.pad_spec.get(),
     })
 }
 
@@ -341,25 +425,25 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
         fst_len,
     } = layout;
 
-    let mut out = Writer::with_capacity(BOOT_LEN);
-    authored(&mut out, boot)?;
-
-    pad_to(&mut out, DEBUG_MONITOR_FIELD);
-    out.u32(apploader_len);
-    out.u32(DEBUG_MONITOR_ADDRESS);
-
-    pad_to(&mut out, DOL_OFFSET_FIELD);
-    out.u32(dol_offset);
-    out.u32(fst_offset);
-    out.u32(fst_len);
-    // Only ever larger on a game spanning several discs, and this is one disc.
-    out.u32(fst_len);
-    out.u32(fst_address(fst_len));
     let user = user_position(fst_offset, fst_len);
-    out.u32(user);
-    out.u32(USER_AREA_END.saturating_sub(user));
-
-    pad_to(&mut out, BOOT_LEN);
+    let mut out = Writer::with_capacity(BOOT_LEN);
+    out.record(&BootBin {
+        authored: authored(boot)?,
+        unnamed_60: [0; 0x3A0],
+        debug_monitor: Be32::new(apploader_len),
+        debug_monitor_address: Be32::new(DEBUG_MONITOR_ADDRESS),
+        unnamed_408: [0; 0x18],
+        dol_offset: Be32::new(dol_offset),
+        fst_offset: Be32::new(fst_offset),
+        fst_size: Be32::new(fst_len),
+        // Only ever larger on a game spanning several discs, and this is one
+        // disc.
+        fst_max_size: Be32::new(fst_len),
+        fst_address: Be32::new(fst_address(fst_len)),
+        user_position: Be32::new(user),
+        user_length: Be32::new(USER_AREA_END.saturating_sub(user)),
+        unnamed_43c: [0; 4],
+    });
     Ok(out.finish())
 }
 
@@ -385,80 +469,70 @@ pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
         return Err(Error::Unwritable("a boot header is 0x440 bytes"));
     }
 
+    let original: &BootBin = Reader::new(original).view_at(0)?;
     let mut out = Writer::with_capacity(BOOT_LEN);
-    authored(&mut out, boot)?;
-    out.bytes(&original[AUTHORED_LEN..]);
+    out.record(&BootBin {
+        authored: authored(boot)?,
+        ..*original
+    });
     Ok(out.finish())
 }
 
 /// The part of the header a project keeps: seven values and the magic, and the
 /// zeros between them.
-fn authored(out: &mut Writer, boot: &Boot) -> Result<()> {
-    out.bytes(&exactly(
-        &boot.id,
-        ID_LEN,
-        "game id has to be four characters",
-    )?);
-    out.bytes(&exactly(
-        &boot.maker,
-        MAKER_LEN,
-        "maker code has to be two characters",
-    )?);
-    out.u8(boot.disc_number);
-    out.u8(boot.revision);
-    out.u8(boot.audio_streaming);
-    out.u8(boot.stream_buffer_size);
-
-    pad_to(out, MAGIC_OFFSET);
-    out.u32(MAGIC);
+fn authored(boot: &Boot) -> Result<Authored> {
+    let id = exactly(&boot.id, "game id has to be four characters")?;
+    let maker = exactly(&boot.maker, "maker code has to be two characters")?;
 
     // Short titles keep their terminator, and one that fills the field has
     // none, which is how the reader takes it back.
-    pad_to(out, TITLE_OFFSET);
-    let title = encode(&boot.title, "title is not Shift-JIS")?;
-    if title.len() > TITLE_LEN {
-        return Err(Error::Unwritable("title does not fit its 64 byte field"));
-    }
-    out.bytes(&title);
+    let encoded = encode(&boot.title, "title is not Shift-JIS")?;
+    let mut title = [0; TITLE_LEN];
+    title
+        .get_mut(..encoded.len())
+        .ok_or(Error::Unwritable("title does not fit its 64 byte field"))?
+        .copy_from_slice(&encoded);
 
-    pad_to(out, AUTHORED_LEN);
-    Ok(())
+    Ok(Authored {
+        id,
+        maker,
+        disc_number: boot.disc_number,
+        revision: boot.revision,
+        audio_streaming: boot.audio_streaming,
+        stream_buffer_size: boot.stream_buffer_size,
+        unnamed_0a: [0; 0x0E],
+        wii_magic: Be32::new(0),
+        magic: Be32::new(MAGIC),
+        title,
+    })
 }
 
 /// Writes the disc metadata back out: six fields in eight kilobytes of nothing.
 #[must_use]
 pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
     let mut out = Writer::with_capacity(BI2_LEN);
-
-    pad_to(&mut out, BI2_SIMULATED_MEMORY_SIZE);
-    out.u32(bi2.simulated_memory_size);
-    pad_to(&mut out, BI2_DEBUG_FLAG);
-    out.u32(bi2.debug_flag);
-    pad_to(&mut out, BI2_COUNTRY);
-    out.u32(bi2.country);
-    out.u32(bi2.unknown_1c);
-    out.u32(bi2.unknown_20);
-    out.u32(bi2.pad_spec);
-
-    pad_to(&mut out, BI2_LEN);
+    out.record(&Bi2Bin {
+        debug_monitor_size: Be32::new(0),
+        simulated_memory_size: Be32::new(bi2.simulated_memory_size),
+        argument_offset: Be32::new(0),
+        debug_flag: Be32::new(bi2.debug_flag),
+        track_location: Be32::new(0),
+        track_size: Be32::new(0),
+        country: Be32::new(bi2.country),
+        unknown_1c: Be32::new(bi2.unknown_1c),
+        unknown_20: Be32::new(bi2.unknown_20),
+        pad_spec: Be32::new(bi2.pad_spec),
+        unnamed_28: [0; 0x1FD8],
+    });
     out.finish()
-}
-
-/// Zero fills up to the next field, which is how both files above cross the
-/// stretches that hold nothing.
-fn pad_to(out: &mut Writer, offset: usize) {
-    out.zeros(offset - out.len());
 }
 
 /// Encodes a text field back to the Shift-JIS the reader took it out of, and
 /// requires it to still be the width of its field.
-fn exactly(text: &str, len: usize, what: &'static str) -> Result<Vec<u8>> {
-    let bytes = encode(text, what)?;
-    if bytes.len() == len {
-        Ok(bytes)
-    } else {
-        Err(Error::Unwritable(what))
-    }
+fn exactly<const N: usize>(text: &str, what: &'static str) -> Result<[u8; N]> {
+    encode(text, what)?
+        .try_into()
+        .map_err(|_| Error::Unwritable(what))
 }
 
 fn encode(text: &str, what: &'static str) -> Result<Vec<u8>> {
@@ -483,20 +557,18 @@ fn text(raw: &[u8], what: &'static str) -> Result<String> {
 
 /// Where the file table sits, out of the boot header.
 pub fn fst_range(boot: &[u8]) -> Result<Span> {
-    let reader = Reader::new(boot);
+    let header: &BootBin = Reader::new(boot).view_at(0)?;
     Ok(Span {
-        offset: reader.u32_at(FST_OFFSET_FIELD)? as u64,
-        size: reader.u32_at(FST_SIZE_FIELD)? as u64,
+        offset: header.fst_offset.get() as u64,
+        size: header.fst_size.get() as u64,
     })
 }
 
 /// The apploader states its own length in two parts, neither of which counts
 /// its header.
 pub fn apploader_len(header: &[u8]) -> Result<u64> {
-    let reader = Reader::new(header);
-    let size = reader.u32_at(APPLOADER_SIZE_FIELD)? as u64;
-    let trailer = reader.u32_at(APPLOADER_TRAILER_FIELD)? as u64;
-    Ok(APPLOADER_HEADER_LEN + size + trailer)
+    let header: &ApploaderHeader = Reader::new(header).view_at(0)?;
+    Ok(APPLOADER_HEADER_LEN + header.size.get() as u64 + header.trailer_size.get() as u64)
 }
 
 /// The two preamble pieces a project keeps as files, neither of which records
@@ -506,7 +578,7 @@ pub fn apploader_len(header: &[u8]) -> Result<u64> {
 /// few values each, kept as `Metadata`. `fst` derives the file table.
 pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
     let boot = disc.read(BOOT)?;
-    let dol_offset = Reader::new(&boot).u32_at(DOL_OFFSET_FIELD)? as u64;
+    let dol_offset = Reader::new(&boot).view_at::<BootBin>(0)?.dol_offset.get() as u64;
     let fst_offset = fst_range(&boot)?.offset;
 
     // A game disc with nowhere to boot from is a header that did not survive
@@ -536,22 +608,18 @@ pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
     ])
 }
 
-/// An executable is as long as its furthest section reaches. Its 18 section
-/// offsets and 18 lengths sit in two runs in the header, in step with each
-/// other, so a section that is not present reads as zero and reaches nowhere.
+/// An executable is as long as its furthest section reaches.
 fn dol_len(disc: &Disc, offset: u64) -> Result<u64> {
     let header = disc.read(Span {
         offset,
         size: DOL_HEADER_LEN,
     })?;
-    let reader = Reader::new(&header);
+    let header: &DolHeader = Reader::new(&header).view_at(0)?;
 
-    let mut end = DOL_HEADER_LEN;
-    for section in 0..DOL_SECTIONS {
-        let at = section * 4;
-        let start = reader.u32_at(DOL_SECTION_OFFSETS + at)? as u64;
-        let len = reader.u32_at(DOL_SECTION_SIZES + at)? as u64;
-        end = end.max(start + len);
-    }
-    Ok(end)
+    Ok(header
+        .section_offsets
+        .iter()
+        .zip(&header.section_sizes)
+        .map(|(start, len)| start.get() as u64 + len.get() as u64)
+        .fold(DOL_HEADER_LEN, u64::max))
 }

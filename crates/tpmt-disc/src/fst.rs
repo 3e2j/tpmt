@@ -9,14 +9,36 @@
 //! carries are the one part a build works out for itself.
 
 use std::collections::{HashMap, HashSet};
+use std::mem::offset_of;
 
-use tpmt_bytes::{Reader, Writer};
+use tpmt_bytes::{Be32, Reader, Writer};
 
 use crate::{Entry, Error, Item, Result, Span};
 
-// A flags-and-name word, then two fields whose meaning depends on whether the
-// entry is a directory.
+tpmt_bytes::layout! {
+    /// One file table record. Its last two fields mean different things
+    /// either side of the directory flag: a file's data offset and length, or
+    /// a directory's parent index and the index its subtree ends at.
+    pub struct Record {
+        /// Flags in the top byte, the name's pool offset in the low three.
+        pub flags_and_name: Be32,
+        pub offset_or_parent: Be32,
+        pub end_or_size: Be32,
+    }
+}
+
+impl Record {
+    const fn is_directory(&self) -> bool {
+        self.flags_and_name.get() & DIRECTORY_FLAG != 0
+    }
+
+    const fn name_offset(&self) -> u32 {
+        self.flags_and_name.get() & NAME_MASK
+    }
+}
+
 pub const ENTRY_LEN: usize = 0x0C;
+const _: () = assert!(size_of::<Record>() == ENTRY_LEN);
 pub const DIRECTORY_FLAG: u32 = 0xFF00_0000;
 pub const NAME_MASK: u32 = 0x00FF_FFFF;
 /// What the mastering put in a directory's flag byte. The reader takes any
@@ -33,32 +55,30 @@ pub fn walk(fst: &[u8]) -> Result<Vec<Entry>> {
 
     // The root entry is a directory covering everything, so its end index is the
     // number of entries in the table.
-    let root = record(&fst, 0)?;
-    if !root.is_directory {
+    let root: &Record = fst.view_at(0)?;
+    if !root.is_directory() {
         return Err(Error::CorruptFileTable("the root is not a directory"));
     }
-    let total = root.end_or_size as usize;
-    let names = total
-        .checked_mul(ENTRY_LEN)
-        .ok_or(Error::CorruptFileTable("the entry count is nonsense"))?;
+    let total = root.end_or_size.get() as usize;
+    let records: &[Record] = fst.slice_of(0, total)?;
+    let names = size_of_val(records);
 
     let mut entries = Vec::new();
     // Each frame is a directory still being walked: where its subtree ends and
     // what to prefix its members with.
     let mut open: Vec<(usize, String)> = vec![(total, "files".to_string())];
 
-    for index in 1..total {
+    for (index, record) in (0..).zip(records).skip(1) {
         while open.len() > 1 && index >= open[open.len() - 1].0 {
             open.pop();
         }
 
-        let record = record(&fst, index)?;
-        let name = fst.cstr_at(names + record.name_offset as usize)?;
+        let name = fst.cstr_at(names + record.name_offset() as usize)?;
         let name = name_of(name)?;
 
         let path = format!("{}/{name}", open[open.len() - 1].1);
-        if record.is_directory {
-            let end = record.end_or_size as usize;
+        if record.is_directory() {
+            let end = record.end_or_size.get() as usize;
             if end <= index || end > total {
                 return Err(Error::CorruptFileTable("a directory ends before it starts"));
             }
@@ -68,8 +88,8 @@ pub fn walk(fst: &[u8]) -> Result<Vec<Entry>> {
             entries.push(Entry::File {
                 path,
                 span: Span {
-                    offset: record.offset_or_parent as u64,
-                    size: record.end_or_size as u64,
+                    offset: record.offset_or_parent.get() as u64,
+                    size: record.end_or_size.get() as u64,
                 },
             });
         }
@@ -212,16 +232,20 @@ fn emit(nodes: Vec<Node>) -> Table {
     for (index, node) in nodes.into_iter().enumerate() {
         let slot = match node.kind {
             Kind::Directory { parent, end } => {
-                bytes.u32(DIRECTORY_TYPE | node.name_offset);
-                bytes.u32(parent);
-                bytes.u32(end);
+                bytes.record(&Record {
+                    flags_and_name: Be32::new(DIRECTORY_TYPE | node.name_offset),
+                    offset_or_parent: Be32::new(parent),
+                    end_or_size: Be32::new(end),
+                });
                 Slot::Directory { path: node.path }
             }
             Kind::File { size } => {
-                bytes.u32(node.name_offset);
-                let offset_field = bytes.len();
-                bytes.u32(0);
-                bytes.u32(size);
+                let offset_field = bytes.len() + offset_of!(Record, offset_or_parent);
+                bytes.record(&Record {
+                    flags_and_name: Be32::new(node.name_offset),
+                    offset_or_parent: Be32::new(0),
+                    end_or_size: Be32::new(size),
+                });
                 Slot::File {
                     path: node.path,
                     size: size as u64,
@@ -348,25 +372,4 @@ struct Node {
 enum Kind {
     Directory { parent: u32, end: u32 },
     File { size: u32 },
-}
-
-/// One file table record. Its last two fields mean different things either side
-/// of the directory flag: a file's data offset and length, or a directory's
-/// parent index and the index its subtree ends at.
-struct Record {
-    is_directory: bool,
-    name_offset: u32,
-    offset_or_parent: u32,
-    end_or_size: u32,
-}
-
-fn record(fst: &Reader, index: usize) -> Result<Record> {
-    let at = index * ENTRY_LEN;
-    let flags_and_name = fst.u32_at(at)?;
-    Ok(Record {
-        is_directory: flags_and_name & DIRECTORY_FLAG != 0,
-        name_offset: flags_and_name & NAME_MASK,
-        offset_or_parent: fst.u32_at(at + 4)?,
-        end_or_size: fst.u32_at(at + 8)?,
-    })
 }

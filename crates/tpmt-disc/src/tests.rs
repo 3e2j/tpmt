@@ -1,6 +1,8 @@
 //! Whole-image tests. Everything here goes in through `Disc::open` on a real
 //! file, because that is the only way the positional reads are exercised at all.
 
+use std::mem::offset_of;
+
 use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, Span, ciso, fst, sys};
 
 // The preamble positions are fixed by the format, the rest is packed in behind
@@ -38,6 +40,9 @@ const USER_LENGTH: u32 = 0x5705_0000;
 /// here.
 const SYS_ENTRIES: usize = 2;
 
+/// Where the title field starts, on the disc and in the boot header alike.
+const TITLE: usize = offset_of!(sys::BootBin, authored.title);
+
 /// A disc position as an index into a fixture, which is a few kilobytes.
 fn index(position: u64) -> usize {
     usize::try_from(position).expect("a fixture fits in memory")
@@ -73,54 +78,102 @@ fn disc() -> Vec<u8> {
     // Every kept field gets a value of its own, so a reader constant pointing
     // at the wrong place reads some other field, or the zero fill, and fails.
     data[..6].copy_from_slice(b"GZ2E01");
-    data[sys::DISC_NUMBER_OFFSET] = 3;
-    data[sys::REVISION_OFFSET] = 2;
-    data[sys::AUDIO_STREAMING_OFFSET] = 1;
-    data[sys::STREAM_BUFFER_SIZE_OFFSET] = 10;
-    data[sys::TITLE_OFFSET..sys::TITLE_OFFSET + 5].copy_from_slice(b"title");
-    put32(&mut data, sys::MAGIC_OFFSET, sys::MAGIC);
+    data[offset_of!(sys::BootBin, authored.disc_number)] = 3;
+    data[offset_of!(sys::BootBin, authored.revision)] = 2;
+    data[offset_of!(sys::BootBin, authored.audio_streaming)] = 1;
+    data[offset_of!(sys::BootBin, authored.stream_buffer_size)] = 10;
+    data[TITLE..TITLE + 5].copy_from_slice(b"title");
+    put32(
+        &mut data,
+        offset_of!(sys::BootBin, authored.magic),
+        sys::MAGIC,
+    );
 
     let bi2 = |field: usize| index(sys::BI2_OFFSET) + field;
-    put32(&mut data, bi2(sys::BI2_SIMULATED_MEMORY_SIZE), 0x0180_0000);
-    put32(&mut data, bi2(sys::BI2_DEBUG_FLAG), 2);
-    put32(&mut data, bi2(sys::BI2_COUNTRY), 1);
-    put32(&mut data, bi2(sys::BI2_UNKNOWN_1C), 4);
-    put32(&mut data, bi2(sys::BI2_UNKNOWN_20), 5);
-    put32(&mut data, bi2(sys::BI2_PAD_SPEC), 6);
+    put32(
+        &mut data,
+        bi2(offset_of!(sys::Bi2Bin, simulated_memory_size)),
+        0x0180_0000,
+    );
+    put32(&mut data, bi2(offset_of!(sys::Bi2Bin, debug_flag)), 2);
+    put32(&mut data, bi2(offset_of!(sys::Bi2Bin, country)), 1);
+    put32(&mut data, bi2(offset_of!(sys::Bi2Bin, unknown_1c)), 4);
+    put32(&mut data, bi2(offset_of!(sys::Bi2Bin, unknown_20)), 5);
+    put32(&mut data, bi2(offset_of!(sys::Bi2Bin, pad_spec)), 6);
 
-    put32(&mut data, sys::DOL_OFFSET_FIELD, DOL_OFFSET);
-    put32(&mut data, sys::FST_OFFSET_FIELD, FST_OFFSET);
+    put32(&mut data, offset_of!(sys::BootBin, dol_offset), DOL_OFFSET);
+    put32(&mut data, offset_of!(sys::BootBin, fst_offset), FST_OFFSET);
     let fst_len = ENTRY_COUNT as usize * fst::ENTRY_LEN + NAME_POOL.len();
     assert_eq!(
         fst_len, FST_LEN as usize,
         "the derived values below assume this"
     );
-    put32(&mut data, sys::FST_SIZE_FIELD, FST_LEN);
-    put32(&mut data, sys::FST_MAX_SIZE_FIELD, FST_LEN);
+    put32(&mut data, offset_of!(sys::BootBin, fst_size), FST_LEN);
+    put32(&mut data, offset_of!(sys::BootBin, fst_max_size), FST_LEN);
 
     // The layout values, which the reader checks rather than keeps.
-    put32(&mut data, sys::DEBUG_MONITOR_FIELD, APPLOADER_LEN);
     put32(
         &mut data,
-        sys::DEBUG_MONITOR_ADDRESS_FIELD,
+        offset_of!(sys::BootBin, debug_monitor),
+        APPLOADER_LEN,
+    );
+    put32(
+        &mut data,
+        offset_of!(sys::BootBin, debug_monitor_address),
         sys::DEBUG_MONITOR_ADDRESS,
     );
-    put32(&mut data, sys::FST_ADDRESS_FIELD, FST_ADDRESS);
-    put32(&mut data, sys::USER_POSITION_FIELD, USER_POSITION);
-    put32(&mut data, sys::USER_LENGTH_FIELD, USER_LENGTH);
+    put32(
+        &mut data,
+        offset_of!(sys::BootBin, fst_address),
+        FST_ADDRESS,
+    );
+    put32(
+        &mut data,
+        offset_of!(sys::BootBin, user_position),
+        USER_POSITION,
+    );
+    put32(
+        &mut data,
+        offset_of!(sys::BootBin, user_length),
+        USER_LENGTH,
+    );
 
     // 0x20 of header, then the two halves the apploader reports.
     let apploader = index(sys::APPLOADER_OFFSET);
-    put32(&mut data, apploader + sys::APPLOADER_SIZE_FIELD, 0x10);
-    put32(&mut data, apploader + sys::APPLOADER_TRAILER_FIELD, 0x10);
+    put32(
+        &mut data,
+        apploader + offset_of!(sys::ApploaderHeader, size),
+        0x10,
+    );
+    put32(
+        &mut data,
+        apploader + offset_of!(sys::ApploaderHeader, trailer_size),
+        0x10,
+    );
 
     // Two sections, the later one nearer the front, so a length taken from the
     // last section rather than the furthest would come out short.
     let dol = DOL_OFFSET as usize;
-    put32(&mut data, dol + sys::DOL_SECTION_OFFSETS, 0x200);
-    put32(&mut data, dol + sys::DOL_SECTION_SIZES, 0x30);
-    put32(&mut data, dol + sys::DOL_SECTION_OFFSETS + 8, 0x100);
-    put32(&mut data, dol + sys::DOL_SECTION_SIZES + 8, 0x40);
+    put32(
+        &mut data,
+        dol + offset_of!(sys::DolHeader, section_offsets),
+        0x200,
+    );
+    put32(
+        &mut data,
+        dol + offset_of!(sys::DolHeader, section_sizes),
+        0x30,
+    );
+    put32(
+        &mut data,
+        dol + offset_of!(sys::DolHeader, section_offsets) + 8,
+        0x100,
+    );
+    put32(
+        &mut data,
+        dol + offset_of!(sys::DolHeader, section_sizes) + 8,
+        0x40,
+    );
 
     put_fst(&mut data, 0, true, NAME_ROOT, 0, ENTRY_COUNT);
     put_fst(&mut data, 1, false, NAME_A, DATA_OFFSET, 4);
@@ -374,7 +427,7 @@ fn refuses_to_read_past_the_end_of_the_image() {
 #[test]
 fn the_title_stops_at_the_end_of_its_field() {
     let mut data = disc();
-    data[sys::TITLE_OFFSET..sys::TITLE_OFFSET + sys::TITLE_LEN].fill(b'A');
+    data[TITLE..TITLE + sys::TITLE_LEN].fill(b'A');
 
     let disc = open(&data).unwrap();
     assert_eq!(disc.metadata().boot.title, "A".repeat(sys::TITLE_LEN));
@@ -385,7 +438,7 @@ fn the_title_stops_at_the_end_of_its_field() {
 #[test]
 fn refuses_a_title_that_is_not_text() {
     let mut data = disc();
-    data[sys::TITLE_OFFSET + 4] = 0x93;
+    data[TITLE + 4] = 0x93;
 
     assert!(matches!(open(&data), Err(Error::CorruptHeader(_))));
 }
@@ -412,7 +465,11 @@ fn says_what_it_is_looking_at() {
     assert_eq!(disc.len(), IMAGE_LEN as u64);
 
     let mut wii = disc_without_magic();
-    put32(&mut wii, sys::WII_MAGIC_OFFSET, sys::WII_MAGIC);
+    put32(
+        &mut wii,
+        offset_of!(sys::BootBin, authored.wii_magic),
+        sys::WII_MAGIC,
+    );
     assert!(matches!(open(&wii), Err(Error::WiiDisc)));
 
     assert!(matches!(open(&disc_without_magic()), Err(Error::NotADisc)));
@@ -466,12 +523,12 @@ fn refuses_a_preamble_it_would_not_keep_whole() {
 #[test]
 fn refuses_a_layout_it_would_not_reproduce() {
     let fields = [
-        sys::DEBUG_MONITOR_FIELD,
-        sys::DEBUG_MONITOR_ADDRESS_FIELD,
-        sys::FST_MAX_SIZE_FIELD,
-        sys::FST_ADDRESS_FIELD,
-        sys::USER_POSITION_FIELD,
-        sys::USER_LENGTH_FIELD,
+        offset_of!(sys::BootBin, debug_monitor),
+        offset_of!(sys::BootBin, debug_monitor_address),
+        offset_of!(sys::BootBin, fst_max_size),
+        offset_of!(sys::BootBin, fst_address),
+        offset_of!(sys::BootBin, user_position),
+        offset_of!(sys::BootBin, user_length),
     ];
 
     for at in fields {
@@ -559,7 +616,7 @@ fn rejects_a_container_that_is_not_one() {
 
 fn disc_without_magic() -> Vec<u8> {
     let mut data = disc();
-    put32(&mut data, sys::MAGIC_OFFSET, 0);
+    put32(&mut data, offset_of!(sys::BootBin, authored.magic), 0);
     data
 }
 
