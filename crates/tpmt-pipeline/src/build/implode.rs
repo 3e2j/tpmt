@@ -7,6 +7,7 @@
 //! then encodes the archive. A disc file's own wrapper goes on last, because
 //! the disc records it, not an archive.
 
+use rayon::prelude::*;
 use tpmt_jkernel_arc::editable::sidecar::Sidecar;
 use tpmt_jkernel_arc::{Archive, File, Format};
 use tpmt_jkernel_compress::yaz0_encode;
@@ -57,17 +58,21 @@ fn archive(tree: &Tree, path: &str) -> Result<Vec<u8>> {
     let sidecar = tree.sidecar(path)?;
     let members = tree.members(path, &sidecar);
 
-    // Final bytes, in member order.
-    let mut bytes = Vec::with_capacity(members.len());
-    for member in &members {
-        let inner = format!("{path}/{}", member.path);
-        let assembled = node(tree, &inner)?;
-        bytes.push(if member.yaz0_compressed {
-            wrap(&inner, &assembled)?
-        } else {
-            assembled
-        });
-    }
+    // Final bytes, in member order. Members are independent, and one archive
+    // can hold most of a build's Yaz0 work, so they encode in parallel rather
+    // than leaving it to the single task `rebuild` gave this disc file.
+    let bytes = members
+        .par_iter()
+        .map(|member| {
+            let inner = format!("{path}/{}", member.path);
+            let assembled = node(tree, &inner)?;
+            if member.yaz0_compressed {
+                wrap(&inner, &assembled)
+            } else {
+                Ok(assembled)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     // TODO: the linker goes here, where every member's bytes exist, the member
     // list is fixed, and the archive has not been encoded yet. Lands with its first user (`.stb`), as
