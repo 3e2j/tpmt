@@ -98,7 +98,7 @@ mod tests {
 
     fn header(decompressed_size: u32) -> Vec<u8> {
         Header {
-            magic: const { FileKind::Yaz0.field() },
+            magic: FileKind::Yaz0.magic(),
             decompressed_size: Be32::new(decompressed_size),
             unnamed: [0; 8],
         }

@@ -146,7 +146,7 @@ mod tests {
     fn file(size: u32, magics: &[&[u8; 4]]) -> Vec<u8> {
         let mut out = Writer::with_capacity(Header::LEN + magics.len() * 0x10);
         out.record(&Header {
-            magic: const { FileKind::Mesg.field() },
+            magic: FileKind::Mesg.magic(),
             kind: Header::KIND,
             size: Be32::new(size),
             section_count: Be32::new(u32::try_from(magics.len()).unwrap()),

@@ -5,8 +5,8 @@
 //! `Archive::decode(bytes)` and `archive.encode()` read the same everywhere.
 //! Knows nothing about projects or pipelines.
 //!
-//! Every magic lives in [`FileKind`] and is checked only here, so a format
-//! crate never compares magic bytes itself.
+//! Every file's opening magic lives in [`FileKind`] and is checked only here.
+//! Magics inside a file, like section tags, belong to that format's crate.
 //!
 //! Formats are true to the file, not to the game's logic, so they hold
 //! whatever a mod puts in them. A mod that changes the game past what a
@@ -83,8 +83,8 @@ impl std::error::Error for WrongKind {}
 
 /// A format the toolkit reads, told apart by the magic it opens with.
 ///
-/// Every magic is defined here and nowhere else, so something that only needs
-/// to tell formats apart, like an unpack sorting files, depends on this crate
+/// Every opening magic is defined here and nowhere else, so something that
+/// only needs to tell formats apart, like an unpack sorting files, depends on this crate
 /// alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileKind {
@@ -109,25 +109,16 @@ impl FileKind {
     /// Whether `data` opens with this kind's magic.
     #[must_use]
     pub fn matches(self, data: &[u8]) -> bool {
-        data.starts_with(self.magic())
+        data.starts_with(&self.magic())
     }
 
     #[must_use]
-    pub const fn magic(self) -> &'static [u8] {
+    pub const fn magic(self) -> [u8; 4] {
         match self {
-            Self::Rarc => b"RARC",
-            Self::Yaz0 => b"Yaz0",
-            Self::Mesg => b"MESG",
+            Self::Rarc => *b"RARC",
+            Self::Yaz0 => *b"Yaz0",
+            Self::Mesg => *b"MESG",
         }
-    }
-
-    /// [`magic`](Self::magic) at the width of the header field that holds it.
-    /// Evaluated in a const, a width that doesn't match fails to compile.
-    #[must_use]
-    pub const fn field<const N: usize>(self) -> [u8; N] {
-        let mut field = [0; N];
-        field.copy_from_slice(self.magic());
-        field
     }
 
     /// A stable lowercase name, for a file that records kinds.

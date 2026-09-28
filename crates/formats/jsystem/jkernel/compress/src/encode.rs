@@ -85,7 +85,7 @@ fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
 
     let mut out = Writer::with_capacity(Header::LEN + input.len());
     out.record(&Header {
-        magic: const { FileKind::Yaz0.field() },
+        magic: FileKind::Yaz0.magic(),
         decompressed_size: Be32::new(decompressed_size),
         unnamed: [0; 8],
     });

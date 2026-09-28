@@ -381,7 +381,7 @@ fn write_headers(
     };
     let header = DataHeader::AT;
     out.record(&TopHeader {
-        magic: const { FileKind::Rarc.field() },
+        magic: FileKind::Rarc.magic(),
         file_size: be32(sections.data_at + placed.data_size)?,
         data_header_ptr: be32(header)?,
         file_data_ptr: be32(sections.data_at - header)?,

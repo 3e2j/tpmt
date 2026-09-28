@@ -47,7 +47,7 @@ pub fn pack(bmg: &Bmg) -> Result<Vec<u8>> {
 
     let mut out = Writer::with_capacity(len_of(&bodies));
     out.record(&Header {
-        magic: const { FileKind::Mesg.field() },
+        magic: FileKind::Mesg.magic(),
         kind: Header::KIND,
         size: field(len_of(&bodies[..stated]))?,
         section_count: field(bodies.len())?,
@@ -127,7 +127,7 @@ mod tests {
         let reader = Reader::new(&data);
 
         let top: &Header = reader.view_at(0).unwrap();
-        assert_eq!(top.magic, FileKind::Mesg.field());
+        assert_eq!(top.magic, FileKind::Mesg.magic());
         assert_eq!(top.kind, Header::KIND);
         assert_eq!(top.size.get(), 0x80);
         assert_eq!(top.section_count.get(), 5);
