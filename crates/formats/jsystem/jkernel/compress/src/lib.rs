@@ -41,10 +41,21 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 mod header {
+    use tpmt_bytes::Be32;
+
+    tpmt_bytes::layout! {
+        pub struct Header {
+            /// Always [`MAGIC`].
+            pub magic: [u8; 4],
+            pub decompressed_size: Be32,
+            /// Padding, and zero.
+            pub unnamed: [u8; 8],
+        }
+    }
+
     pub const LEN: usize = 0x10;
-    pub const MAGIC: &[u8; 4] = b"Yaz0"; // at 0x00
-    pub const DECOMPRESSED_SIZE: usize = 0x04;
-    // 0x08 to 0x10 padding bytes
+    const _: () = assert!(size_of::<Header>() == LEN);
+    pub const MAGIC: &[u8; 4] = b"Yaz0";
 }
 
 /// Whether a buffer starts with the Yaz0 magic.

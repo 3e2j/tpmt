@@ -1,8 +1,11 @@
 //! The write path: turns raw bytes into Yaz0 data.
 
+use tpmt_bytes::{Be32, Writer};
+
+use crate::header::{self, Header};
 use crate::token::backref::{Backreference, MAX_DISTANCE, MAX_LENGTH, MIN_LENGTH};
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
-use crate::{Error, Result, header};
+use crate::{Error, Result};
 
 /// After finding a valid backref match, we look to see if a match beside it is
 /// better, a "lazy match". These are the knobs that shape detection.
@@ -79,10 +82,13 @@ fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
     let decompressed_size =
         u32::try_from(input.len()).map_err(|_| Error::TooLarge { len: input.len() })?;
 
-    let mut out = Vec::with_capacity(header::LEN + input.len());
-    out.extend_from_slice(header::MAGIC);
-    out.extend_from_slice(&decompressed_size.to_be_bytes());
-    out.extend_from_slice(&[0u8; 8]);
+    let mut out = Writer::with_capacity(header::LEN + input.len());
+    out.record(&Header {
+        magic: *header::MAGIC,
+        decompressed_size: Be32::new(decompressed_size),
+        unnamed: [0; 8],
+    });
+    let mut out = out.finish();
 
     let mut chains = Chains::new(decompressed_size);
     let mut lookahead = Lookahead::default();

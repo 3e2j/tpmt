@@ -2,9 +2,10 @@
 
 use tpmt_bytes::Reader;
 
+use crate::header::{self, Header};
 use crate::token::backref::Backreference;
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
-use crate::{Error, Result, header, is_yaz0};
+use crate::{Error, Result, is_yaz0};
 
 /// Decompresses Yaz0 data. See the crate docs for the token format.
 ///
@@ -22,7 +23,8 @@ pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
     }
 
     let mut reader = Reader::new(input);
-    let decompressed_size = reader.u32_at(header::DECOMPRESSED_SIZE)? as usize;
+    let header: &Header = reader.view_at(0)?;
+    let decompressed_size = header.decompressed_size.get() as usize;
     reader.seek(header::LEN);
 
     let mut out = Vec::with_capacity(decompressed_size);
