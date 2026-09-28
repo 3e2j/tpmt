@@ -479,18 +479,13 @@ fn says_what_it_is_looking_at() {
     assert!(matches!(open(&disc_without_magic()), Err(Error::NotADisc)));
 }
 
-/// Keeping the boot header and the disc metadata as a handful of values only
-/// works while the rest of those two files is empty. One that put something
-/// elsewhere is refused, rather than unpacked into a project that has quietly
-/// dropped it.
-///
-/// The ranges are spelled out again here, first and last byte of each, so the
-/// tables in `sys` are checked rather than agreed with. Positions on the disc,
-/// which is what the error reports.
+/// Positions spelled out here rather than taken from `sys`, so the rebuild is
+/// checked against them, not agreed with.
 #[test]
-fn refuses_a_preamble_it_would_not_keep_whole() {
+fn refuses_a_preamble_it_would_not_rebuild() {
     const BOOT_RESERVED: [(usize, usize); 4] =
         [(0x0A, 0x1C), (0x60, 0x400), (0x408, 0x420), (0x43C, 0x440)];
+    const BOOT_DERIVED: [usize; 6] = [0x400, 0x404, 0x42C, 0x430, 0x434, 0x438];
     const BI2_RESERVED: [(usize, usize); 4] = [
         (0x440, 0x444),
         (0x448, 0x44C),
@@ -500,9 +495,9 @@ fn refuses_a_preamble_it_would_not_keep_whole() {
 
     let refused = |at: usize, region: &str| {
         let mut data = disc();
-        data[at] = 1;
+        data[at] ^= 0xFF;
         match open(&data).err() {
-            Some(Error::UnknownPreambleData {
+            Some(Error::PreambleWouldChange {
                 region: got,
                 offset,
             }) if got == region && offset == at as u64 => {}
@@ -519,36 +514,11 @@ fn refuses_a_preamble_it_would_not_keep_whole() {
             refused(to - 1, region);
         }
     }
-}
-
-/// The addresses and offsets are worked out again rather than stored, so a disc
-/// holding something else in one of them is a disc whose rule is not the one
-/// here. Rebuilding it would silently move things, so it is refused instead.
-#[test]
-fn refuses_a_layout_it_would_not_reproduce() {
-    let fields = [
-        offset_of!(sys::BootBin, debug_monitor),
-        offset_of!(sys::BootBin, debug_monitor_address),
-        offset_of!(sys::BootBin, fst_max_size),
-        offset_of!(sys::BootBin, fst_address),
-        offset_of!(sys::BootBin, user_position),
-        offset_of!(sys::BootBin, user_length),
-    ];
-
-    for at in fields {
-        let mut data = disc();
-        put32(&mut data, at, 0xDEAD_BEEF);
-        assert!(
-            matches!(
-                open(&data).err(),
-                Some(Error::DerivedValueDiffers {
-                    found: 0xDEAD_BEEF,
-                    ..
-                })
-            ),
-            "{at:#x} was accepted"
-        );
+    for at in BOOT_DERIVED {
+        refused(at, "the boot header");
     }
+    refused(TITLE + 6, "the boot header");
+    refused(TITLE + sys::TITLE_LEN - 1, "the boot header");
 }
 
 /// Wraps an image in a CISO, leaving out every block that is all zeros, which is

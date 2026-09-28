@@ -80,19 +80,8 @@ pub enum Error {
     #[error("the disc's file table is corrupt: {0}")]
     CorruptFileTable(&'static str),
 
-    #[error(
-        "{region} holds data at {offset:#x}, outside its known fields, which a build would lose"
-    )]
-    UnknownPreambleData { region: &'static str, offset: u64 },
-
-    #[error(
-        "{what} is {found:#x} where a build would put {want:#x}, so rebuilding would change it"
-    )]
-    DerivedValueDiffers {
-        what: &'static str,
-        found: u32,
-        want: u32,
-    },
+    #[error("{region} differs at {offset:#x} from what a build would write back")]
+    PreambleWouldChange { region: &'static str, offset: u64 },
 
     #[error("write of {len} bytes at {offset:#x}: {source}")]
     Write {

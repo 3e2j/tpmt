@@ -7,14 +7,12 @@
 //!
 //! The first two are almost entirely empty, and most of what they do hold is a
 //! consequence of the layout rather than anything anyone chose. What is left is
-//! thirteen values, so they come back as `Metadata` instead of as files. The
-//! rest is either checked against the rule that produces it or checked for
-//! being zero, so a disc that does not match is refused rather than quietly
-//! rebuilt into something else.
+//! thirteen values, so they come back as `Metadata` instead of as files.
+//! Reading either one builds it again from those values and compares, so a
+//! disc that does not match is refused rather than quietly rebuilt into
+//! something else.
 
 use serde::{Deserialize, Serialize};
-use std::mem::offset_of;
-
 use tpmt_bytes::{Be32, Layout, Reader};
 
 use crate::{Disc, Entry, Error, Result, Span};
@@ -85,25 +83,6 @@ const USER_ALIGN: u32 = 0x8000;
 /// the layout put in front of them.
 pub const PREAMBLE_ALIGN: u64 = 0x100;
 
-/// The stretches of the boot header that hold nothing, the Wii magic among
-/// them. Everything outside them is either kept or checked, so a disc with
-/// bytes in here is one this would not reproduce.
-const BOOT_RESERVED: [(usize, usize); 4] = [
-    (
-        offset_of!(BootBin, authored.unnamed_0a),
-        offset_of!(BootBin, authored.magic),
-    ),
-    (
-        offset_of!(BootBin, unnamed_60),
-        offset_of!(BootBin, debug_monitor),
-    ),
-    (
-        offset_of!(BootBin, unnamed_408),
-        offset_of!(BootBin, dol_offset),
-    ),
-    (offset_of!(BootBin, unnamed_43c), BootBin::LEN),
-];
-
 // Disc metadata, then the apploader, at fixed positions after the boot header.
 pub const BI2_OFFSET: u64 = 0x440;
 pub const APPLOADER_OFFSET: u64 = 0x2440;
@@ -125,24 +104,6 @@ tpmt_bytes::layout! {
         pub unnamed_28: [u8; 0x1FD8],
     }
 }
-
-/// Everything bi2 does not use: the debug monitor size, the argument offset,
-/// the two track fields, and then eight kilobytes of nothing.
-const BI2_RESERVED: [(usize, usize); 4] = [
-    (
-        offset_of!(Bi2Bin, debug_monitor_size),
-        offset_of!(Bi2Bin, simulated_memory_size),
-    ),
-    (
-        offset_of!(Bi2Bin, argument_offset),
-        offset_of!(Bi2Bin, debug_flag),
-    ),
-    (
-        offset_of!(Bi2Bin, track_location),
-        offset_of!(Bi2Bin, country),
-    ),
-    (offset_of!(Bi2Bin, unnamed_28), Bi2Bin::LEN),
-];
 
 tpmt_bytes::layout! {
     /// What the apploader opens with. It states its own length in two parts,
@@ -263,20 +224,11 @@ pub fn identify(boot: &[u8]) -> Result<()> {
 }
 
 /// Reads the boot header, having already been told it is one by `identify`.
+///
+/// The executable's and file table's offsets are taken as read, since a build
+/// picks fresh ones anyway.
 pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
-    let reader = Reader::new(bytes);
-
-    for (from, to) in BOOT_RESERVED {
-        let reserved = reader.slice_at(from, to - from)?;
-        if let Some(at) = reserved.iter().position(|&b| b != 0) {
-            return Err(Error::UnknownPreambleData {
-                region: "the boot header",
-                offset: (from + at) as u64,
-            });
-        }
-    }
-    let header: &BootBin = reader.view_at(0)?;
-    check_layout(header, apploader_len)?;
+    let header: &BootBin = Reader::new(bytes).view_at(0)?;
     let authored = &header.authored;
 
     // A 64 byte field, only terminated when the title is short enough to leave
@@ -284,7 +236,7 @@ pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
     let title = &authored.title;
     let title = &title[..title.iter().position(|&b| b == 0).unwrap_or(title.len())];
 
-    Ok(Boot {
+    let boot = Boot {
         id: text(&authored.id, "the game id is not text")?,
         maker: text(&authored.maker, "the maker code is not text")?,
         disc_number: authored.disc_number,
@@ -292,62 +244,23 @@ pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
         audio_streaming: authored.audio_streaming,
         stream_buffer_size: authored.stream_buffer_size,
         title: text(title, "the title is not text")?,
-    })
-}
+    };
 
-/// Checks the six header values a build works out again instead of keeping.
-///
-/// Nothing is stored for them, so if one is not what its rule says, the rule
-/// does not hold for this disc and a build would put something else there.
-///
-/// The executable's and the file table's own offsets are not held to their
-/// alignment rule. They are read off the disc and used as they are, and a
-/// build works out fresh ones and rewrites every field that mentions them, so
-/// a disc that packed its preamble differently still unpacks and rebuilds
-/// whole. The six here have no such second life: they are only ever derived.
-fn check_layout(header: &BootBin, apploader_len: u64) -> Result<()> {
-    let fst_len = header.fst_size.get();
-    let user = user_position(header.fst_offset.get(), fst_len);
-    // Two real u32 fields off the disc, summed, so a corrupt header can
-    // genuinely claim more than a u32 field can hold — and the field this is
-    // compared against is a real u32 on disk either way, so a failure here is
-    // itself proof the header doesn't match this rule.
     let apploader_len = u32::try_from(apploader_len)
         .map_err(|_| Error::CorruptHeader("the apploader is too long for its own header"))?;
-
-    let derived = [
-        (
-            header.debug_monitor,
-            apploader_len,
-            "the debug monitor offset",
-        ),
-        (
-            header.debug_monitor_address,
-            DEBUG_MONITOR_ADDRESS,
-            "the debug monitor address",
-        ),
-        (
-            header.fst_address,
-            fst_address(fst_len),
-            "the file table's load address",
-        ),
-        (header.user_position, user, "the user area start"),
-        (
-            header.user_length,
-            USER_AREA_END.saturating_sub(user),
-            "the user area length",
-        ),
-        // A build has nothing to take a maximum over.
-        (header.fst_max_size, fst_len, "the largest file table"),
-    ];
-
-    for (field, want, what) in derived {
-        let found = field.get();
-        if found != want {
-            return Err(Error::DerivedValueDiffers { what, found, want });
-        }
-    }
-    Ok(())
+    let layout = BootLayout {
+        apploader_len,
+        dol_offset: header.dol_offset.get(),
+        fst_offset: header.fst_offset.get(),
+        fst_len: header.fst_size.get(),
+    };
+    unchanged(
+        header.as_bytes(),
+        &boot_bin(&boot, &layout)?,
+        "the boot header",
+        0,
+    )?;
+    Ok(boot)
 }
 
 /// The file table is loaded as high as it goes, on a 32 byte boundary because
@@ -364,32 +277,38 @@ pub fn user_position(fst_offset: u32, fst_len: u32) -> u32 {
         .unwrap_or(0)
 }
 
-/// Reads the disc metadata, which is six fields and then eight kilobytes of
-/// nothing.
+/// Reads the disc metadata.
 pub fn bi2(bytes: &[u8]) -> Result<Bi2> {
-    let reader = Reader::new(bytes);
+    let header: &Bi2Bin = Reader::new(bytes).view_at(0)?;
+    let bi2 = Bi2 {
+        simulated_memory_size: header.simulated_memory_size.get(),
+        debug_flag: header.debug_flag.get(),
+        country: header.country.get(),
+        unknown_1c: header.unknown_1c.get(),
+        unknown_20: header.unknown_20.get(),
+        pad_spec: header.pad_spec.get(),
+    };
+    unchanged(
+        header.as_bytes(),
+        &bi2_bin(&bi2),
+        "the disc metadata",
+        BI2_OFFSET,
+    )?;
+    Ok(bi2)
+}
 
-    for (from, to) in BI2_RESERVED {
-        let reserved = reader.slice_at(from, to - from)?;
-        if let Some(at) = reserved.iter().position(|&b| b != 0) {
-            // Reported as a position on the disc, which is where a hex editor
-            // over the image will be looking.
-            return Err(Error::UnknownPreambleData {
-                region: "the disc metadata",
-                offset: BI2_OFFSET + (from + at) as u64,
-            });
-        }
-    }
-
-    let bi2: &Bi2Bin = reader.view_at(0)?;
-    Ok(Bi2 {
-        simulated_memory_size: bi2.simulated_memory_size.get(),
-        debug_flag: bi2.debug_flag.get(),
-        country: bi2.country.get(),
-        unknown_1c: bi2.unknown_1c.get(),
-        unknown_20: bi2.unknown_20.get(),
-        pad_spec: bi2.pad_spec.get(),
-    })
+/// Refuses a header whose rebuild differs from what was read, naming the first
+/// byte that would change as a position on the disc.
+fn unchanged(read: &[u8], rebuilt: &[u8], region: &'static str, at: u64) -> Result<()> {
+    read.iter()
+        .zip(rebuilt)
+        .position(|(a, b)| a != b)
+        .map_or(Ok(()), |offset| {
+            Err(Error::PreambleWouldChange {
+                region,
+                offset: at + offset as u64,
+            })
+        })
 }
 
 /// The four positions a layout works out, which the boot header restates.
@@ -400,7 +319,7 @@ pub struct BootLayout {
     pub(crate) fst_len: u32,
 }
 
-/// Writes the boot header back out: the inverse of `boot` and `check_layout`.
+/// Writes the boot header back out: the inverse of `boot`.
 ///
 /// Seven kept values and the magic. Everything else is a run of zeros, or a
 /// number that follows from where the layout put the three things the header
