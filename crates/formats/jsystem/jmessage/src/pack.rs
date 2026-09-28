@@ -1,8 +1,8 @@
 //! The write path: turns a [`Bmg`] back into bytes.
 
-use tpmt_bytes::{Be32, Writer};
+use tpmt_bytes::{Be32, Layout, Writer};
 
-use crate::header::{self, Header};
+use crate::Header;
 use crate::sections::{self, flow, message, positions};
 use crate::{Bmg, Error, FileKind, Result};
 
@@ -35,20 +35,20 @@ pub fn pack(bmg: &Bmg) -> Result<Vec<u8>> {
     }
 
     let padded =
-        |body: &[u8]| (sections::header::LEN + body.len()).next_multiple_of(sections::ALIGN);
+        |body: &[u8]| (sections::Header::LEN + body.len()).next_multiple_of(sections::ALIGN);
     let field = |len: usize| {
         u32::try_from(len)
             .map(Be32::new)
             .map_err(|_| Error::Oversized)
     };
     let len_of = |bodies: &[([u8; 4], Vec<u8>)]| {
-        header::LEN + bodies.iter().map(|(_, body)| padded(body)).sum::<usize>()
+        Header::LEN + bodies.iter().map(|(_, body)| padded(body)).sum::<usize>()
     };
 
     let mut out = Writer::with_capacity(len_of(&bodies));
     out.record(&Header {
         magic: const { FileKind::Mesg.field() },
-        kind: header::KIND,
+        kind: Header::KIND,
         size: field(len_of(&bodies[..stated]))?,
         section_count: field(bodies.len())?,
         encoding: bmg.encoding.byte(),
@@ -56,7 +56,7 @@ pub fn pack(bmg: &Bmg) -> Result<Vec<u8>> {
     });
     let mut body_end = out.len();
     for (magic, body) in &bodies {
-        out.record(&sections::header::Header {
+        out.record(&sections::Header {
             magic: *magic,
             size: field(padded(body))?,
         });
@@ -82,11 +82,11 @@ fn write_strings(strings: &[Vec<u8>]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_bytes::Reader;
+    use tpmt_bytes::{Layout, Reader};
 
     use super::*;
+    use crate::sections::Header as SectionHeader;
     use crate::sections::flow::{Node, NodeId, Root};
-    use crate::sections::header::Header as SectionHeader;
     use crate::{Encoding, Flow, Format, Message, MessageId, Mid1Header, TextSegment};
 
     fn sample() -> Bmg {
@@ -128,7 +128,7 @@ mod tests {
 
         let top: &Header = reader.view_at(0).unwrap();
         assert_eq!(top.magic, FileKind::Mesg.field());
-        assert_eq!(top.kind, header::KIND);
+        assert_eq!(top.kind, Header::KIND);
         assert_eq!(top.size.get(), 0x80);
         assert_eq!(top.section_count.get(), 5);
         assert_eq!(top.encoding, Encoding::ShiftJis.byte());
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(top.size.get(), 0x80);
         assert_eq!(top.section_count.get(), 3);
         // MID1 unpadded: the section header, its own header, and one id.
-        assert_eq!(data.len(), 0x60 + sections::header::LEN + 8 + 4);
+        assert_eq!(data.len(), 0x60 + sections::Header::LEN + 8 + 4);
     }
 
     #[test]

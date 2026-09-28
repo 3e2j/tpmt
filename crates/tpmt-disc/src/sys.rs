@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::mem::offset_of;
 
-use tpmt_bytes::{Be32, Reader, Writer};
+use tpmt_bytes::{Be32, Layout, Reader, Writer};
 
 use crate::{Disc, Entry, Error, Result, Span};
 
@@ -23,7 +23,6 @@ use crate::{Disc, Entry, Error, Result, Span};
 // anything else that happens to be 1.4 GB.
 pub const MAGIC: u32 = 0xC233_9F3D;
 pub const WII_MAGIC: u32 = 0x5D1C_9EA3;
-pub const BOOT_LEN: usize = 0x440;
 pub const ID_LEN: usize = 4;
 pub const MAKER_LEN: usize = 2;
 pub const TITLE_LEN: usize = 0x40;
@@ -73,8 +72,6 @@ tpmt_bytes::layout! {
     }
 }
 
-const _: () = assert!(size_of::<Authored>() == 0x60 && size_of::<BootBin>() == BOOT_LEN);
-
 /// Where the debug monitor would be loaded. Nothing on a retail disc reads it.
 pub const DEBUG_MONITOR_ADDRESS: u32 = 0x8028_0060;
 /// The file table is loaded as high as it fits under here, and the arena ends
@@ -104,14 +101,12 @@ const BOOT_RESERVED: [(usize, usize); 4] = [
         offset_of!(BootBin, unnamed_408),
         offset_of!(BootBin, dol_offset),
     ),
-    (offset_of!(BootBin, unnamed_43c), BOOT_LEN),
+    (offset_of!(BootBin, unnamed_43c), BootBin::LEN),
 ];
 
 // Disc metadata, then the apploader, at fixed positions after the boot header.
 pub const BI2_OFFSET: u64 = 0x440;
-pub const BI2_LEN: usize = 0x2000;
 pub const APPLOADER_OFFSET: u64 = 0x2440;
-pub const APPLOADER_HEADER_LEN: u64 = 0x20;
 
 tpmt_bytes::layout! {
     /// The disc metadata: six fields and then eight kilobytes of nothing.
@@ -131,8 +126,6 @@ tpmt_bytes::layout! {
     }
 }
 
-const _: () = assert!(size_of::<Bi2Bin>() == BI2_LEN);
-
 /// Everything bi2 does not use: the debug monitor size, the argument offset,
 /// the two track fields, and then eight kilobytes of nothing.
 const BI2_RESERVED: [(usize, usize); 4] = [
@@ -148,7 +141,7 @@ const BI2_RESERVED: [(usize, usize); 4] = [
         offset_of!(Bi2Bin, track_location),
         offset_of!(Bi2Bin, country),
     ),
-    (offset_of!(Bi2Bin, unnamed_28), BI2_LEN),
+    (offset_of!(Bi2Bin, unnamed_28), Bi2Bin::LEN),
 ];
 
 tpmt_bytes::layout! {
@@ -164,19 +157,17 @@ tpmt_bytes::layout! {
     }
 }
 
-const _: () = assert!(size_of::<ApploaderHeader>() as u64 == APPLOADER_HEADER_LEN);
-
 pub const BOOT: Span = Span {
     offset: 0,
-    size: BOOT_LEN as u64,
+    size: BootBin::LEN as u64,
 };
 pub const BI2: Span = Span {
     offset: BI2_OFFSET,
-    size: BI2_LEN as u64,
+    size: Bi2Bin::LEN as u64,
 };
 pub const APPLOADER_HEADER: Span = Span {
     offset: APPLOADER_OFFSET,
-    size: APPLOADER_HEADER_LEN,
+    size: ApploaderHeader::LEN as u64,
 };
 
 /// Where the two preamble files land in a project. A build looks for them by
@@ -191,7 +182,6 @@ pub const BI2_PATH: &str = "sys/bi2.bin";
 
 // Executable. Its length is not stored anywhere, so it is whatever the furthest
 // section reaches.
-pub const DOL_HEADER_LEN: u64 = 0x100;
 pub const DOL_SECTIONS: usize = 18;
 
 tpmt_bytes::layout! {
@@ -208,8 +198,6 @@ tpmt_bytes::layout! {
         pub unnamed: [u8; 0x1C],
     }
 }
-
-const _: () = assert!(size_of::<DolHeader>() as u64 == DOL_HEADER_LEN);
 
 /// What the preamble records that a build cannot work out for itself.
 ///
@@ -426,7 +414,7 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
     } = layout;
 
     let user = user_position(fst_offset, fst_len);
-    let mut out = Writer::with_capacity(BOOT_LEN);
+    let mut out = Writer::with_capacity(BootBin::LEN);
     out.record(&BootBin {
         authored: authored(boot)?,
         unnamed_60: [0; 0x3A0],
@@ -465,12 +453,12 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
 ///   length, a title that isn't Shift-JIS, or one that overruns its 64 byte
 ///   field).
 pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
-    if original.len() != BOOT_LEN {
+    if original.len() != BootBin::LEN {
         return Err(Error::Unwritable("a boot header is 0x440 bytes"));
     }
 
     let original: &BootBin = Reader::new(original).view_at(0)?;
-    let mut out = Writer::with_capacity(BOOT_LEN);
+    let mut out = Writer::with_capacity(BootBin::LEN);
     out.record(&BootBin {
         authored: authored(boot)?,
         ..*original
@@ -510,7 +498,7 @@ fn authored(boot: &Boot) -> Result<Authored> {
 /// Writes the disc metadata back out: six fields in eight kilobytes of nothing.
 #[must_use]
 pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
-    let mut out = Writer::with_capacity(BI2_LEN);
+    let mut out = Writer::with_capacity(Bi2Bin::LEN);
     out.record(&Bi2Bin {
         debug_monitor_size: Be32::new(0),
         simulated_memory_size: Be32::new(bi2.simulated_memory_size),
@@ -568,7 +556,7 @@ pub fn fst_range(boot: &[u8]) -> Result<Span> {
 /// its header.
 pub fn apploader_len(header: &[u8]) -> Result<u64> {
     let header: &ApploaderHeader = Reader::new(header).view_at(0)?;
-    Ok(APPLOADER_HEADER_LEN + header.size.get() as u64 + header.trailer_size.get() as u64)
+    Ok(ApploaderHeader::LEN as u64 + header.size.get() as u64 + header.trailer_size.get() as u64)
 }
 
 /// The two preamble pieces a project keeps as files, neither of which records
@@ -612,7 +600,7 @@ pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
 fn dol_len(disc: &Disc, offset: u64) -> Result<u64> {
     let header = disc.read(Span {
         offset,
-        size: DOL_HEADER_LEN,
+        size: DolHeader::LEN as u64,
     })?;
     let header: &DolHeader = Reader::new(&header).view_at(0)?;
 
@@ -621,5 +609,5 @@ fn dol_len(disc: &Disc, offset: u64) -> Result<u64> {
         .iter()
         .zip(&header.section_sizes)
         .map(|(start, len)| start.get() as u64 + len.get() as u64)
-        .fold(DOL_HEADER_LEN, u64::max))
+        .fold(DolHeader::LEN as u64, u64::max))
 }

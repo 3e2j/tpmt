@@ -1,9 +1,9 @@
 //! The read path: turns Yaz0 data into raw bytes.
 
-use tpmt_bytes::Reader;
+use tpmt_bytes::{Layout, Reader};
 use tpmt_format::{FileKind, WrongKind};
 
-use crate::header::{self, Header};
+use crate::Header;
 use crate::token::backref::Backreference;
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
 use crate::{Error, Result};
@@ -29,7 +29,7 @@ pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
     let mut reader = Reader::new(input);
     let header: &Header = reader.view_at(0)?;
     let decompressed_size = header.decompressed_size.get() as usize;
-    reader.seek(header::LEN);
+    reader.seek(Header::LEN);
 
     let mut out = Vec::with_capacity(decompressed_size);
     let mut flags: Flags = 0;
@@ -97,7 +97,7 @@ mod tests {
     use super::*;
 
     fn header(decompressed_size: u32) -> Vec<u8> {
-        let mut out = Writer::with_capacity(header::LEN);
+        let mut out = Writer::with_capacity(Header::LEN);
         out.record(&Header {
             magic: const { FileKind::Yaz0.field() },
             decompressed_size: Be32::new(decompressed_size),

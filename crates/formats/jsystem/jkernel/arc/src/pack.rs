@@ -2,14 +2,11 @@
 
 use std::collections::HashSet;
 
-use tpmt_bytes::{Be16, Be32, Flag, Writer};
+use tpmt_bytes::{Be16, Be32, Flag, Layout, Writer};
 
 use crate::{
-    Archive, Error, FileKind, Preload, Result,
-    data_header::{self, DataHeader},
-    entry, name_hash, next_free_id,
-    node::{self, Node},
-    top_header::TopHeader,
+    Archive, DataHeader, Entry, Error, FileKind, Node, Preload, Result, TopHeader, name_hash,
+    next_free_id,
 };
 
 // The string pool opens with `.` and `..`, in that order, so the offset
@@ -27,11 +24,11 @@ struct Dir {
     /// The name as the pool will store it, encoded once up front.
     name: Vec<u8>,
     parent: usize,
-    children: Vec<Entry>,
+    children: Vec<Child>,
 }
 
 /// One thing a [`Dir`] holds directly under it.
-enum Entry {
+enum Child {
     /// A subdirectory, by index into the directory list.
     Dir(usize),
     /// A file, by index into the caller's file list.
@@ -70,7 +67,7 @@ impl DirTree {
             node_of[dir] = u32::try_from(order.len()).map_err(|_| Error::Oversized)?;
             order.push(dir);
             for child in dirs[dir].children.iter().rev() {
-                if let Entry::Dir(sub) = child {
+                if let Child::Dir(sub) = child {
                     stack.push(*sub);
                 }
             }
@@ -103,8 +100,8 @@ impl DirTree {
             let first = self.first_entry[node] as usize;
             self.dirs[dir].children.iter().enumerate().filter_map(
                 move |(slot, child)| match child {
-                    Entry::File(index) => Some((first + slot, *index)),
-                    Entry::Dir(_) => None,
+                    Child::File(index) => Some((first + slot, *index)),
+                    Child::Dir(_) => None,
                 },
             )
         })
@@ -130,7 +127,7 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
                 return Err(Error::UnusableName(file.path.clone()));
             }
             if parts.peek().is_none() {
-                dirs[at].children.push(Entry::File(index));
+                dirs[at].children.push(Child::File(index));
                 break;
             }
 
@@ -139,7 +136,7 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
                 .children
                 .iter()
                 .find_map(|child| match child {
-                    Entry::Dir(dir) if dirs[*dir].name == name => Some(*dir),
+                    Child::Dir(dir) if dirs[*dir].name == name => Some(*dir),
                     _ => None,
                 })
                 .unwrap_or_else(|| {
@@ -149,7 +146,7 @@ fn grow_dirs(archive: &Archive) -> Result<Vec<Dir>> {
                         children: Vec::new(),
                     });
                     let dir = dirs.len() - 1;
-                    dirs[at].children.push(Entry::Dir(dir));
+                    dirs[at].children.push(Child::Dir(dir));
                     dir
                 });
         }
@@ -232,7 +229,7 @@ struct Placement {
 fn place_files(archive: &Archive, tree: &DirTree) -> Result<Placement> {
     // Placeholder values: the loop below fills in every slot for real, one per
     // file, before anything reads these back.
-    let mut ids = vec![entry::NO_ID; archive.files.len()];
+    let mut ids = vec![Entry::NO_ID; archive.files.len()];
     let mut offsets = vec![0u32; archive.files.len()];
     let mut synced = true;
     let mut data_size: usize = 0;
@@ -246,7 +243,7 @@ fn place_files(archive: &Archive, tree: &DirTree) -> Result<Placement> {
     let claimed: HashSet<u16> = archive.files.iter().filter_map(|file| file.id).collect();
     let mut next_id: u16 = 0;
     let mut claim_id = || -> Result<u16> {
-        while claimed.contains(&next_id) || next_id == entry::NO_ID {
+        while claimed.contains(&next_id) || next_id == Entry::NO_ID {
             next_id = next_id.checked_add(1).ok_or(Error::Oversized)?;
         }
         let id = next_id;
@@ -318,7 +315,7 @@ fn build_string_pool(archive: &Archive, tree: &DirTree) -> Result<StringPool> {
     let name_at = |pool: &mut Writer, name: &[u8]| -> Result<u32> {
         let at = u32::try_from(pool.len())
             .ok()
-            .filter(|&at| at <= entry::NAME_MASK)
+            .filter(|&at| at <= Entry::NAME_MASK)
             .ok_or(Error::Oversized)?;
         pool.bytes(name);
         pool.u8(0);
@@ -330,7 +327,7 @@ fn build_string_pool(archive: &Archive, tree: &DirTree) -> Result<StringPool> {
     for &dir in &tree.order {
         dir_name_ats[dir] = name_at(&mut pool, &tree.dirs[dir].name)?;
         for child in &tree.dirs[dir].children {
-            if let Entry::File(index) = child {
+            if let Child::File(index) = child {
                 let path = &archive.files[*index].path;
                 let name = encode(path.rsplit('/').next().unwrap_or(path))?;
                 file_name_ats[*index] = (name_at(&mut pool, &name)?, name_hash(&name));
@@ -358,9 +355,9 @@ struct SectionOffsets {
 
 impl SectionOffsets {
     const fn of(tree: &DirTree, string_pool_len: usize) -> Self {
-        let nodes_at = data_header::AT + data_header::LEN;
-        let entries_at = (nodes_at + tree.order.len() * node::LEN).next_multiple_of(ALIGN);
-        let string_pool_at = (entries_at + tree.entry_count * entry::LEN).next_multiple_of(ALIGN);
+        let nodes_at = DataHeader::AT + DataHeader::LEN;
+        let entries_at = (nodes_at + tree.order.len() * Node::LEN).next_multiple_of(ALIGN);
+        let string_pool_at = (entries_at + tree.entry_count * Entry::LEN).next_multiple_of(ALIGN);
         let string_pool_size = string_pool_len.next_multiple_of(ALIGN);
         Self {
             nodes_at,
@@ -385,7 +382,7 @@ fn write_headers(
             .map(Be32::new)
             .map_err(|_| Error::Oversized)
     };
-    let header = data_header::AT;
+    let header = DataHeader::AT;
     out.record(&TopHeader {
         magic: const { FileKind::Rarc.field() },
         file_size: be32(sections.data_at + placed.data_size)?,
@@ -449,7 +446,7 @@ fn write_entries(
     for (node, &dir) in tree.order.iter().enumerate() {
         for child in &tree.dirs[dir].children {
             match child {
-                Entry::Dir(sub) => {
+                Child::Dir(sub) => {
                     dir_entry(
                         out,
                         &tree.dirs[*sub].name,
@@ -457,7 +454,7 @@ fn write_entries(
                         tree.node_of[*sub],
                     );
                 }
-                Entry::File(index) => {
+                Child::File(index) => {
                     let file = &archive.files[*index];
                     let (name_at, hash) = string_pool.file_name_ats[*index];
                     file_entry(
@@ -508,12 +505,12 @@ fn write_file_data(out: &mut Writer, archive: &Archive, tree: &DirTree) {
 /// `name_at`, and is only needed for its hash. Directories share the id that
 /// is no id.
 fn dir_entry(out: &mut Writer, name: &[u8], name_at: u32, node: u32) {
-    out.record(&entry::Entry {
-        id: Be16::new(entry::NO_ID),
+    out.record(&Entry {
+        id: Be16::new(Entry::NO_ID),
         name_hash: Be16::new(name_hash(name)),
-        flags_and_name: Be32::new(entry::FLAG_DIRECTORY << entry::FLAGS_SHIFT | name_at),
+        flags_and_name: Be32::new(Entry::FLAG_DIRECTORY << Entry::FLAGS_SHIFT | name_at),
         data_or_node: Be32::new(node),
-        data_size: Be32::new(entry::DIRECTORY_SIZE),
+        data_size: Be32::new(Entry::DIRECTORY_SIZE),
         unnamed: [0; 4],
     });
 }
@@ -533,22 +530,22 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
     let size = u32::try_from(data.len()).map_err(|_| Error::Oversized)?;
 
     // The compression bits restate what the bytes already are.
-    let flags = entry::FLAG_FILE
+    let flags = Entry::FLAG_FILE
         | match preload {
-            Preload::Mram => entry::FLAG_MRAM,
-            Preload::Aram => entry::FLAG_ARAM,
-            Preload::Disc => entry::FLAG_DISC,
+            Preload::Mram => Entry::FLAG_MRAM,
+            Preload::Aram => Entry::FLAG_ARAM,
+            Preload::Disc => Entry::FLAG_DISC,
         }
         | if FileKind::Yaz0.matches(data) {
-            entry::FLAG_COMPRESSED | entry::FLAG_YAZ0
+            Entry::FLAG_COMPRESSED | Entry::FLAG_YAZ0
         } else {
             0
         };
 
-    out.record(&entry::Entry {
+    out.record(&Entry {
         id: Be16::new(entry.id),
         name_hash: Be16::new(entry.hash),
-        flags_and_name: Be32::new(flags << entry::FLAGS_SHIFT | entry.name_at),
+        flags_and_name: Be32::new(flags << Entry::FLAGS_SHIFT | entry.name_at),
         data_or_node: Be32::new(entry.offset),
         data_size: Be32::new(size),
         unnamed: [0; 4],
@@ -575,8 +572,8 @@ pub mod tests {
     use tpmt_bytes::Reader;
 
     use super::*;
+    use crate::File;
     use crate::unpack::unpack;
-    use crate::{File, entry::Entry};
 
     pub fn fixture() -> Vec<File<'static>> {
         vec![
@@ -635,7 +632,7 @@ pub mod tests {
         // The unnamed tail of the top header, zero here as on the discs.
         assert_eq!(top.unnamed, [0; 4]);
 
-        let header: &DataHeader = r.view_at(data_header::AT).unwrap();
+        let header: &DataHeader = r.view_at(DataHeader::AT).unwrap();
         assert_eq!(header.node_count.get(), 2);
         assert_eq!(header.node_list_ptr.get(), 0x20);
         assert_eq!(header.entry_count.get(), 7);
@@ -652,7 +649,7 @@ pub mod tests {
         assert_eq!(root.name_hash.get(), name_hash(b"root"));
         assert_eq!(root.entry_count.get(), 4);
         assert_eq!(root.first_entry.get(), 0);
-        let sub: &Node = r.view_at(NODES + node::LEN).unwrap();
+        let sub: &Node = r.view_at(NODES + Node::LEN).unwrap();
         assert_eq!(&sub.tag, b"SUB ");
         assert_eq!(sub.name.get(), 16);
         assert_eq!(sub.entry_count.get(), 3);
@@ -664,7 +661,7 @@ pub mod tests {
         // lowest first as files are met, not by entry index: a.bin claims 0,
         // and b.bin claims 1 rather than the 4 its entry sits at.
         let entry = |index: usize| {
-            let record: &Entry = r.view_at(ENTRIES + index * entry::LEN).unwrap();
+            let record: &Entry = r.view_at(ENTRIES + index * Entry::LEN).unwrap();
             (
                 record.id.get(),
                 record.flags_and_name.get(),
@@ -735,16 +732,16 @@ pub mod tests {
         })
         .unwrap();
         let r = Reader::new(&data);
-        let header: &DataHeader = r.view_at(data_header::AT).unwrap();
+        let header: &DataHeader = r.view_at(DataHeader::AT).unwrap();
 
         // Five directories, and the runs of entries they own: each node's
         // children, then its own `.` and `..`, laid out in node order.
         assert_eq!(header.node_count.get(), 5);
         assert_eq!(header.entry_count.get(), 17);
 
-        let nodes = data_header::AT + data_header::LEN;
+        let nodes = DataHeader::AT + DataHeader::LEN;
         let node = |index: usize| {
-            let record: &Node = r.view_at(nodes + index * node::LEN).unwrap();
+            let record: &Node = r.view_at(nodes + index * Node::LEN).unwrap();
             (
                 &record.tag,
                 record.entry_count.get(),
@@ -759,9 +756,9 @@ pub mod tests {
 
         // A nested directory's `..` names its own parent rather than the root:
         // it is the last entry of its run, and both `sub` nodes have one.
-        let entries = data_header::AT + header.entry_list_ptr.get() as usize;
+        let entries = DataHeader::AT + header.entry_list_ptr.get() as usize;
         let parent_of = |index: usize| {
-            let record: &Entry = r.view_at(entries + index * entry::LEN).unwrap();
+            let record: &Entry = r.view_at(entries + index * Entry::LEN).unwrap();
             record.data_or_node.get()
         };
         assert_eq!(parent_of(10), 1);
@@ -797,7 +794,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let header: &DataHeader = Reader::new(&data).view_at(data_header::AT).unwrap();
+        let header: &DataHeader = Reader::new(&data).view_at(DataHeader::AT).unwrap();
 
         assert!(header.synced_ids.get());
         // The two files, then the root's `.` and `..`.
@@ -822,7 +819,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let header: &DataHeader = Reader::new(&data).view_at(data_header::AT).unwrap();
+        let header: &DataHeader = Reader::new(&data).view_at(DataHeader::AT).unwrap();
         assert!(!header.synced_ids.get());
         assert_eq!(header.next_free_id.get(), 10);
         assert_eq!(unpack(&data).unwrap().files[1].id, Some(9));

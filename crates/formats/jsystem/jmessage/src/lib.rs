@@ -68,27 +68,23 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-mod header {
-    use tpmt_bytes::Be32;
-
-    tpmt_bytes::layout! {
-        pub struct Header {
-            pub magic: [u8; 4],
-            /// The layout tag. Anything but [`KIND`] is refused.
-            pub kind: [u8; 4],
-            /// The size of the file with the flow sections left out.
-            pub size: Be32,
-            pub section_count: Be32,
-            /// An [`Encoding`](crate::Encoding) byte.
-            pub encoding: u8,
-            /// Unnamed, and zero.
-            pub unnamed: [u8; 15],
-        }
+tpmt_bytes::layout! {
+    struct Header {
+        magic: [u8; 4],
+        /// The layout tag. Anything but [`Header::KIND`] is refused.
+        kind: [u8; 4],
+        /// The size of the file with the flow sections left out.
+        size: tpmt_bytes::Be32,
+        section_count: tpmt_bytes::Be32,
+        /// An [`Encoding`] byte.
+        encoding: u8,
+        /// Unnamed, and zero.
+        unnamed: [u8; 15],
     }
+}
 
-    pub const LEN: usize = 0x20;
-    pub const KIND: [u8; 4] = *b"bmg1";
-    const _: () = assert!(size_of::<Header>() == LEN);
+impl Header {
+    const KIND: [u8; 4] = *b"bmg1";
 }
 
 /// Which encoding the bmg text is in.

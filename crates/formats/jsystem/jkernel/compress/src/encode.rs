@@ -1,9 +1,9 @@
 //! The write path: turns raw bytes into Yaz0 data.
 
-use tpmt_bytes::{Be32, Writer};
+use tpmt_bytes::{Be32, Layout, Writer};
 use tpmt_format::FileKind;
 
-use crate::header::{self, Header};
+use crate::Header;
 use crate::token::backref::{Backreference, MAX_DISTANCE, MAX_LENGTH, MIN_LENGTH};
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
 use crate::{Error, Result};
@@ -83,7 +83,7 @@ fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
     let decompressed_size =
         u32::try_from(input.len()).map_err(|_| Error::TooLarge { len: input.len() })?;
 
-    let mut out = Writer::with_capacity(header::LEN + input.len());
+    let mut out = Writer::with_capacity(Header::LEN + input.len());
     out.record(&Header {
         magic: const { FileKind::Yaz0.field() },
         decompressed_size: Be32::new(decompressed_size),

@@ -3,6 +3,8 @@
 
 use std::mem::offset_of;
 
+use tpmt_bytes::Layout as _;
+
 use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, Span, ciso, fst, sys};
 
 // The preamble positions are fixed by the format, the rest is packed in behind
@@ -55,7 +57,7 @@ fn put32(data: &mut [u8], at: usize, value: u32) {
 /// Writes one file table record. The last two fields mean different things
 /// either side of the directory flag, so a caller sets them directly.
 fn put_fst(data: &mut [u8], entry: usize, dir: bool, name: u32, target: u32, end_or_size: u32) {
-    let at = FST_OFFSET as usize + entry * fst::ENTRY_LEN;
+    let at = FST_OFFSET as usize + entry * fst::Record::LEN;
     let flag = if dir { fst::DIRECTORY_FLAG } else { 0 };
     put32(data, at, flag | name);
     put32(data, at + 4, target);
@@ -103,7 +105,7 @@ fn disc() -> Vec<u8> {
 
     put32(&mut data, offset_of!(sys::BootBin, dol_offset), DOL_OFFSET);
     put32(&mut data, offset_of!(sys::BootBin, fst_offset), FST_OFFSET);
-    let fst_len = ENTRY_COUNT as usize * fst::ENTRY_LEN + NAME_POOL.len();
+    let fst_len = ENTRY_COUNT as usize * fst::Record::LEN + NAME_POOL.len();
     assert_eq!(
         fst_len, FST_LEN as usize,
         "the derived values below assume this"
@@ -182,7 +184,7 @@ fn disc() -> Vec<u8> {
     put_fst(&mut data, 4, true, NAME_EMPTY, 0, 5);
     put_fst(&mut data, 5, false, NAME_C, DATA_OFFSET + 0x20, 6);
 
-    let pool = FST_OFFSET as usize + ENTRY_COUNT as usize * fst::ENTRY_LEN;
+    let pool = FST_OFFSET as usize + ENTRY_COUNT as usize * fst::Record::LEN;
     data[pool..pool + NAME_POOL.len()].copy_from_slice(NAME_POOL);
 
     data
@@ -714,11 +716,11 @@ fn the_preamble_is_written_the_way_it_was_read() {
         },
     )
     .unwrap();
-    assert_eq!(boot, data[..sys::BOOT_LEN]);
+    assert_eq!(boot, data[..sys::BootBin::LEN]);
 
     let bi2 = sys::bi2_bin(&metadata.bi2);
     let at = index(sys::BI2_OFFSET);
-    assert_eq!(bi2, data[at..at + sys::BI2_LEN]);
+    assert_eq!(bi2, data[at..at + sys::Bi2Bin::LEN]);
 }
 
 /// The whole point of the writer: what goes on comes back off. Nothing about

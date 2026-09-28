@@ -40,19 +40,12 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-mod header {
-    use tpmt_bytes::Be32;
-
-    tpmt_bytes::layout! {
-        pub struct Header {
-            /// Always [`FileKind::Yaz0`](tpmt_format::FileKind::Yaz0)'s magic.
-            pub magic: [u8; 4],
-            pub decompressed_size: Be32,
-            /// Padding, and zero.
-            pub unnamed: [u8; 8],
-        }
+tpmt_bytes::layout! {
+    struct Header {
+        /// Always [`FileKind::Yaz0`](tpmt_format::FileKind::Yaz0)'s magic.
+        magic: [u8; 4],
+        decompressed_size: tpmt_bytes::Be32,
+        /// Padding, and zero.
+        unnamed: [u8; 8],
     }
-
-    pub const LEN: usize = 0x10;
-    const _: () = assert!(size_of::<Header>() == LEN);
 }

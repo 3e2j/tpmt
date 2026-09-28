@@ -4,17 +4,13 @@
 use tpmt_bytes::{Be32, Reader};
 
 use crate::{
-    Archive, Error, File, Preload, Result,
-    data_header::DataHeader,
-    entry::{self, Entry},
-    name_hash, next_free_id,
-    node::Node,
-    top_header::TopHeader,
+    Archive, DataHeader, Entry, Error, File, Node, Preload, Result, TopHeader, name_hash,
+    next_free_id,
 };
 
 /// One archive opened for reading: its bytes, and where each section starts.
 ///
-/// The fixed [`top_header`] points at the [`data_header`], which in turn
+/// The fixed [`TopHeader`] points at the [`DataHeader`], which in turn
 /// points at the fields below in the order they're declared. The file
 /// states those offsets relative to the data header; they're resolved to
 /// absolute positions once, here, so nothing below has to carry the anchor
@@ -132,8 +128,8 @@ impl<'a> ArchiveReader<'a> {
 
             let record = &self.entries[index];
             let flags_and_name = record.flags_and_name.get();
-            let flags = flags_and_name >> entry::FLAGS_SHIFT;
-            let name = self.name(flags_and_name & entry::NAME_MASK, record.name_hash.get())?;
+            let flags = flags_and_name >> Entry::FLAGS_SHIFT;
+            let name = self.name(flags_and_name & Entry::NAME_MASK, record.name_hash.get())?;
 
             // Every directory carries a `.` entry pointing at itself and a
             // `..` pointing at its parent, the only link back up.
@@ -152,18 +148,18 @@ impl<'a> ArchiveReader<'a> {
             };
             let target = record.data_or_node.get() as usize;
 
-            if flags & entry::FLAG_DIRECTORY != 0 {
+            if flags & Entry::FLAG_DIRECTORY != 0 {
                 let range = self.open_node(target, &mut visited)?;
                 stack.push((range, path));
             } else {
                 // A file's target is the offset of its bytes within the data
                 // section, and exactly one of the three memory bits is set.
                 let size = record.data_size.get() as usize;
-                let preload = if flags & entry::FLAG_MRAM != 0 {
+                let preload = if flags & Entry::FLAG_MRAM != 0 {
                     Preload::Mram
-                } else if flags & entry::FLAG_ARAM != 0 {
+                } else if flags & Entry::FLAG_ARAM != 0 {
                     Preload::Aram
-                } else if flags & entry::FLAG_DISC != 0 {
+                } else if flags & Entry::FLAG_DISC != 0 {
                     Preload::Disc
                 } else {
                     return Err(Error::Corrupt("a file is marked for no memory at all"));
@@ -235,11 +231,10 @@ impl<'a> ArchiveReader<'a> {
 mod tests {
     use std::mem::offset_of;
 
-    use tpmt_bytes::Writer;
+    use tpmt_bytes::{Layout, Writer};
 
     use super::*;
     use crate::Format;
-    use crate::data_header;
     use crate::pack::{
         self,
         tests::{ENTRIES, NAME_A, NODES, STRINGS, archive},
@@ -280,7 +275,7 @@ mod tests {
         let mut data = archive();
         assert!(unpack(&data).unwrap().next_free_id.is_none());
 
-        let at = data_header::AT + offset_of!(DataHeader, next_free_id);
+        let at = DataHeader::AT + offset_of!(DataHeader, next_free_id);
         let stored = Reader::new(&data).u16_at(at).unwrap() + 3;
         data[at..at + 2].copy_from_slice(&stored.to_be_bytes());
 
@@ -330,7 +325,7 @@ mod tests {
     #[test]
     fn rejects_an_archive_with_no_nodes() {
         let mut w = Writer::from(archive());
-        w.u32_at(data_header::AT + offset_of!(DataHeader, node_count), 0);
+        w.u32_at(DataHeader::AT + offset_of!(DataHeader, node_count), 0);
         let data = w.finish();
         assert!(matches!(
             unpack(&data),
@@ -355,7 +350,7 @@ mod tests {
         ];
         for (field, complaint) in counts {
             let mut w = Writer::from(archive());
-            w.u32_at(data_header::AT + field, u32::MAX);
+            w.u32_at(DataHeader::AT + field, u32::MAX);
             let data = w.finish();
             assert!(
                 matches!(unpack(&data), Err(Error::Corrupt(message)) if message == complaint),
@@ -376,7 +371,7 @@ mod tests {
     fn a_directory_cycle_is_refused() {
         let mut w = Writer::from(archive());
         // Aim `sub`'s entry back at the root's node.
-        w.u32_at(ENTRIES + entry::LEN + offset_of!(Entry, data_or_node), 0);
+        w.u32_at(ENTRIES + Entry::LEN + offset_of!(Entry, data_or_node), 0);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
@@ -384,7 +379,7 @@ mod tests {
     #[test]
     fn a_dangling_directory_is_refused() {
         let mut w = Writer::from(archive());
-        w.u32_at(ENTRIES + entry::LEN + offset_of!(Entry, data_or_node), 9);
+        w.u32_at(ENTRIES + Entry::LEN + offset_of!(Entry, data_or_node), 9);
         let data = w.finish();
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }

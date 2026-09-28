@@ -53,6 +53,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use tpmt_bytes::{Be16, Be32, Flag, Layout};
 
 pub mod editable;
 
@@ -210,120 +211,97 @@ impl<'a> Format<'a> for Archive<'a> {
     }
 }
 
-/// The fixed 0x20 at the front of the archive. Everything else is found
-/// through it.
-mod top_header {
-    use tpmt_bytes::Be32;
-
-    tpmt_bytes::layout! {
-        pub struct TopHeader {
-            pub magic: [u8; 4],
-            pub file_size: Be32,
-            pub data_header_ptr: Be32,
-            /// Counted from the data header, like the offsets below. Some
-            /// references count it from 0x20 instead. Retail archives always put
-            /// the data header at 0x20, so both readings agree.
-            pub file_data_ptr: Be32,
-            pub total_data_size: Be32,
-            pub mram_size: Be32,
-            pub aram_size: Be32,
-            /// Unnamed, and zero on every retail archive.
-            pub unnamed: [u8; 4],
-        }
+tpmt_bytes::layout! {
+    /// The fixed 0x20 at the front of the archive. Everything else is found
+    /// through it.
+    struct TopHeader {
+        magic: [u8; 4],
+        file_size: Be32,
+        data_header_ptr: Be32,
+        /// Counted from the data header, like the offsets below. Some
+        /// references count it from 0x20 instead. Retail archives always put
+        /// the data header at 0x20, so both readings agree.
+        file_data_ptr: Be32,
+        total_data_size: Be32,
+        mram_size: Be32,
+        aram_size: Be32,
+        /// Unnamed, and zero on every retail archive.
+        unnamed: [u8; 4],
     }
-
-    pub const LEN: usize = 0x20;
-    const _: () = assert!(size_of::<TopHeader>() == LEN);
 }
 
-/// What the top header points at. Every offset in it, and the file data offset
-/// above, is counted from where this header starts.
-mod data_header {
-    use tpmt_bytes::{Be16, Be32, Flag};
-
-    tpmt_bytes::layout! {
-    pub struct DataHeader {
-            pub node_count: Be32,
-            pub node_list_ptr: Be32,
-            pub entry_count: Be32,
-            pub entry_list_ptr: Be32,
-            pub string_pool_size: Be32,
-            pub string_pool_ptr: Be32,
-            pub next_free_id: Be16,
-            pub synced_ids: Flag,
-            /// Unnamed, and zero.
-            pub unnamed: [u8; 5],
-        }
+tpmt_bytes::layout! {
+    /// What the top header points at. Every offset in it, and the file data
+    /// offset above, is counted from where this header starts.
+    struct DataHeader {
+        node_count: Be32,
+        node_list_ptr: Be32,
+        entry_count: Be32,
+        entry_list_ptr: Be32,
+        string_pool_size: Be32,
+        string_pool_ptr: Be32,
+        next_free_id: Be16,
+        synced_ids: Flag,
+        /// Unnamed, and zero.
+        unnamed: [u8; 5],
     }
+}
 
+impl DataHeader {
     /// It follows the top header, so it starts one header in.
-    pub const AT: usize = super::top_header::LEN;
-    pub const LEN: usize = 0x20;
-    const _: () = assert!(size_of::<DataHeader>() == LEN);
+    const AT: usize = TopHeader::LEN;
 }
 
-/// One directory's record, in the list the data header points at.
-mod node {
-    use tpmt_bytes::{Be16, Be32};
-
-    tpmt_bytes::layout! {
-    pub struct Node {
-            /// A four character tag.
-            pub tag: [u8; 4],
-            pub name: Be32,
-            pub name_hash: Be16,
-            /// Counts `.`, `..` and subdirectories as well as files.
-            pub entry_count: Be16,
-            pub first_entry: Be32,
-        }
+tpmt_bytes::layout! {
+    /// One directory's record, in the list the data header points at.
+    struct Node {
+        /// A four character tag.
+        tag: [u8; 4],
+        name: Be32,
+        name_hash: Be16,
+        /// Counts `.`, `..` and subdirectories as well as files.
+        entry_count: Be16,
+        first_entry: Be32,
     }
-
-    pub const LEN: usize = 0x10;
-    const _: () = assert!(size_of::<Node>() == LEN);
 }
 
-/// One file's or one directory's record. A directory's points at its node, a
-/// file's at its bytes.
-mod entry {
-    use tpmt_bytes::{Be16, Be32};
-
-    tpmt_bytes::layout! {
-    pub struct Entry {
-            pub id: Be16,
-            pub name_hash: Be16,
-            /// Flags in the top byte, and the name's string pool offset in the
-            /// low three.
-            pub flags_and_name: Be32,
-            pub data_or_node: Be32,
-            pub data_size: Be32,
-            /// Always zero.
-            pub unnamed: [u8; 4],
-        }
+tpmt_bytes::layout! {
+    /// One file's or one directory's record. A directory's points at its node,
+    /// a file's at its bytes.
+    struct Entry {
+        id: Be16,
+        name_hash: Be16,
+        /// Flags in the top byte, and the name's string pool offset in the
+        /// low three.
+        flags_and_name: Be32,
+        data_or_node: Be32,
+        data_size: Be32,
+        /// Always zero.
+        unnamed: [u8; 4],
     }
+}
 
-    pub const LEN: usize = 0x14;
-    const _: () = assert!(size_of::<Entry>() == LEN);
-
+impl Entry {
     // What splits the field above into its two halves.
-    pub const FLAGS_SHIFT: u32 = 24;
-    pub const NAME_MASK: u32 = 0x00FF_FFFF;
+    const FLAGS_SHIFT: u32 = 24;
+    const NAME_MASK: u32 = 0x00FF_FFFF;
 
     // The flags themselves, once shifted down. An entry is a file or a
     // directory, a file is preloaded into one of the three memories, and the
     // last two say the bytes are compressed and which of the two schemes did it.
-    pub const FLAG_FILE: u32 = 0x01;
-    pub const FLAG_DIRECTORY: u32 = 0x02;
-    pub const FLAG_COMPRESSED: u32 = 0x04;
-    pub const FLAG_MRAM: u32 = 0x10;
-    pub const FLAG_ARAM: u32 = 0x20;
-    pub const FLAG_DISC: u32 = 0x40;
-    pub const FLAG_YAZ0: u32 = 0x80;
+    const FLAG_FILE: u32 = 0x01;
+    const FLAG_DIRECTORY: u32 = 0x02;
+    const FLAG_COMPRESSED: u32 = 0x04;
+    const FLAG_MRAM: u32 = 0x10;
+    const FLAG_ARAM: u32 = 0x20;
+    const FLAG_DISC: u32 = 0x40;
+    const FLAG_YAZ0: u32 = 0x80;
 
     /// A directory entry has no bytes, but its size field still says 0x10 on
     /// every retail archive, presumably the record's own size.
-    pub const DIRECTORY_SIZE: u32 = 0x10;
+    const DIRECTORY_SIZE: u32 = 0x10;
     /// Directories share one id, which is no id at all.
-    pub const NO_ID: u16 = 0xFFFF;
+    const NO_ID: u16 = 0xFFFF;
 }
 
 /// One past the highest id in use, counting entries rather than files when the

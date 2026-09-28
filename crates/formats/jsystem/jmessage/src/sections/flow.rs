@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 
-use tpmt_bytes::{Be16, Reader, Writer};
+use tpmt_bytes::{Be16, Layout, Reader, Writer};
 
 use crate::sections::positions;
 use crate::{Error, MessageId, Result};
@@ -119,114 +119,91 @@ pub struct Flow {
     pub roots: Vec<Root>,
 }
 
-/// The header in front of FLW1's node table: how many records follow, and
-/// how many entries the indirection table past them holds.
-mod flw1_header {
-    use tpmt_bytes::Be16;
-
-    tpmt_bytes::layout! {
-        pub struct Header {
-            pub node_count: Be16,
-            pub table_count: Be16,
-            /// Padding.
-            pub unnamed: [u8; 4],
-        }
+tpmt_bytes::layout! {
+    /// The header in front of FLW1's node table: how many records follow,
+    /// and how many entries the indirection table past them holds.
+    struct Flw1Header {
+        node_count: Be16,
+        table_count: Be16,
+        /// Padding.
+        unnamed: [u8; 4],
     }
-
-    pub const LEN: usize = 0x08;
-    const _: () = assert!(size_of::<Header>() == LEN);
 }
 
-/// One FLW1 node record: 8 bytes whatever the type, laid out differently
-/// per type from byte 1 on. The first byte says which of the three it is.
-mod node_record {
-    use tpmt_bytes::{Be16, Layout};
+// FLW1 node records are 8 bytes whatever the type, laid out differently per
+// type from byte 1 on. The first byte says which of the three it is, and each
+// type's `KIND` is that byte.
 
-    pub const LEN: usize = 0x08;
-
-    // What each record's `kind` byte holds.
-    pub const TEXT: u8 = 0x01;
-    pub const BRANCH: u8 = 0x02;
-    pub const EVENT: u8 = 0x03;
-
-    tpmt_bytes::layout! {
-        /// Doesn't need the indirection table, as its edge and that edge's
-        /// mask byte both live in the record itself.
-        pub struct TextNode {
-            pub kind: u8,
-            /// Unused.
-            pub unnamed_1: u8,
-            pub message: Be16,
-            pub next: Be16,
-            /// The same mask byte the indirection table trails, for `next`.
-            pub mask: u8,
-            /// Padding.
-            pub unnamed_7: u8,
-        }
+tpmt_bytes::layout! {
+    /// Doesn't need the indirection table, as its edge and that edge's
+    /// mask byte both live in the record itself.
+    struct TextNode {
+        kind: u8,
+        /// Unused.
+        unnamed_1: u8,
+        message: Be16,
+        next: Be16,
+        /// The same mask byte the indirection table trails, for `next`.
+        mask: u8,
+        /// Padding.
+        unnamed_7: u8,
     }
-
-    tpmt_bytes::layout! {
-        pub struct BranchNode {
-            pub kind: u8,
-            pub child_count: u8,
-            pub query: Be16,
-            pub param: Be16,
-            pub table_start: Be16,
-        }
-    }
-
-    tpmt_bytes::layout! {
-        pub struct EventNode {
-            pub kind: u8,
-            pub event: u8,
-            pub table_index: Be16,
-            pub params: [u8; 4],
-        }
-    }
-
-    const fn fits<T: Layout>() -> bool {
-        size_of::<T>() == LEN
-    }
-    const _: () = assert!(fits::<TextNode>() && fits::<BranchNode>() && fits::<EventNode>());
 }
 
-/// The header in front of FLI1's root table.
-mod fli1_header {
-    use tpmt_bytes::Be16;
-
-    tpmt_bytes::layout! {
-        pub struct Header {
-            pub count: Be16,
-            /// The entry width, always 8. Not read, since the stride is fixed
-            /// either way, but written.
-            pub entry_len: u8,
-            /// Padding.
-            pub unnamed: [u8; 5],
-        }
-    }
-
-    pub const LEN: usize = 0x08;
-    const _: () = assert!(size_of::<Header>() == LEN);
+impl TextNode {
+    const KIND: u8 = 0x01;
 }
 
-/// One FLI1 entry: an id and the node position it starts at, each padded out
-/// to a u32 of its own.
-mod fli1_entry {
-    use tpmt_bytes::Be16;
-
-    tpmt_bytes::layout! {
-        pub struct Entry {
-            pub flow_id: Be16,
-            /// Padding.
-            pub unnamed_2: [u8; 2],
-            pub node: Be16,
-            /// Padding.
-            pub unnamed_6: [u8; 2],
-        }
+tpmt_bytes::layout! {
+    struct BranchNode {
+        kind: u8,
+        child_count: u8,
+        query: Be16,
+        param: Be16,
+        table_start: Be16,
     }
+}
 
-    pub const LEN: usize = 0x08;
-    const _: () = assert!(size_of::<Entry>() == LEN);
+impl BranchNode {
+    const KIND: u8 = 0x02;
+}
+
+tpmt_bytes::layout! {
+    struct EventNode {
+        kind: u8,
+        event: u8,
+        table_index: Be16,
+        params: [u8; 4],
+    }
+}
+
+impl EventNode {
+    const KIND: u8 = 0x03;
+}
+
+tpmt_bytes::layout! {
+    /// The header in front of FLI1's root table.
+    struct Fli1Header {
+        count: Be16,
+        /// The entry width, always 8. Not read, since the stride is fixed
+        /// either way, but written.
+        entry_len: u8,
+        /// Padding.
+        unnamed: [u8; 5],
+    }
+}
+
+tpmt_bytes::layout! {
+    /// One FLI1 entry: an id and the node position it starts at, each padded
+    /// out to a u32 of its own.
+    struct Fli1Entry {
+        flow_id: Be16,
+        /// Padding.
+        unnamed_2: [u8; 2],
+        node: Be16,
+        /// Padding.
+        unnamed_6: [u8; 2],
+    }
 }
 
 /// What marks a dead end wherever an edge is stored: a node record's own
@@ -264,12 +241,12 @@ const fn mask(entry: u16) -> u8 {
 #[allow(clippy::similar_names)]
 pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     let flw = Reader::new(flw1);
-    let header: &flw1_header::Header = flw.view_at(0)?;
+    let header: &Flw1Header = flw.view_at(0)?;
     let node_count = header.node_count.get() as usize;
     let table_count = header.table_count.get() as usize;
 
-    let records: &[[u8; node_record::LEN]] = flw.slice_of(flw1_header::LEN, node_count)?;
-    let table_at = flw1_header::LEN + size_of_val(records);
+    let records: &[[u8; TextNode::LEN]] = flw.slice_of(Flw1Header::LEN, node_count)?;
+    let table_at = Flw1Header::LEN + size_of_val(records);
     let table: &[Be16] = flw.slice_of(table_at, table_count)?;
 
     // The mask is never dereferenced by the game, so nothing downstream
@@ -298,8 +275,8 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
         let [kind, ..] = *record;
 
         match kind {
-            node_record::TEXT => {
-                let text: &node_record::TextNode = rec.view_at(0)?;
+            TextNode::KIND => {
+                let text: &TextNode = rec.view_at(0)?;
                 let next = text.next.get();
                 if text.mask != mask(next) {
                     return Err(Error::Corrupt(
@@ -312,8 +289,8 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
                     next: edge(next),
                 });
             }
-            node_record::BRANCH => {
-                let branch: &node_record::BranchNode = rec.view_at(0)?;
+            BranchNode::KIND => {
+                let branch: &BranchNode = rec.view_at(0)?;
                 let table_start = branch.table_start.get() as usize;
                 let end = table_start + branch.child_count as usize;
                 let slice = table.get(table_start..end).ok_or(Error::Corrupt(
@@ -326,8 +303,8 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
                     children: slice.iter().map(|entry| edge(entry.get())).collect(),
                 });
             }
-            node_record::EVENT => {
-                let event: &node_record::EventNode = rec.view_at(0)?;
+            EventNode::KIND => {
+                let event: &EventNode = rec.view_at(0)?;
                 let entry = table
                     .get(event.table_index.get() as usize)
                     .ok_or(Error::Corrupt(
@@ -353,9 +330,8 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     }
 
     let fli = Reader::new(fli1);
-    let header: &fli1_header::Header = fli.view_at(0)?;
-    let entries: &[fli1_entry::Entry] =
-        fli.slice_of(fli1_header::LEN, header.count.get() as usize)?;
+    let header: &Fli1Header = fli.view_at(0)?;
+    let entries: &[Fli1Entry] = fli.slice_of(Fli1Header::LEN, header.count.get() as usize)?;
     let roots = entries
         .iter()
         .map(|entry| Root {
@@ -391,10 +367,10 @@ pub fn write(flow: &Flow, messages: &HashMap<MessageId, u16>) -> Result<(Vec<u8>
     // The whole indirection table is only known once every node has been
     // laid down, so the records go into a writer of their own and the header
     // is written in front of them afterwards.
-    let record_count = flow.nodes.len().next_multiple_of(ALIGN / node_record::LEN);
+    let record_count = flow.nodes.len().next_multiple_of(ALIGN / TextNode::LEN);
     let (mut records, mut table) = write_nodes(&flow.nodes, messages, entry)?;
     // The padding record, when the count is odd.
-    records.zeros((record_count - flow.nodes.len()) * node_record::LEN);
+    records.zeros((record_count - flow.nodes.len()) * TextNode::LEN);
 
     table.resize(
         table.len().next_multiple_of(ALIGN / INDIR_TABLE_ENTRY_LEN),
@@ -402,9 +378,9 @@ pub fn write(flow: &Flow, messages: &HashMap<MessageId, u16>) -> Result<(Vec<u8>
     );
     let records = records.finish();
     let mut flw1 = Writer::with_capacity(
-        flw1_header::LEN + records.len() + table.len() * (INDIR_TABLE_ENTRY_LEN + 1),
+        Flw1Header::LEN + records.len() + table.len() * (INDIR_TABLE_ENTRY_LEN + 1),
     );
-    flw1.record(&flw1_header::Header {
+    flw1.record(&Flw1Header {
         node_count: Be16::new(u16::try_from(record_count).map_err(|_| Error::Oversized)?),
         table_count: Be16::new(u16::try_from(table.len()).map_err(|_| Error::Oversized)?),
         unnamed: [0; 4],
@@ -417,14 +393,14 @@ pub fn write(flow: &Flow, messages: &HashMap<MessageId, u16>) -> Result<(Vec<u8>
         flw1.u8(mask(entry));
     }
 
-    let mut fli1 = Writer::with_capacity(fli1_header::LEN + flow.roots.len() * fli1_entry::LEN);
-    fli1.record(&fli1_header::Header {
+    let mut fli1 = Writer::with_capacity(Fli1Header::LEN + flow.roots.len() * Fli1Entry::LEN);
+    fli1.record(&Fli1Header {
         count: Be16::new(u16::try_from(flow.roots.len()).map_err(|_| Error::Oversized)?),
-        entry_len: u8::try_from(fli1_entry::LEN).map_err(|_| Error::Oversized)?,
+        entry_len: u8::try_from(Fli1Entry::LEN).map_err(|_| Error::Oversized)?,
         unnamed: [0; 5],
     });
     for root in &flow.roots {
-        fli1.record(&fli1_entry::Entry {
+        fli1.record(&Fli1Entry {
             flow_id: Be16::new(root.public_id),
             unnamed_2: [0; 2],
             node: Be16::new(position(root.node)?),
@@ -442,7 +418,7 @@ fn write_nodes(
     messages: &HashMap<MessageId, u16>,
     entry: impl Fn(Option<NodeId>) -> Result<u16>,
 ) -> Result<(Writer, Vec<u16>)> {
-    let mut records = Writer::with_capacity(nodes.len() * node_record::LEN);
+    let mut records = Writer::with_capacity(nodes.len() * TextNode::LEN);
     let mut table = Vec::new();
     for node in nodes {
         match node {
@@ -451,8 +427,8 @@ fn write_nodes(
                     "a text node displays a message the file does not hold",
                 ))?;
                 let next = entry(*next)?;
-                records.record(&node_record::TextNode {
-                    kind: node_record::TEXT,
+                records.record(&TextNode {
+                    kind: TextNode::KIND,
                     unnamed_1: 0,
                     message: Be16::new(message),
                     next: Be16::new(next),
@@ -472,8 +448,8 @@ fn write_nodes(
                 for &child in children {
                     table.push(entry(child)?);
                 }
-                records.record(&node_record::BranchNode {
-                    kind: node_record::BRANCH,
+                records.record(&BranchNode {
+                    kind: BranchNode::KIND,
                     child_count: count,
                     query: Be16::new(*query),
                     param: Be16::new(*param),
@@ -488,8 +464,8 @@ fn write_nodes(
             } => {
                 let index = u16::try_from(table.len()).map_err(|_| Error::Oversized)?;
                 table.push(entry(*next)?);
-                records.record(&node_record::EventNode {
-                    kind: node_record::EVENT,
+                records.record(&EventNode {
+                    kind: EventNode::KIND,
                     event: *event,
                     table_index: Be16::new(index),
                     params: *params,
@@ -624,7 +600,7 @@ mod tests {
         let (flw1, _) = write(&flow, &messages).unwrap();
         // Node 0 is now the event, at position 0; the text node at position
         // 2 still points at the branch, which is still at position 1.
-        assert_eq!(flw1[8], node_record::EVENT);
+        assert_eq!(flw1[8], EventNode::KIND);
         assert_eq!(
             &flw1[24..32],
             [0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]

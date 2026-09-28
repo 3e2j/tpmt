@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::offset_of;
 
-use tpmt_bytes::{Be32, Reader, Writer};
+use tpmt_bytes::{Be32, Layout, Reader, Writer};
 
 use crate::{Entry, Error, Item, Result, Span};
 
@@ -37,8 +37,6 @@ impl Record {
     }
 }
 
-pub const ENTRY_LEN: usize = 0x0C;
-const _: () = assert!(size_of::<Record>() == ENTRY_LEN);
 pub const DIRECTORY_FLAG: u32 = 0xFF00_0000;
 pub const NAME_MASK: u32 = 0x00FF_FFFF;
 /// What the mastering put in a directory's flag byte. The reader takes any
@@ -225,7 +223,7 @@ pub fn build(items: &[&Item]) -> Result<Table> {
 /// Lays the nodes out: the array, then the names in the same order.
 fn emit(nodes: Vec<Node>) -> Table {
     let pool: usize = nodes.iter().skip(1).map(|node| node.name.len() + 1).sum();
-    let mut bytes = Writer::with_capacity(nodes.len() * ENTRY_LEN + pool);
+    let mut bytes = Writer::with_capacity(nodes.len() * Record::LEN + pool);
     let mut names = Vec::with_capacity(pool);
     let mut slots = Vec::with_capacity(nodes.len() - 1);
 

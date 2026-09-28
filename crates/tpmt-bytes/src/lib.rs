@@ -110,7 +110,10 @@ impl fmt::Debug for Flag {
 ///   order and add no padding;
 /// - hold only `Layout` fields, so it has alignment 1 and every bit pattern
 ///   is valid.
-pub unsafe trait Layout: Sized {}
+pub unsafe trait Layout: Sized {
+    /// How many bytes the record takes in the file.
+    const LEN: usize = size_of::<Self>();
+}
 
 // SAFETY: one byte, and every value is valid.
 unsafe impl Layout for u8 {}

@@ -1,9 +1,9 @@
 //! The read path: turns a message file's bytes into a [`Bmg`], nothing
 //! copied out of the input.
 
-use tpmt_bytes::Reader;
+use tpmt_bytes::{Layout, Reader};
 
-use crate::header::{self, Header};
+use crate::Header;
 use crate::sections::{self, flow, message};
 use crate::{Bmg, Encoding, Error, Result};
 
@@ -31,16 +31,16 @@ struct Sections<'a> {
 fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let reader = Reader::new(data);
     let header: &Header = reader.view_at(0)?;
-    if header.kind != header::KIND {
+    if header.kind != Header::KIND {
         return Err(Error::UnknownKind(header.kind));
     }
     let encoding = Encoding::from_byte(header.encoding);
     let count = header.section_count.get() as usize;
 
-    let mut at = header::LEN;
+    let mut at = Header::LEN;
     // What the header should have stated: the flow sections are left out of
     // it, so they are left out of this too.
-    let mut stated = header::LEN;
+    let mut stated = Header::LEN;
     let mut inf1 = None;
     let mut dat1 = None;
     let mut mid1 = None;
@@ -49,17 +49,17 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let mut fli1 = None;
 
     for _ in 0..count {
-        let section: &sections::header::Header = reader.view_at(at)?;
+        let section: &sections::Header = reader.view_at(at)?;
         let magic = section.magic;
         let size = section.size.get() as usize;
-        if size < sections::header::LEN {
+        if size < sections::Header::LEN {
             return Err(Error::Corrupt("a section is smaller than its own header"));
         }
 
         // The last section in a file is allowed to stop where the file does,
         // with the padding its stated size counts left off the end.
-        let body_at = at + sections::header::LEN;
-        let len = (size - sections::header::LEN).min(data.len() - body_at);
+        let body_at = at + sections::Header::LEN;
+        let len = (size - sections::Header::LEN).min(data.len() - body_at);
         let body = reader.slice_at(body_at, len)?;
 
         match magic {
@@ -136,18 +136,18 @@ fn read_strings(str1: &[u8]) -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_bytes::{Be32, Writer};
+    use tpmt_bytes::{Be32, Layout, Writer};
 
     use super::*;
     use crate::FileKind;
-    use crate::sections::header::{self as section, Header as SectionHeader};
+    use crate::sections::Header as SectionHeader;
 
     /// A file of `magics`, one 0x10 section each, stating `size` for them.
     fn file(size: u32, magics: &[&[u8; 4]]) -> Vec<u8> {
-        let mut out = Writer::with_capacity(header::LEN + magics.len() * 0x10);
+        let mut out = Writer::with_capacity(Header::LEN + magics.len() * 0x10);
         out.record(&Header {
             magic: const { FileKind::Mesg.field() },
-            kind: header::KIND,
+            kind: Header::KIND,
             size: Be32::new(size),
             section_count: Be32::new(u32::try_from(magics.len()).unwrap()),
             encoding: Encoding::ShiftJis.byte(),
@@ -158,7 +158,7 @@ mod tests {
                 magic: **magic,
                 size: Be32::new(0x10),
             });
-            out.zeros(0x10 - section::LEN);
+            out.zeros(0x10 - SectionHeader::LEN);
         }
         out.finish()
     }
