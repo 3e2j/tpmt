@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::mem::offset_of;
 
-use tpmt_bytes::{Be32, Layout, Reader, Writer};
+use tpmt_bytes::{Be32, Layout, Reader};
 
 use crate::{Disc, Entry, Error, Result, Span};
 
@@ -414,8 +414,7 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
     } = layout;
 
     let user = user_position(fst_offset, fst_len);
-    let mut out = Writer::with_capacity(BootBin::LEN);
-    out.record(&BootBin {
+    Ok(BootBin {
         authored: authored(boot)?,
         unnamed_60: [0; 0x3A0],
         debug_monitor: Be32::new(apploader_len),
@@ -431,8 +430,9 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
         user_position: Be32::new(user),
         user_length: Be32::new(USER_AREA_END.saturating_sub(user)),
         unnamed_43c: [0; 4],
-    });
-    Ok(out.finish())
+    }
+    .as_bytes()
+    .to_vec())
 }
 
 /// A disc's own boot header with a project's values written into it.
@@ -458,12 +458,12 @@ pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
     }
 
     let original: &BootBin = Reader::new(original).view_at(0)?;
-    let mut out = Writer::with_capacity(BootBin::LEN);
-    out.record(&BootBin {
+    Ok(BootBin {
         authored: authored(boot)?,
         ..*original
-    });
-    Ok(out.finish())
+    }
+    .as_bytes()
+    .to_vec())
 }
 
 /// The part of the header a project keeps: seven values and the magic, and the
@@ -498,8 +498,7 @@ fn authored(boot: &Boot) -> Result<Authored> {
 /// Writes the disc metadata back out: six fields in eight kilobytes of nothing.
 #[must_use]
 pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
-    let mut out = Writer::with_capacity(Bi2Bin::LEN);
-    out.record(&Bi2Bin {
+    Bi2Bin {
         debug_monitor_size: Be32::new(0),
         simulated_memory_size: Be32::new(bi2.simulated_memory_size),
         argument_offset: Be32::new(0),
@@ -511,8 +510,9 @@ pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
         unknown_20: Be32::new(bi2.unknown_20),
         pad_spec: Be32::new(bi2.pad_spec),
         unnamed_28: [0; 0x1FD8],
-    });
-    out.finish()
+    }
+    .as_bytes()
+    .to_vec()
 }
 
 /// Encodes a text field back to the Shift-JIS the reader took it out of, and

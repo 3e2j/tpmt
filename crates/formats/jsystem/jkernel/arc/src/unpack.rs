@@ -229,9 +229,7 @@ impl<'a> ArchiveReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::offset_of;
-
-    use tpmt_bytes::{Layout, Writer};
+    use tpmt_bytes::{Be16, Layout, view_at_mut};
 
     use super::*;
     use crate::Format;
@@ -239,6 +237,19 @@ mod tests {
         self,
         tests::{ENTRIES, NAME_A, NODES, STRINGS, archive},
     };
+
+    fn top_header(data: &mut [u8]) -> &mut TopHeader {
+        view_at_mut(data, 0).unwrap()
+    }
+
+    fn data_header(data: &mut [u8]) -> &mut DataHeader {
+        view_at_mut(data, DataHeader::AT).unwrap()
+    }
+
+    /// The fixture's entry at `index`: `a.bin` at 0, `sub` at 1.
+    fn entry(data: &mut [u8], index: usize) -> &mut Entry {
+        view_at_mut(data, ENTRIES + index * Entry::LEN).unwrap()
+    }
 
     /// The fidelity contract: what comes out goes back in and reproduces the
     /// bytes, and what was packed reads back as it was given.
@@ -275,9 +286,9 @@ mod tests {
         let mut data = archive();
         assert!(unpack(&data).unwrap().next_free_id.is_none());
 
-        let at = DataHeader::AT + offset_of!(DataHeader, next_free_id);
-        let stored = Reader::new(&data).u16_at(at).unwrap() + 3;
-        data[at..at + 2].copy_from_slice(&stored.to_be_bytes());
+        let header = data_header(&mut data);
+        let stored = header.next_free_id.get() + 3;
+        header.next_free_id = Be16::new(stored);
 
         let opened = unpack(&data).unwrap();
         assert_eq!(opened.next_free_id, Some(stored));
@@ -286,14 +297,10 @@ mod tests {
 
     #[test]
     fn decodes_shift_jis_names() {
-        let mut w = Writer::from(archive());
+        let mut data = archive();
         // Halfwidth katakana RI, one byte in Shift-JIS.
-        w.u8_at(STRINGS + NAME_A, 0xD8);
-        w.u16_at(
-            ENTRIES + offset_of!(Entry, name_hash),
-            name_hash(b"\xD8.bin"),
-        );
-        let data = w.finish();
+        data[STRINGS + NAME_A] = 0xD8;
+        entry(&mut data, 0).name_hash = Be16::new(name_hash(b"\xD8.bin"));
         let opened = unpack(&data).unwrap();
         assert_eq!(opened.files[0].path, "ﾘ.bin");
         // And the trip back spells it in Shift-JIS again.
@@ -324,9 +331,8 @@ mod tests {
     /// variant would pass either way.
     #[test]
     fn rejects_an_archive_with_no_nodes() {
-        let mut w = Writer::from(archive());
-        w.u32_at(DataHeader::AT + offset_of!(DataHeader, node_count), 0);
-        let data = w.finish();
+        let mut data = archive();
+        data_header(&mut data).node_count = Be32::new(0);
         assert!(matches!(
             unpack(&data),
             Err(Error::Corrupt("there is no root directory"))
@@ -338,20 +344,19 @@ mod tests {
     /// here is still refused later, only after that allocation.
     #[test]
     fn rejects_counts_that_cannot_fit() {
-        let counts = [
+        let counts: [(fn(&mut DataHeader), _); 2] = [
             (
-                offset_of!(DataHeader, node_count),
+                |header| header.node_count = Be32::new(u32::MAX),
                 "more directories than the archive could hold",
             ),
             (
-                offset_of!(DataHeader, entry_count),
+                |header| header.entry_count = Be32::new(u32::MAX),
                 "more entries than the archive could hold",
             ),
         ];
-        for (field, complaint) in counts {
-            let mut w = Writer::from(archive());
-            w.u32_at(DataHeader::AT + field, u32::MAX);
-            let data = w.finish();
+        for (corrupt, complaint) in counts {
+            let mut data = archive();
+            corrupt(data_header(&mut data));
             assert!(
                 matches!(unpack(&data), Err(Error::Corrupt(message)) if message == complaint),
                 "{complaint}"
@@ -361,79 +366,70 @@ mod tests {
 
     #[test]
     fn rejects_a_directory_claiming_missing_entries() {
-        let mut w = Writer::from(archive());
-        w.u16_at(NODES + offset_of!(Node, entry_count), 100);
-        let data = w.finish();
+        let mut data = archive();
+        view_at_mut::<Node>(&mut data, NODES).unwrap().entry_count = Be16::new(100);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn a_directory_cycle_is_refused() {
-        let mut w = Writer::from(archive());
+        let mut data = archive();
         // Aim `sub`'s entry back at the root's node.
-        w.u32_at(ENTRIES + Entry::LEN + offset_of!(Entry, data_or_node), 0);
-        let data = w.finish();
+        entry(&mut data, 1).data_or_node = Be32::new(0);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn a_dangling_directory_is_refused() {
-        let mut w = Writer::from(archive());
-        w.u32_at(ENTRIES + Entry::LEN + offset_of!(Entry, data_or_node), 9);
-        let data = w.finish();
+        let mut data = archive();
+        entry(&mut data, 1).data_or_node = Be32::new(9);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn rejects_a_name_with_a_separator() {
-        let mut w = Writer::from(archive());
-        w.u8_at(STRINGS + NAME_A + 1, b'/');
-        w.u16_at(ENTRIES + offset_of!(Entry, name_hash), name_hash(b"a/bin"));
-        let data = w.finish();
+        let mut data = archive();
+        data[STRINGS + NAME_A + 1] = b'/';
+        entry(&mut data, 0).name_hash = Be16::new(name_hash(b"a/bin"));
         assert!(matches!(unpack(&data), Err(Error::UnusableName(_))));
     }
 
     #[test]
     fn rejects_a_name_that_is_not_shift_jis() {
-        let mut w = Writer::from(archive());
+        let mut data = archive();
         // A lead byte with no trail byte after it.
-        w.u8_at(STRINGS + NAME_A, 0x85);
-        w.u16_at(
-            ENTRIES + offset_of!(Entry, name_hash),
-            name_hash(b"\x85.bin"),
-        );
-        let data = w.finish();
+        data[STRINGS + NAME_A] = 0x85;
+        entry(&mut data, 0).name_hash = Be16::new(name_hash(b"\x85.bin"));
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn rejects_a_wrong_name_hash() {
-        let mut w = Writer::from(archive());
-        w.u16_at(ENTRIES + offset_of!(Entry, name_hash), 0xBEEF);
-        let data = w.finish();
+        let mut data = archive();
+        entry(&mut data, 0).name_hash = Be16::new(0xBEEF);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn rejects_a_file_marked_for_no_memory() {
         let mut data = archive();
-        data[ENTRIES + offset_of!(Entry, flags_and_name)] = 0x01;
+        let name = entry(&mut data, 0).flags_and_name.get() & Entry::NAME_MASK;
+        entry(&mut data, 0).flags_and_name =
+            Be32::new(Entry::FLAG_FILE << Entry::FLAGS_SHIFT | name);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn rejects_a_wrong_total_data_size() {
-        let mut w = Writer::from(archive());
-        w.u32_at(offset_of!(TopHeader, total_data_size), 0);
-        let data = w.finish();
+        let mut data = archive();
+        top_header(&mut data).total_data_size = Be32::new(0);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 
     #[test]
     fn rejects_preload_sizes_bigger_than_the_data_section() {
-        let mut w = Writer::from(archive());
-        w.u32_at(offset_of!(TopHeader, mram_size), u32::MAX);
-        let data = w.finish();
+        let mut data = archive();
+        top_header(&mut data).mram_size = Be32::new(u32::MAX);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 }

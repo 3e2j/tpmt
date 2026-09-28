@@ -2,9 +2,8 @@
 //!
 //! Everything on the disc is big-endian, and every format crate parses the same
 //! shape: read a header, follow an offset into a table, read records at
-//! computed positions. A reader does that over a borrowed buffer; a writer
-//! builds one up and backpatches the offsets that were not knowable at the
-//! point they were reserved.
+//! computed positions. A reader does that over a borrowed buffer, and a writer
+//! builds one up.
 
 use std::fmt;
 
@@ -113,6 +112,45 @@ impl fmt::Debug for Flag {
 pub unsafe trait Layout: Sized {
     /// How many bytes the record takes in the file.
     const LEN: usize = size_of::<Self>();
+
+    /// The record exactly as the file stores it.
+    fn as_bytes(&self) -> &[u8] {
+        bytes_of(std::slice::from_ref(self))
+    }
+}
+
+/// A run of records exactly as the file stores it.
+#[must_use]
+pub const fn bytes_of<T: Layout>(records: &[T]) -> &[u8] {
+    const { assert!(align_of::<T>() == 1, "a Layout type must be aligned to 1") };
+    // SAFETY: `Layout` rules out padding, so every byte behind `records` is
+    // initialized, and a `u8` slice needs no alignment.
+    unsafe { std::slice::from_raw_parts(records.as_ptr().cast::<u8>(), size_of_val(records)) }
+}
+
+/// Borrows a record at an absolute position for writing, so a field can be
+/// changed in place without working out its byte offset.
+///
+/// # Errors
+///
+/// Returns [`ByteError::OutOfBounds`] if the record runs past the end of
+/// `data`.
+pub fn view_at_mut<T: Layout>(data: &mut [u8], pos: usize) -> Result<&mut T> {
+    const { assert!(align_of::<T>() == 1, "a Layout type must be aligned to 1") };
+    let size = data.len();
+    let bytes = pos
+        .checked_add(T::LEN)
+        .and_then(|end| data.get_mut(pos..end))
+        .ok_or(ByteError::OutOfBounds {
+            pos,
+            len: T::LEN,
+            size,
+        })?;
+    // SAFETY: `bytes` is exactly `size_of::<T>()` long and borrowed mutably
+    // for as long as the result. `T` is aligned to 1 (checked above), so any
+    // address suits it, and `Layout` promises every bit pattern is a valid
+    // `T`, so whatever is written through it leaves valid bytes behind.
+    Ok(unsafe { &mut *bytes.as_mut_ptr().cast::<T>() })
 }
 
 // SAFETY: one byte, and every value is valid.
@@ -369,15 +407,11 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A buffer being built up.
+/// A buffer being built up, append only.
 ///
-/// Appends run forward from the end, and the `_at` writes take an absolute
-/// position and overwrite what is already there, which is how a field reserved
-/// before its value was known gets filled in afterwards.
-///
-/// Nothing here is fallible. The buffer grows to fit whatever is appended, and
-/// a position handed to a patch is one the writer gave out earlier rather than
-/// an offset read out of somebody else's file.
+/// Nothing here is fallible. The buffer grows to fit whatever is appended.
+/// A value only known once later records are laid down belongs in a record
+/// kept aside until it is, rather than patched in here afterwards.
 #[derive(Default)]
 pub struct Writer {
     data: Vec<u8>,
@@ -399,7 +433,7 @@ impl Writer {
     }
 
     /// How much has been written, which is also the position the next append
-    /// lands at. Reserving a field to backpatch means keeping this first.
+    /// lands at.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.data.len()
@@ -428,17 +462,10 @@ impl Writer {
 
     /// Appends a whole record, fields in declaration order.
     pub fn record<T: Layout>(&mut self, record: &T) {
-        const { assert!(align_of::<T>() == 1, "a Layout type must be aligned to 1") };
-        // SAFETY: `Layout` rules out padding, so all `size_of::<T>()` bytes
-        // behind `record` are initialized, and a `u8` slice needs no alignment.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(std::ptr::from_ref(record).cast::<u8>(), size_of::<T>())
-        };
-        self.bytes(bytes);
+        self.bytes(record.as_bytes());
     }
 
-    /// Appends `len` bytes of nothing. Whole regions of the preamble are zero,
-    /// and a reserved field is written as zeros until it is patched.
+    /// Appends `len` bytes of nothing.
     pub fn zeros(&mut self, len: usize) {
         self.data.resize(self.data.len().saturating_add(len), 0);
     }
@@ -450,46 +477,9 @@ impl Writer {
         self.zeros(len.next_multiple_of(to).saturating_sub(len));
     }
 
-    pub fn u8_at(&mut self, pos: usize, value: u8) {
-        self.patch(pos, &[value]);
-    }
-
-    pub fn u16_at(&mut self, pos: usize, value: u16) {
-        self.patch(pos, &value.to_be_bytes());
-    }
-
-    pub fn u32_at(&mut self, pos: usize, value: u32) {
-        self.patch(pos, &value.to_be_bytes());
-    }
-
-    /// Overwrites a run of bytes at an absolute position: a field with no
-    /// natural integer width, like a raw param blob, in a record that was
-    /// reserved with [`zeros`](Self::zeros).
-    pub fn bytes_at(&mut self, pos: usize, bytes: &[u8]) {
-        self.patch(pos, bytes);
-    }
-
     #[must_use]
     pub fn finish(self) -> Vec<u8> {
         self.data
-    }
-
-    /// Overwrites bytes that were already written.
-    ///
-    /// Panics on a position the buffer has not reached, which cannot happen to
-    /// a caller patching a field it reserved itself.
-    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
-    fn patch(&mut self, pos: usize, bytes: &[u8]) {
-        self.data[pos..pos + bytes.len()].copy_from_slice(bytes);
-    }
-}
-
-/// Resumes a buffer that already has bytes in it, so an already-finished
-/// one can still be patched through `u8_at`/`u16_at`/`u32_at` instead of a
-/// second, separate way of overwriting a position.
-impl From<Vec<u8>> for Writer {
-    fn from(data: Vec<u8>) -> Self {
-        Self { data }
     }
 }
 
@@ -598,23 +588,6 @@ mod tests {
         assert_eq!(writer.finish(), [0x0D, 0xAC, 0xED, 0x00, 0x01, 0x02, 0x03]);
     }
 
-    /// The whole point of the writer: a field written before anybody knew what
-    /// went in it, filled in once the rest had been laid down. Read back through
-    /// the reader, since the two halves agreeing is what actually matters.
-    #[test]
-    fn a_reserved_field_is_filled_in_afterwards() {
-        let mut writer = Writer::new();
-        let field = writer.len();
-        writer.u32(0);
-        writer.bytes(b"name\0");
-
-        let end = writer.len();
-        writer.u32_at(field, u32::try_from(end).unwrap());
-
-        let out = writer.finish();
-        assert_eq!(Reader::new(&out).u32_at(field).unwrap(), 9);
-    }
-
     #[test]
     fn padding_stops_on_the_next_boundary() {
         let mut writer = Writer::new();
@@ -628,11 +601,18 @@ mod tests {
         assert_eq!(writer.finish(), *b"abc\0");
     }
 
+    // Mutable views
+
+    /// Starting at an odd position proves the view never needed alignment.
     #[test]
-    #[should_panic(expected = "range end index")]
-    fn patching_past_the_end_is_refused() {
-        let mut writer = Writer::new();
-        writer.u32(0);
-        writer.u32_at(2, 1);
+    fn a_field_edited_in_place_reads_back() {
+        let mut data = [0xFF, 0x0D, 0x00, 0x01, 0x02, 0x03, 0xAC, 0xED];
+        view_at_mut::<Record>(&mut data, 1).unwrap().narrow = Be16::new(0xBEEF);
+        assert_eq!(data, [0xFF, 0x0D, 0x00, 0x01, 0x02, 0x03, 0xBE, 0xEF]);
+        assert!(matches!(
+            view_at_mut::<Record>(&mut data, 2),
+            Err(ByteError::OutOfBounds { .. })
+        ));
+        assert!(view_at_mut::<Record>(&mut data, usize::MAX).is_err());
     }
 }

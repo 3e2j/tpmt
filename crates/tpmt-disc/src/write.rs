@@ -17,6 +17,7 @@
 use std::io::Write;
 
 use sha1::{Digest, Sha1};
+use tpmt_bytes::Be32;
 
 use crate::{Entry, Error, Item, Metadata, Result, Span, fst, sys};
 
@@ -74,10 +75,10 @@ impl Layout {
             return Err(Error::TooLarge { len: total, end });
         }
 
-        let fst::Table { mut bytes, slots } = fst::build(&files)?;
+        let mut fst = fst::build(&files)?;
         let dol_offset = (sys::APPLOADER_OFFSET + apploader).next_multiple_of(sys::PREAMBLE_ALIGN);
         let fst_offset = (dol_offset + dol).next_multiple_of(sys::PREAMBLE_ALIGN);
-        let fst_len = bytes.len() as u64;
+        let fst_len = fst.len() as u64;
         if fst_offset + fst_len > end {
             return Err(Error::TooLarge {
                 len: fst_offset + fst_len,
@@ -114,25 +115,20 @@ impl Layout {
         // above runs on past it to the next boundary.
         let mut last = at;
 
-        for slot in slots {
+        // The root's record has no slot, so the rest pair up in order.
+        for (slot, record) in fst.slots.drain(..).zip(fst.records.iter_mut().skip(1)) {
             entries.push(match slot {
                 fst::Slot::Directory { path } => Entry::Directory { path },
-                fst::Slot::File {
-                    path,
-                    size,
-                    offset_field,
-                } => {
+                fst::Slot::File { path, size } => {
                     let offset = at;
                     last = at + size;
                     at = last.next_multiple_of(FILE_ALIGN);
+                    let too_large = Error::TooLarge { len: last, end };
                     if last > end {
-                        return Err(Error::TooLarge { len: last, end });
+                        return Err(too_large);
                     }
-
-                    // `offset <= last`, and `last > end` returned above, so
-                    // `offset` fits a `u32` the same way `last` does.
-                    #[allow(clippy::cast_possible_truncation)]
-                    bytes.u32_at(offset_field, offset as u32);
+                    record.offset_or_parent =
+                        Be32::new(u32::try_from(offset).map_err(|_| too_large)?);
                     Entry::File {
                         path,
                         span: Span { offset, size },
@@ -160,7 +156,7 @@ impl Layout {
             generated: vec![
                 (0, boot),
                 (sys::BI2_OFFSET, sys::bi2_bin(&metadata.bi2)),
-                (fst_offset, bytes.finish()),
+                (fst_offset, fst.finish()),
             ],
             len: last,
         })

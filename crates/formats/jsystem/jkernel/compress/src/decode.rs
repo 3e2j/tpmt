@@ -92,18 +92,18 @@ pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_bytes::{Be32, Writer};
+    use tpmt_bytes::Be32;
 
     use super::*;
 
     fn header(decompressed_size: u32) -> Vec<u8> {
-        let mut out = Writer::with_capacity(Header::LEN);
-        out.record(&Header {
+        Header {
             magic: const { FileKind::Yaz0.field() },
             decompressed_size: Be32::new(decompressed_size),
             unnamed: [0; 8],
-        });
-        out.finish()
+        }
+        .as_bytes()
+        .to_vec()
     }
 
     /// A literal group, then a back-reference over the four bytes it wrote.

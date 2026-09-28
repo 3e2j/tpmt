@@ -9,9 +9,8 @@
 //! carries are the one part a build works out for itself.
 
 use std::collections::{HashMap, HashSet};
-use std::mem::offset_of;
 
-use tpmt_bytes::{Be32, Layout, Reader, Writer};
+use tpmt_bytes::{Be32, Reader, Writer};
 
 use crate::{Entry, Error, Item, Result, Span};
 
@@ -120,25 +119,35 @@ fn name_of(raw: &[u8]) -> Result<String> {
 /// A file table built out of a project tree, with nowhere for the files to go
 /// yet.
 pub struct Table {
-    /// The table itself. Every file's data offset is still zero, since the
-    /// layout is worked out from how long this came to.
-    pub(crate) bytes: Writer,
-    /// What it holds, in table order.
+    /// One per entry, the root first. Every file's data offset is still zero,
+    /// since the layout is worked out from how long the table came to.
+    pub(crate) records: Vec<Record>,
+    /// Every name but the root's, null terminated, in record order.
+    pub(crate) names: Vec<u8>,
+    /// What each record past the root holds, in the same order.
     pub(crate) slots: Vec<Slot>,
+}
+
+impl Table {
+    /// How long the table is on disc.
+    pub(crate) const fn len(&self) -> usize {
+        size_of_val(self.records.as_slice()) + self.names.len()
+    }
+
+    /// The table as the disc stores it: the records, then the names.
+    pub(crate) fn finish(&self) -> Vec<u8> {
+        let mut bytes = Writer::with_capacity(self.len());
+        bytes.bytes(tpmt_bytes::bytes_of(&self.records));
+        bytes.bytes(&self.names);
+        bytes.finish()
+    }
 }
 
 /// An [`Entry`] short of the one thing the layout decides: where a file's
 /// bytes go.
 pub enum Slot {
-    File {
-        path: String,
-        size: u64,
-        /// Where in [`Table::bytes`] the data offset is written once known.
-        offset_field: usize,
-    },
-    Directory {
-        path: String,
-    },
+    File { path: String, size: u64 },
+    Directory { path: String },
 }
 
 /// Builds the file table for a project tree.
@@ -223,14 +232,14 @@ pub fn build(items: &[&Item]) -> Result<Table> {
 /// Lays the nodes out: the array, then the names in the same order.
 fn emit(nodes: Vec<Node>) -> Table {
     let pool: usize = nodes.iter().skip(1).map(|node| node.name.len() + 1).sum();
-    let mut bytes = Writer::with_capacity(nodes.len() * Record::LEN + pool);
+    let mut records = Vec::with_capacity(nodes.len());
     let mut names = Vec::with_capacity(pool);
     let mut slots = Vec::with_capacity(nodes.len() - 1);
 
     for (index, node) in nodes.into_iter().enumerate() {
         let slot = match node.kind {
             Kind::Directory { parent, end } => {
-                bytes.record(&Record {
+                records.push(Record {
                     flags_and_name: Be32::new(DIRECTORY_TYPE | node.name_offset),
                     offset_or_parent: Be32::new(parent),
                     end_or_size: Be32::new(end),
@@ -238,8 +247,7 @@ fn emit(nodes: Vec<Node>) -> Table {
                 Slot::Directory { path: node.path }
             }
             Kind::File { size } => {
-                let offset_field = bytes.len() + offset_of!(Record, offset_or_parent);
-                bytes.record(&Record {
+                records.push(Record {
                     flags_and_name: Be32::new(node.name_offset),
                     offset_or_parent: Be32::new(0),
                     end_or_size: Be32::new(size),
@@ -247,7 +255,6 @@ fn emit(nodes: Vec<Node>) -> Table {
                 Slot::File {
                     path: node.path,
                     size: size as u64,
-                    offset_field,
                 }
             }
         };
@@ -262,9 +269,11 @@ fn emit(nodes: Vec<Node>) -> Table {
             slots.push(slot);
         }
     }
-    bytes.bytes(&names);
-
-    Table { bytes, slots }
+    Table {
+        records,
+        names,
+        slots,
+    }
 }
 
 /// Walks one directory, appending its contents and then whatever they hold.

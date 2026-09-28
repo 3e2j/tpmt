@@ -504,26 +504,26 @@ mod tests {
     }
 
     fn inf1_header(count: u16, record_len: u16) -> Vec<u8> {
-        let mut out = Writer::with_capacity(Inf1Header::LEN);
-        out.record(&Inf1Header {
+        Inf1Header {
             count: Be16::new(count),
             record_len: Be16::new(record_len),
             group_id: Be16::new(0),
             unnamed: [0; 2],
-        });
-        out.finish()
+        }
+        .as_bytes()
+        .to_vec()
     }
 
     /// A MID1 header with a count of zero, which nothing reads.
     fn mid1_header(ordered_form: u8, shift_bytes: u8) -> Vec<u8> {
-        let mut out = Writer::with_capacity(RawMid1Header::LEN);
-        out.record(&RawMid1Header {
+        RawMid1Header {
             count: Be16::new(0),
             ordered_form,
             shift_bytes,
             unnamed: [0; 4],
-        });
-        out.finish()
+        }
+        .as_bytes()
+        .to_vec()
     }
 
     /// One INF1 record: its text offset into DAT1, then its attributes.
