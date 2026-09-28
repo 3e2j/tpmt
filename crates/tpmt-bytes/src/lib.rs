@@ -94,23 +94,79 @@ impl fmt::Debug for Flag {
     }
 }
 
-/// A record whose memory layout is its file layout, so
-/// [`Reader::view_at`] can borrow one straight out of the buffer and
-/// [`Writer::record`] can append one as it stands.
+/// A type whose memory layout is its file layout, so [`Reader::view_at`] can
+/// borrow one straight out of the buffer and [`Writer::record`] can append
+/// one as it stands.
+///
+/// Implemented for `u8`, `[T; N]` of any `Layout` `T`, [`Be16`], [`Be32`] and
+/// [`Flag`]. Define records with [`layout!`], which checks every field and
+/// writes the impl, rather than implementing this by hand.
 ///
 /// # Safety
 ///
 /// The implementor **must**:
 ///
-/// - be `#[repr(C)]`, so fields keep declaration order and add no padding;
-/// - hold only `u8`, `[u8; N]`, [`Be16`], [`Be32`], [`Flag`], or other
-///   `Layout` types,
-///   so it has alignment 1 and every bit pattern is valid.
-///
-/// A compile-time check catches a native `u16` or `u32` field. Nothing
-/// catches a `bool` or an enum, which have alignment 1 but invalid bit
-/// patterns.
+/// - be `#[repr(C)]` or `#[repr(transparent)]`, so fields keep declaration
+///   order and add no padding;
+/// - hold only `Layout` fields, so it has alignment 1 and every bit pattern
+///   is valid.
 pub unsafe trait Layout: Sized {}
+
+// SAFETY: one byte, and every value is valid.
+unsafe impl Layout for u8 {}
+// SAFETY: an array of align-1 elements with no padding has none either.
+unsafe impl<T: Layout, const N: usize> Layout for [T; N] {}
+// SAFETY: repr(transparent) over a byte array.
+unsafe impl Layout for Be16 {}
+// SAFETY: repr(transparent) over a byte array.
+unsafe impl Layout for Be32 {}
+// SAFETY: repr(transparent) over a byte, and `Flag` gives every value a
+// meaning.
+unsafe impl Layout for Flag {}
+
+/// Defines a `#[repr(C)]` struct and implements [`Layout`] for it. A field
+/// whose type is not `Layout`, such as a `bool` or a native `u32`, fails to
+/// compile.
+///
+/// ```
+/// tpmt_bytes::layout! {
+///     pub struct Header {
+///         pub magic: [u8; 4],
+///         pub size: tpmt_bytes::Be32,
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// tpmt_bytes::layout! {
+///     struct Flagged {
+///         set: bool,
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! layout {
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $($(#[$field_meta:meta])* $field_vis:vis $field:ident: $ty:ty),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[repr(C)]
+        $vis struct $name {
+            $($(#[$field_meta])* $field_vis $field: $ty),*
+        }
+
+        const _: () = {
+            const fn field<T: $crate::Layout>() {}
+            $(field::<$ty>();)*
+        };
+
+        // SAFETY: repr(C), and every field is `Layout`, checked above.
+        unsafe impl $crate::Layout for $name {}
+    };
+}
 
 /// A cursor over a borrowed buffer.
 ///
@@ -467,15 +523,13 @@ mod tests {
         ));
     }
 
-    #[repr(C)]
-    struct Record {
-        tag: u8,
-        wide: Be32,
-        narrow: Be16,
+    layout! {
+        struct Record {
+            tag: u8,
+            wide: Be32,
+            narrow: Be16,
+        }
     }
-
-    // SAFETY: repr(C), and every field is a byte or a big-endian wrapper.
-    unsafe impl Layout for Record {}
 
     /// Starting at an odd position proves the view never needed alignment.
     #[test]
