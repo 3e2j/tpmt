@@ -17,7 +17,7 @@
 //! # Layout
 //!
 //! ```text
-//! 0x00  header      the magic, a size, and how many sections follow
+//! 0x00  header      the magic, the kind, a size, and how many sections follow
 //! 0x20  sections    one after another, each naming itself and its own size
 //! ```
 //!
@@ -43,12 +43,15 @@ mod unpack;
 
 pub use crate::sections::flow::{Flow, Node, NodeId, Root};
 pub use crate::sections::message::{Message, MessageId, Mid1Header, TEXT_OFFSET_LEN, TextSegment};
-pub use tpmt_format::Format;
+pub use tpmt_format::{FileKind, Format};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("not a BMG message file")]
-    NotBmg,
+    #[error(transparent)]
+    WrongKind(#[from] tpmt_format::WrongKind),
+
+    #[error("the message file is kind {0:?}, not bmg1")]
+    UnknownKind([u8; 4]),
 
     #[error("the message file is corrupt: {0}")]
     Corrupt(&'static str),
@@ -70,8 +73,9 @@ mod header {
 
     tpmt_bytes::layout! {
         pub struct Header {
-            /// Always [`MAGIC`].
-            pub magic: [u8; 8],
+            pub magic: [u8; 4],
+            /// The layout tag. Anything but [`KIND`] is refused.
+            pub kind: [u8; 4],
             /// The size of the file with the flow sections left out.
             pub size: Be32,
             pub section_count: Be32,
@@ -83,15 +87,8 @@ mod header {
     }
 
     pub const LEN: usize = 0x20;
+    pub const KIND: [u8; 4] = *b"bmg1";
     const _: () = assert!(size_of::<Header>() == LEN);
-    pub const MAGIC: &[u8] = tpmt_format::FileKind::Bmg.magic();
-    /// [`MAGIC`] at the width of the field that holds it. A magic of any
-    /// other length fails to compile here.
-    pub const MAGIC_FIELD: [u8; 8] = {
-        let mut field = [0; 8];
-        field.copy_from_slice(MAGIC);
-        field
-    };
 }
 
 /// Which encoding the bmg text is in.
@@ -169,19 +166,20 @@ pub struct Bmg {
 }
 
 impl Format<'_> for Bmg {
-    const MAGIC: &'static [u8] = header::MAGIC;
+    const KIND: FileKind = FileKind::Mesg;
     type Error = Error;
 
     /// Takes a message file apart.
     ///
     /// # Errors
     ///
-    /// - [`Error::NotBmg`]
+    /// - [`Error::WrongKind`]
+    /// - [`Error::UnknownKind`] if the magic is followed by anything but bmg1.
     /// - [`Error::Corrupt`] if the section table would misplace or lose a
     ///   section: a size that doesn't fit its header, a stated file size that
     ///   doesn't match where the sections end, a required section missing, or a
     ///   flow graph with only one of its two sections.
-    fn decode(data: &[u8]) -> Result<Self> {
+    fn decode_body(data: &[u8]) -> Result<Self> {
         unpack::unpack(data)
     }
 
@@ -206,8 +204,8 @@ mod tests {
 
     #[test]
     fn anything_else_is_not_a_message_file() {
-        assert!(matches!(Bmg::decode(b"RARC"), Err(Error::NotBmg)));
-        assert!(matches!(Bmg::decode(b""), Err(Error::NotBmg)));
+        assert!(matches!(Bmg::decode(b"RARC"), Err(Error::WrongKind(_))));
+        assert!(matches!(Bmg::decode(b""), Err(Error::WrongKind(_))));
     }
 
     /// The header byte and the variant it names, both ways round. An unknown

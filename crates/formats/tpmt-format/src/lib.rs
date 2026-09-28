@@ -5,6 +5,9 @@
 //! `Archive::decode(bytes)` and `archive.encode()` read the same everywhere.
 //! Knows nothing about projects or pipelines.
 //!
+//! Every magic lives in [`FileKind`] and is checked only here, so a format
+//! crate never compares magic bytes itself.
+//!
 //! Formats are true to the file, not to the game's logic, so they hold
 //! whatever a mod puts in them. A mod that changes the game past what a
 //! format can express is outside what these crates can support.
@@ -15,30 +18,45 @@
 /// (an archive keeps a slice into every member). One that copies everything
 /// out implements `Format<'_>`.
 pub trait Format<'a>: Sized {
-    /// What the file opens with, and the only way to tell one format from
-    /// another: paths and extensions on the disc lie, contents don't.
-    const MAGIC: &'static [u8];
+    /// Which kind this is, and so which magic the file opens with.
+    const KIND: FileKind;
 
-    type Error: std::error::Error;
+    type Error: std::error::Error + From<WrongKind>;
 
-    /// Whether `data` opens with this format's [`MAGIC`](Self::MAGIC).
+    /// Whether `data` opens with this format's magic.
     ///
     /// Says nothing about whether the rest is intact; that is
     /// [`decode`](Self::decode)'s job. Split out so a caller can pick a format
-    /// before committing to it, and so an error out of `decode` always means
-    /// "this format, but broken", never "not this format".
+    /// before committing to it.
     #[must_use]
     fn recognises(data: &[u8]) -> bool {
-        data.starts_with(Self::MAGIC)
+        Self::KIND.matches(data)
     }
 
     /// Takes the file apart.
     ///
     /// # Errors
     ///
-    /// When `data` is not this format at all, or is but is broken. Each
-    /// format's own error type tells the two apart.
-    fn decode(data: &'a [u8]) -> Result<Self, Self::Error>;
+    /// [`WrongKind`] when `data` doesn't open with this format's magic, and
+    /// whatever [`decode_body`](Self::decode_body) returns otherwise.
+    fn decode(data: &'a [u8]) -> Result<Self, Self::Error> {
+        if !Self::recognises(data) {
+            return Err(WrongKind {
+                expected: Self::KIND,
+            }
+            .into());
+        }
+        Self::decode_body(data)
+    }
+
+    /// Takes apart a file [`decode`](Self::decode) has already matched to
+    /// this format, so an error out of it always means "this format, but
+    /// broken", never "not this format". Call `decode` instead.
+    ///
+    /// # Errors
+    ///
+    /// When the file is broken. Each format's own error type says how.
+    fn decode_body(data: &'a [u8]) -> Result<Self, Self::Error>;
 
     /// Writes the file back out.
     ///
@@ -49,41 +67,76 @@ pub trait Format<'a>: Sized {
     fn encode(&self) -> Result<Vec<u8>, Self::Error>;
 }
 
-/// A leaf format the toolkit decodes, and the magic that tells it apart.
+/// Data handed to a decoder that doesn't open with its magic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrongKind {
+    pub expected: FileKind,
+}
+
+impl std::fmt::Display for WrongKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "not a {} file", self.expected.name())
+    }
+}
+
+impl std::error::Error for WrongKind {}
+
+/// A format the toolkit reads, told apart by the magic it opens with.
 ///
-/// Every format's [`Format::MAGIC`] is defined here and read back by its own
-/// crate, so something that only needs to tell formats apart, like an unpack
-/// sorting files, depends on this crate alone. Archives aren't here: an
-/// unpack turns them into directories, so no project file is one.
+/// Every magic is defined here and nowhere else, so something that only needs
+/// to tell formats apart, like an unpack sorting files, depends on this crate
+/// alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileKind {
+    /// An archive, owned by `JKernel` and decoded by `tpmt-jkernel-arc`.
+    Rarc,
+    /// A compression wrapper, owned by `JKernel` and decoded by
+    /// `tpmt-jkernel-compress`.
+    Yaz0,
     /// A message file, owned by `JMessage` and decoded by `tpmt-jmessage`.
-    Bmg,
+    Mesg,
 }
 
 impl FileKind {
-    pub const ALL: [Self; 1] = [Self::Bmg];
+    pub const ALL: [Self; 3] = [Self::Rarc, Self::Yaz0, Self::Mesg];
 
     /// The kind whose magic `data` opens with, if any.
     #[must_use]
     pub fn identify(data: &[u8]) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|kind| data.starts_with(kind.magic()))
+        Self::ALL.into_iter().find(|kind| kind.matches(data))
+    }
+
+    /// Whether `data` opens with this kind's magic.
+    #[must_use]
+    pub fn matches(self, data: &[u8]) -> bool {
+        data.starts_with(self.magic())
     }
 
     #[must_use]
     pub const fn magic(self) -> &'static [u8] {
         match self {
-            Self::Bmg => b"MESGbmg1",
+            Self::Rarc => b"RARC",
+            Self::Yaz0 => b"Yaz0",
+            Self::Mesg => b"MESG",
         }
+    }
+
+    /// [`magic`](Self::magic) at the width of the header field that holds it.
+    /// Evaluated in a const, a width that doesn't match fails to compile.
+    #[must_use]
+    pub const fn field<const N: usize>(self) -> [u8; N] {
+        let mut field = [0; N];
+        field.copy_from_slice(self.magic());
+        field
     }
 
     /// A stable lowercase name, for a file that records kinds.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Bmg => "bmg",
+            Self::Rarc => "rarc",
+            Self::Yaz0 => "yaz0",
+            Self::Mesg => "mesg",
         }
     }
 

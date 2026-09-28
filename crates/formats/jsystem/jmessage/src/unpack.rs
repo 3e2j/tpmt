@@ -5,7 +5,7 @@ use tpmt_bytes::Reader;
 
 use crate::header::{self, Header};
 use crate::sections::{self, flow, message};
-use crate::{Bmg, Encoding, Error, Format, Result};
+use crate::{Bmg, Encoding, Error, Result};
 
 /// The sections a file holds, sorted out by name on the way past.
 /// INF1 and DAT1 are always there, so they are required fields rather than
@@ -31,6 +31,9 @@ struct Sections<'a> {
 fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let reader = Reader::new(data);
     let header: &Header = reader.view_at(0)?;
+    if header.kind != header::KIND {
+        return Err(Error::UnknownKind(header.kind));
+    }
     let encoding = Encoding::from_byte(header.encoding);
     let count = header.section_count.get() as usize;
 
@@ -106,10 +109,6 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
 }
 
 pub fn unpack(data: &[u8]) -> Result<Bmg> {
-    if !Bmg::recognises(data) {
-        return Err(Error::NotBmg);
-    }
-
     let (encoding, sections) = split(data)?;
 
     let (messages, record_len, mid1) = message::read(sections.inf1, sections.dat1, sections.mid1)?;
@@ -140,13 +139,15 @@ mod tests {
     use tpmt_bytes::{Be32, Writer};
 
     use super::*;
+    use crate::FileKind;
     use crate::sections::header::{self as section, Header as SectionHeader};
 
     /// A file of `magics`, one 0x10 section each, stating `size` for them.
     fn file(size: u32, magics: &[&[u8; 4]]) -> Vec<u8> {
         let mut out = Writer::with_capacity(header::LEN + magics.len() * 0x10);
         out.record(&Header {
-            magic: header::MAGIC_FIELD,
+            magic: const { FileKind::Mesg.field() },
+            kind: header::KIND,
             size: Be32::new(size),
             section_count: Be32::new(u32::try_from(magics.len()).unwrap()),
             encoding: Encoding::ShiftJis.byte(),
@@ -184,6 +185,13 @@ mod tests {
     fn an_unknown_section_is_refused() {
         let data = file(0x50, &[b"INF1", b"DAT1", b"XXXX"]);
         assert!(matches!(split(&data), Err(Error::Corrupt(_))));
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused() {
+        let mut data = file(0x40, &[b"INF1", b"DAT1"]);
+        data[4..8].copy_from_slice(b"bmg2");
+        assert!(matches!(split(&data), Err(Error::UnknownKind(kind)) if kind == *b"bmg2"));
     }
 
     #[test]

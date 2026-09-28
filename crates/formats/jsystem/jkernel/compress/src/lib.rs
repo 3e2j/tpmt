@@ -22,8 +22,8 @@ pub use encode::yaz0_encode;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("not Yaz0 data")]
-    NotYaz0,
+    #[error(transparent)]
+    WrongKind(#[from] tpmt_format::WrongKind),
 
     #[error("a back-reference reaches {distance} bytes back from offset {pos}")]
     BackReference { pos: usize, distance: usize },
@@ -45,7 +45,7 @@ mod header {
 
     tpmt_bytes::layout! {
         pub struct Header {
-            /// Always [`MAGIC`].
+            /// Always [`FileKind::Yaz0`](tpmt_format::FileKind::Yaz0)'s magic.
             pub magic: [u8; 4],
             pub decompressed_size: Be32,
             /// Padding, and zero.
@@ -55,14 +55,4 @@ mod header {
 
     pub const LEN: usize = 0x10;
     const _: () = assert!(size_of::<Header>() == LEN);
-    pub const MAGIC: &[u8; 4] = b"Yaz0";
-}
-
-/// Whether a buffer starts with the Yaz0 magic.
-///
-/// Callers decide what to do about it: on this disc the wrapper is a convention
-/// of where a file sits, not something the file itself declares.
-#[must_use]
-pub fn is_yaz0(data: &[u8]) -> bool {
-    data.starts_with(header::MAGIC)
 }

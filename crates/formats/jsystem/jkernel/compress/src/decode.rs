@@ -1,25 +1,29 @@
 //! The read path: turns Yaz0 data into raw bytes.
 
 use tpmt_bytes::Reader;
+use tpmt_format::{FileKind, WrongKind};
 
 use crate::header::{self, Header};
 use crate::token::backref::Backreference;
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
-use crate::{Error, Result, is_yaz0};
+use crate::{Error, Result};
 
 /// Decompresses Yaz0 data. See the crate docs for the token format.
 ///
 /// # Errors
 ///
-/// Returns [`Error::NotYaz0`] if `input` lacks the magic, [`Error::BackReference`]
+/// Returns [`Error::WrongKind`] if `input` lacks the magic, [`Error::BackReference`]
 /// if a back-reference reaches before the start of the output,
 /// [`Error::SizeMismatch`] if the decoded output doesn't match the header's
 /// declared size, or [`Error::Bytes`] if `input` is truncated.
 pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
-    // is_yaz0 gets the raw buffer: starts_with copes with one shorter than
-    // the magic, and nothing else here needs to know the magic's length.
-    if !is_yaz0(input) {
-        return Err(Error::NotYaz0);
+    // The raw buffer goes to the check, which copes with one shorter than
+    // the magic, so nothing here needs to know the magic's length.
+    if !FileKind::Yaz0.matches(input) {
+        return Err(WrongKind {
+            expected: FileKind::Yaz0,
+        }
+        .into());
     }
 
     let mut reader = Reader::new(input);
@@ -95,7 +99,7 @@ mod tests {
     fn header(decompressed_size: u32) -> Vec<u8> {
         let mut out = Writer::with_capacity(header::LEN);
         out.record(&Header {
-            magic: *header::MAGIC,
+            magic: const { FileKind::Yaz0.field() },
             decompressed_size: Be32::new(decompressed_size),
             unnamed: [0; 8],
         });
@@ -120,7 +124,7 @@ mod tests {
 
     #[test]
     fn rejects_other_data() {
-        assert!(matches!(yaz0_decode(b"RARC...."), Err(Error::NotYaz0)));
+        assert!(matches!(yaz0_decode(b"RARC...."), Err(Error::WrongKind(_))));
     }
 
     /// Truncated input is an error, never a short buffer passed off as whole.

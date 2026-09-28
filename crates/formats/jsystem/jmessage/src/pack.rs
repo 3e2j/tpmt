@@ -4,7 +4,7 @@ use tpmt_bytes::{Be32, Writer};
 
 use crate::header::{self, Header};
 use crate::sections::{self, flow, message, positions};
-use crate::{Bmg, Error, Result};
+use crate::{Bmg, Error, FileKind, Result};
 
 /// Lays the sections out in the order the retail files have them.
 ///
@@ -47,7 +47,8 @@ pub fn pack(bmg: &Bmg) -> Result<Vec<u8>> {
 
     let mut out = Writer::with_capacity(len_of(&bodies));
     out.record(&Header {
-        magic: header::MAGIC_FIELD,
+        magic: const { FileKind::Mesg.field() },
+        kind: header::KIND,
         size: field(len_of(&bodies[..stated]))?,
         section_count: field(bodies.len())?,
         encoding: bmg.encoding.byte(),
@@ -126,7 +127,8 @@ mod tests {
         let reader = Reader::new(&data);
 
         let top: &Header = reader.view_at(0).unwrap();
-        assert_eq!(top.magic, header::MAGIC_FIELD);
+        assert_eq!(top.magic, FileKind::Mesg.field());
+        assert_eq!(top.kind, header::KIND);
         assert_eq!(top.size.get(), 0x80);
         assert_eq!(top.section_count.get(), 5);
         assert_eq!(top.encoding, Encoding::ShiftJis.byte());

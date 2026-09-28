@@ -5,11 +5,11 @@ use std::collections::HashSet;
 use tpmt_bytes::{Be16, Be32, Flag, Writer};
 
 use crate::{
-    Archive, Error, Preload, Result,
+    Archive, Error, FileKind, Preload, Result,
     data_header::{self, DataHeader},
     entry, name_hash, next_free_id,
     node::{self, Node},
-    top_header::{self, TopHeader},
+    top_header::TopHeader,
 };
 
 // The string pool opens with `.` and `..`, in that order, so the offset
@@ -387,7 +387,7 @@ fn write_headers(
     };
     let header = data_header::AT;
     out.record(&TopHeader {
-        magic: *top_header::MAGIC,
+        magic: const { FileKind::Rarc.field() },
         file_size: be32(sections.data_at + placed.data_size)?,
         data_header_ptr: be32(header)?,
         file_data_ptr: be32(sections.data_at - header)?,
@@ -539,7 +539,7 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
             Preload::Aram => entry::FLAG_ARAM,
             Preload::Disc => entry::FLAG_DISC,
         }
-        | if data.starts_with(b"Yaz0") {
+        | if FileKind::Yaz0.matches(data) {
             entry::FLAG_COMPRESSED | entry::FLAG_YAZ0
         } else {
             0

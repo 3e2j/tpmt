@@ -130,13 +130,12 @@ mod tests {
 
     use tpmt_disc::{Bi2, Boot, Metadata};
     use tpmt_jkernel_arc::editable::sidecar::{Member, Sidecar};
-    use tpmt_jkernel_compress::is_yaz0;
 
     use super::*;
-    use crate::Error;
     use crate::project::metadata::sha1_hex;
     use crate::test_support::Scratch;
     use crate::unpack::explode;
+    use crate::{Error, FileKind};
 
     /// [`super::run`] with nobody watching its progress.
     fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {
@@ -236,7 +235,10 @@ mod tests {
     /// unpack side would make of it.
     fn exploded(built: &Path, path: &str) -> BTreeMap<String, Vec<u8>> {
         let data = fs::read(&built.join(path)).unwrap();
-        assert!(is_yaz0(&data), "the disc held this one wrapped");
+        assert!(
+            FileKind::Yaz0.matches(&data),
+            "the disc held this one wrapped"
+        );
 
         let mut outputs = BTreeMap::new();
         explode::file(path, &data, &mut |at, bytes| {

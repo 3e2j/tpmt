@@ -59,12 +59,12 @@ pub mod editable;
 mod pack;
 mod unpack;
 
-pub use tpmt_format::Format;
+pub use tpmt_format::{FileKind, Format};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("not a RARC archive")]
-    NotRarc,
+    #[error(transparent)]
+    WrongKind(#[from] tpmt_format::WrongKind),
 
     #[error("the archive is corrupt: {0}")]
     Corrupt(&'static str),
@@ -150,7 +150,7 @@ pub struct Archive<'a> {
 }
 
 impl<'a> Format<'a> for Archive<'a> {
-    const MAGIC: &'static [u8] = top_header::MAGIC;
+    const KIND: FileKind = FileKind::Rarc;
     type Error = Error;
 
     /// Takes an archive apart into every file it holds, directories flattened
@@ -164,13 +164,13 @@ impl<'a> Format<'a> for Archive<'a> {
     ///
     /// # Errors
     ///
-    /// - [`Error::NotRarc`]
+    /// - [`Error::WrongKind`]
     /// - [`Error::UnusableName`]
     /// - [`Error::Corrupt`] if the archive's structure is corrupt in a way that
     ///   would misplace or lose an entry (a wrong stated size, a missing root,
     ///   more entries than it claims to hold, a file with no memory tag, a
     ///   directory tree that loops, or similar).
-    fn decode(data: &'a [u8]) -> Result<Self> {
+    fn decode_body(data: &'a [u8]) -> Result<Self> {
         unpack::unpack(data)
     }
 
@@ -216,8 +216,7 @@ mod top_header {
     use tpmt_bytes::Be32;
 
     tpmt_bytes::layout! {
-    pub struct TopHeader {
-            /// Always [`MAGIC`], the only field that identifies an archive.
+        pub struct TopHeader {
             pub magic: [u8; 4],
             pub file_size: Be32,
             pub data_header_ptr: Be32,
@@ -235,7 +234,6 @@ mod top_header {
 
     pub const LEN: usize = 0x20;
     const _: () = assert!(size_of::<TopHeader>() == LEN);
-    pub const MAGIC: &[u8; 4] = b"RARC";
 }
 
 /// What the top header points at. Every offset in it, and the file data offset

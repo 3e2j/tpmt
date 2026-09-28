@@ -19,10 +19,10 @@ use jsystem::jmessage;
 /// One row per claim, so a failing trial names the claim.
 #[rustfmt::skip]
 static CHECKS: Checks = &[
-    ("jsystem::jmessage::layout",  FileKind::Bmg, jmessage::layout),
-    ("jsystem::jmessage::id",      FileKind::Bmg, jmessage::id),
-    ("jsystem::jmessage::padding", FileKind::Bmg, jmessage::padding),
-    ("jsystem::jmessage::tags",    FileKind::Bmg, jmessage::tags),
+    ("jsystem::jmessage::layout",  FileKind::Mesg, jmessage::layout),
+    ("jsystem::jmessage::id",      FileKind::Mesg, jmessage::id),
+    ("jsystem::jmessage::padding", FileKind::Mesg, jmessage::padding),
+    ("jsystem::jmessage::tags",    FileKind::Mesg, jmessage::tags),
 ];
 
 fn main() -> ExitCode {

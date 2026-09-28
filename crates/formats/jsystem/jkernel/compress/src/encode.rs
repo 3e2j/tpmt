@@ -1,6 +1,7 @@
 //! The write path: turns raw bytes into Yaz0 data.
 
 use tpmt_bytes::{Be32, Writer};
+use tpmt_format::FileKind;
 
 use crate::header::{self, Header};
 use crate::token::backref::{Backreference, MAX_DISTANCE, MAX_LENGTH, MIN_LENGTH};
@@ -84,7 +85,7 @@ fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
 
     let mut out = Writer::with_capacity(header::LEN + input.len());
     out.record(&Header {
-        magic: *header::MAGIC,
+        magic: const { FileKind::Yaz0.field() },
         decompressed_size: Be32::new(decompressed_size),
         unnamed: [0; 8],
     });
@@ -322,7 +323,7 @@ impl Chains {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{is_yaz0, yaz0_decode};
+    use crate::yaz0_decode;
 
     /// Deterministic noise, so a failure repeats.
     fn noise(len: usize) -> Vec<u8> {
@@ -343,7 +344,7 @@ mod tests {
         for extensive in [false, true] {
             let encoded = yaz0_encode(input, extensive).unwrap();
             assert!(
-                is_yaz0(&encoded),
+                FileKind::Yaz0.matches(&encoded),
                 "encoder wrote something else entirely, extensive={extensive}"
             );
             assert_eq!(

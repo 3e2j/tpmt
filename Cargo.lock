@@ -508,6 +508,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "tpmt-bytes",
+ "tpmt-format",
 ]
 
 [[package]]

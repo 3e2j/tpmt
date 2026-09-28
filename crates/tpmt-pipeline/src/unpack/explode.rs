@@ -13,10 +13,10 @@
 //! holds the file. An archive writes it on the member's sidecar entry, the
 //! disc on `yaz0.toml`. A file never records its own.
 
-use tpmt_format::Format;
+use tpmt_format::{FileKind, Format};
 use tpmt_jkernel_arc::Archive;
 use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_jkernel_compress::{is_yaz0, yaz0_decode};
+use tpmt_jkernel_compress::yaz0_decode;
 
 use crate::{Error, Result};
 
@@ -53,7 +53,9 @@ pub fn file(
     data: &[u8],
     sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
 ) -> Result<bool> {
-    let yaz0_compressed = is_yaz0(data);
+    // On this disc the wrapper is a convention of where a file sits, not
+    // something the file itself declares, so the caller records it.
+    let yaz0_compressed = FileKind::Yaz0.matches(data);
     let unwrapped = yaz0_compressed
         .then(|| yaz0_decode(data))
         .transpose()

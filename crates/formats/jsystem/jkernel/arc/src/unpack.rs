@@ -4,7 +4,7 @@
 use tpmt_bytes::{Be32, Reader};
 
 use crate::{
-    Archive, Error, File, Format, Preload, Result,
+    Archive, Error, File, Preload, Result,
     data_header::DataHeader,
     entry::{self, Entry},
     name_hash, next_free_id,
@@ -36,10 +36,6 @@ struct ArchiveReader<'a> {
 }
 
 pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
-    if !Archive::recognises(data) {
-        return Err(Error::NotRarc);
-    }
-
     let reader = Reader::new(data);
     let top: &TopHeader = reader.view_at(0)?;
     if top.file_size.get() as usize != data.len() {
@@ -242,6 +238,7 @@ mod tests {
     use tpmt_bytes::Writer;
 
     use super::*;
+    use crate::Format;
     use crate::data_header;
     use crate::pack::{
         self,
@@ -310,7 +307,10 @@ mod tests {
 
     #[test]
     fn rejects_other_data() {
-        assert!(matches!(unpack(b"Yaz0...."), Err(Error::NotRarc)));
+        assert!(matches!(
+            Archive::decode(b"Yaz0...."),
+            Err(Error::WrongKind(_))
+        ));
     }
 
     #[test]
