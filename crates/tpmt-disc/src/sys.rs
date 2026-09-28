@@ -256,7 +256,7 @@ pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
     };
     unchanged(
         header.as_bytes(),
-        &boot_bin(&boot, &layout)?,
+        boot_bin(&boot, &layout)?.as_bytes(),
         "the boot header",
         0,
     )?;
@@ -290,7 +290,7 @@ pub fn bi2(bytes: &[u8]) -> Result<Bi2> {
     };
     unchanged(
         header.as_bytes(),
-        &bi2_bin(&bi2),
+        bi2_bin(&bi2).as_bytes(),
         "the disc metadata",
         BI2_OFFSET,
     )?;
@@ -324,7 +324,7 @@ pub struct BootLayout {
 /// Seven kept values and the magic. Everything else is a run of zeros, or a
 /// number that follows from where the layout put the three things the header
 /// points at.
-pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
+pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<BootBin> {
     let &BootLayout {
         apploader_len,
         dol_offset,
@@ -349,9 +349,7 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
         user_position: Be32::new(user),
         user_length: Be32::new(USER_AREA_END.saturating_sub(user)),
         unnamed_43c: [0; 4],
-    }
-    .as_bytes()
-    .to_vec())
+    })
 }
 
 /// A disc's own boot header with a project's values written into it.
@@ -371,7 +369,7 @@ pub fn boot_bin(boot: &Boot, layout: &BootLayout) -> Result<Vec<u8>> {
 ///   field doesn't fit its slot (a game id or maker code of the wrong
 ///   length, a title that isn't Shift-JIS, or one that overruns its 64 byte
 ///   field).
-pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
+pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<BootBin> {
     if original.len() != BootBin::LEN {
         return Err(Error::Unwritable("a boot header is 0x440 bytes"));
     }
@@ -380,9 +378,7 @@ pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<Vec<u8>> {
     Ok(BootBin {
         authored: authored(boot)?,
         ..*original
-    }
-    .as_bytes()
-    .to_vec())
+    })
 }
 
 /// The part of the header a project keeps: seven values and the magic, and the
@@ -416,7 +412,7 @@ fn authored(boot: &Boot) -> Result<Authored> {
 
 /// Writes the disc metadata back out: six fields in eight kilobytes of nothing.
 #[must_use]
-pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
+pub const fn bi2_bin(bi2: &Bi2) -> Bi2Bin {
     Bi2Bin {
         debug_monitor_size: Be32::new(0),
         simulated_memory_size: Be32::new(bi2.simulated_memory_size),
@@ -430,8 +426,6 @@ pub fn bi2_bin(bi2: &Bi2) -> Vec<u8> {
         pad_spec: Be32::new(bi2.pad_spec),
         unnamed_28: [0; 0x1FD8],
     }
-    .as_bytes()
-    .to_vec()
 }
 
 /// Encodes a text field back to the Shift-JIS the reader took it out of, and

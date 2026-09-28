@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tpmt_bytes::{Be32, Reader, Writer};
+use tpmt_bytes::{Be32, Reader};
 
 use crate::{Entry, Error, Item, Result, Span};
 
@@ -130,25 +130,17 @@ fn name_of(raw: &[u8]) -> Result<String> {
 pub struct Table {
     /// One per entry, the root first. Every file's data offset is still zero,
     /// since the layout is worked out from how long the table came to.
-    pub(crate) records: Vec<Record>,
+    pub(crate) records: Box<[Record]>,
     /// Every name but the root's, null terminated, in record order.
-    pub(crate) names: Vec<u8>,
+    pub(crate) names: Box<[u8]>,
     /// What each record past the root holds, in the same order.
-    pub(crate) slots: Vec<Slot>,
+    pub(crate) slots: Box<[Slot]>,
 }
 
 impl Table {
     /// How long the table is on disc.
     pub(crate) const fn len(&self) -> usize {
-        size_of_val(self.records.as_slice()) + self.names.len()
-    }
-
-    /// The table as the disc stores it: the records, then the names.
-    pub(crate) fn finish(&self) -> Vec<u8> {
-        let mut bytes = Writer::with_capacity(self.len());
-        bytes.bytes(tpmt_bytes::bytes_of(&self.records));
-        bytes.bytes(&self.names);
-        bytes.finish()
+        size_of_val(&*self.records) + self.names.len()
     }
 }
 
@@ -208,7 +200,7 @@ pub fn build(items: &[&Item]) -> Result<Table> {
     // everything under it has been laid down.
     let mut nodes = vec![Node {
         path: String::new(),
-        name: Vec::new(),
+        name: &[],
         name_field: [0; 3],
         kind: Kind::Directory { parent: 0, end: 0 },
     }];
@@ -239,7 +231,7 @@ pub fn build(items: &[&Item]) -> Result<Table> {
 }
 
 /// Lays the nodes out: the array, then the names in the same order.
-fn emit(nodes: Vec<Node>) -> Table {
+fn emit(nodes: Vec<Node<'_>>) -> Table {
     let pool: usize = nodes.iter().skip(1).map(|node| node.name.len() + 1).sum();
     let mut records = Vec::with_capacity(nodes.len());
     let mut names = Vec::with_capacity(pool);
@@ -275,24 +267,24 @@ fn emit(nodes: Vec<Node>) -> Table {
         // opens with the first entry's name, which is what the root's own
         // offset of 0 lands on.
         if index > 0 {
-            names.extend_from_slice(&node.name);
+            names.extend_from_slice(node.name);
             names.push(0);
             slots.push(slot);
         }
     }
     Table {
-        records,
-        names,
-        slots,
+        records: records.into_boxed_slice(),
+        names: names.into_boxed_slice(),
+        slots: slots.into_boxed_slice(),
     }
 }
 
 /// Walks one directory, appending its contents and then whatever they hold.
 fn push<'a>(
-    children: &HashMap<&'a str, Vec<Child<'a>>>,
+    children: &'a HashMap<&'a str, Vec<Child<'a>>>,
     directory: &'a str,
     parent: u32,
-    nodes: &mut Vec<Node>,
+    nodes: &mut Vec<Node<'a>>,
     pool: &mut u32,
     walked: &mut HashSet<&'a str>,
 ) -> Result<()> {
@@ -317,7 +309,7 @@ fn push<'a>(
             Item::Directory { path } => {
                 nodes.push(Node {
                     path: path.clone(),
-                    name: child.name.clone(),
+                    name: &child.name,
                     name_field,
                     kind: Kind::Directory { parent, end: 0 },
                 });
@@ -336,7 +328,7 @@ fn push<'a>(
             }
             Item::File { path, size } => nodes.push(Node {
                 path: path.clone(),
-                name: child.name.clone(),
+                name: &child.name,
                 name_field,
                 // Sizes are checked against the end of the user area before a
                 // table is ever built, so none of them is wider than a field.
@@ -377,9 +369,9 @@ struct Child<'a> {
 
 /// One node on its way into the table, before it has an index or a place on
 /// the disc.
-struct Node {
+struct Node<'a> {
     path: String,
-    name: Vec<u8>,
+    name: &'a [u8],
     name_field: [u8; 3],
     kind: Kind,
 }

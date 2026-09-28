@@ -27,7 +27,7 @@ pub struct Map {
     block_size: u64,
     /// For each block of the image, its position in the file counted in blocks
     /// after the header, or `None` if it was not stored.
-    blocks: Vec<Option<u64>>,
+    blocks: Box<[Option<u64>]>,
 }
 
 impl Map {
@@ -47,24 +47,28 @@ impl Map {
         let block_size = u64::from(block_size);
 
         // One byte per block, saying only whether it is there.
-        let mut blocks = Vec::new();
-        let mut stored = 0;
-        for &used in reader.slice_at(MAP_OFFSET, MAP_LEN)? {
+        // The map is a fixed size whatever the image is, so the image ends after
+        // the last block anybody stored.
+        let map = reader.slice_at(MAP_OFFSET, MAP_LEN)?;
+        let mut len = 0;
+        for (end, &used) in (1..).zip(map) {
             match used {
-                UNUSED => blocks.push(None),
-                USED => {
-                    blocks.push(Some(stored));
-                    stored += 1;
-                }
+                UNUSED => {}
+                USED => len = end,
                 _ => return Err(Error::CorruptHeader("the block map is not a block map")),
             }
         }
 
-        // The map is a fixed size whatever the image is, so the image ends after
-        // the last block anybody stored.
-        while blocks.last() == Some(&None) {
-            blocks.pop();
-        }
+        let mut stored = 0;
+        let blocks = map[..len]
+            .iter()
+            .map(|&used| {
+                (used == USED).then(|| {
+                    stored += 1;
+                    stored - 1
+                })
+            })
+            .collect();
 
         if HEADER_LEN + stored * block_size > file_len {
             return Err(Error::CorruptHeader("the container is missing blocks"));

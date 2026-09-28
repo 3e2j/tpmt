@@ -41,11 +41,11 @@ enum Child {
 struct DirTree {
     dirs: Vec<Dir>,
     /// The directories in node order, so `order[node]` is a directory index.
-    order: Vec<usize>,
+    order: Box<[usize]>,
     /// The same thing the other way round: `node_of[dir]` is a node number.
-    node_of: Vec<u32>,
+    node_of: Box<[u32]>,
     /// Where each node's run of entries begins.
-    first_entry: Vec<u32>,
+    first_entry: Box<[u32]>,
     /// Every entry the archive will hold, each directory's `.` and `..` included.
     entry_count: usize,
 }
@@ -61,7 +61,7 @@ impl DirTree {
         // archive, but nothing forces a caller's list to, so the order is
         // walked out properly here.
         let mut order = Vec::with_capacity(dirs.len());
-        let mut node_of = vec![0u32; dirs.len()];
+        let mut node_of = vec![0u32; dirs.len()].into_boxed_slice();
         let mut stack = vec![0];
         while let Some(dir) = stack.pop() {
             node_of[dir] = u32::try_from(order.len()).map_err(|_| Error::Oversized)?;
@@ -85,9 +85,9 @@ impl DirTree {
 
         Ok(Self {
             dirs,
-            order,
+            order: order.into_boxed_slice(),
             node_of,
-            first_entry,
+            first_entry: first_entry.into_boxed_slice(),
             entry_count,
         })
     }
@@ -189,9 +189,9 @@ pub fn pack(archive: &Archive) -> Result<Vec<u8>> {
 /// it goes out under.
 struct Placement {
     /// The id each file goes out under, by its place in the caller's list.
-    ids: Vec<u16>,
+    ids: Box<[u16]>,
     /// Where each file's bytes land in the data section, same indexing.
-    offsets: Vec<u32>,
+    offsets: Box<[u32]>,
     /// Whether every file's id came out equal to its entry index.
     synced: bool,
     /// The whole data section, padding included.
@@ -229,8 +229,8 @@ struct Placement {
 fn place_files(archive: &Archive, tree: &DirTree) -> Result<Placement> {
     // Placeholder values: the loop below fills in every slot for real, one per
     // file, before anything reads these back.
-    let mut ids = vec![Entry::NO_ID; archive.files.len()];
-    let mut offsets = vec![0u32; archive.files.len()];
+    let mut ids = vec![Entry::NO_ID; archive.files.len()].into_boxed_slice();
+    let mut offsets = vec![0u32; archive.files.len()].into_boxed_slice();
     let mut synced = true;
     let mut data_size: usize = 0;
     let mut mram: usize = 0;
@@ -295,13 +295,13 @@ fn place_files(archive: &Archive, tree: &DirTree) -> Result<Placement> {
 struct StringPool {
     bytes: Vec<u8>,
     /// Where each directory's name landed, by directory index.
-    dir_name_ats: Vec<u32>,
+    dir_name_ats: Box<[u32]>,
     /// Where each file's name landed and what it hashes to, by its place in
     /// the caller's list. The hash rides along because this is where the name
     /// gets encoded, and the entry pass would otherwise have to encode it
     /// again just to hash it. A directory already keeps its encoded name, so
     /// there is nothing to carry for one.
-    file_name_ats: Vec<(u32, u16)>,
+    file_name_ats: Box<[(u32, u16)]>,
 }
 
 /// Builds the pool: `.` and `..` once at the front, then, in node order, each
@@ -319,8 +319,8 @@ fn build_string_pool(archive: &Archive, tree: &DirTree) -> Result<StringPool> {
         Ok(at)
     };
 
-    let mut dir_name_ats = vec![0u32; tree.dirs.len()];
-    let mut file_name_ats = vec![(0u32, 0u16); archive.files.len()];
+    let mut dir_name_ats = vec![0u32; tree.dirs.len()].into_boxed_slice();
+    let mut file_name_ats = vec![(0u32, 0u16); archive.files.len()].into_boxed_slice();
     for &dir in &tree.order {
         dir_name_ats[dir] = name_at(&mut pool, &tree.dirs[dir].name)?;
         for child in &tree.dirs[dir].children {

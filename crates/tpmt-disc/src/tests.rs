@@ -688,11 +688,11 @@ fn the_preamble_is_written_the_way_it_was_read() {
         },
     )
     .unwrap();
-    assert_eq!(boot, data[..sys::BootBin::LEN]);
+    assert_eq!(boot.as_bytes(), &data[..sys::BootBin::LEN]);
 
     let bi2 = sys::bi2_bin(&metadata.bi2);
     let at = index(sys::BI2_OFFSET);
-    assert_eq!(bi2, data[at..at + sys::Bi2Bin::LEN]);
+    assert_eq!(bi2.as_bytes(), &data[at..at + sys::Bi2Bin::LEN]);
 }
 
 /// The whole point of the writer: what goes on comes back off. Nothing about

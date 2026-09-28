@@ -217,15 +217,15 @@ const NO_POSITION: u32 = u32::MAX;
 /// prefix (a long run, a short repeat), the chain holds all of it, and the
 /// walk is back to O([`MAX_DISTANCE`]) per position.
 ///
-/// Flat `Vec`s, not `HashMap`: `head` is the bucket lookup, a collision
+/// Flat tables, not `HashMap`: `head` is the bucket lookup, a collision
 /// just costs one wasted byte comparison in `longest_match`, never a wrong
 /// match, and `prev` threads every position sharing a bucket, not just the
 /// newest. Both are sized once up front, no per-position allocation.
 struct Chains {
     /// Newest position filed under each prefix.
-    head: Vec<u32>,
+    head: Box<[u32]>,
     /// Previous position sharing a position's prefix.
-    prev: Vec<u32>,
+    prev: Box<[u32]>,
     /// First position not yet filed. Positions go in in order and once each.
     unfiled: u32,
     /// The chain within the window, reused so the search does not allocate
@@ -236,8 +236,11 @@ struct Chains {
 impl Chains {
     fn new(len: u32) -> Self {
         Self {
-            head: vec![NO_POSITION; HASH_SIZE],
-            prev: vec![NO_POSITION; len as usize],
+            head: vec![NO_POSITION; HASH_SIZE].into_boxed_slice(),
+            // Every slot is written when its position is filed, before
+            // anything reads it, so zeroed memory skips writing `NO_POSITION`
+            // into all `len` slots up front.
+            prev: vec![0; len as usize].into_boxed_slice(),
             unfiled: 0,
             in_window: Vec::with_capacity(MAX_DISTANCE as usize),
         }

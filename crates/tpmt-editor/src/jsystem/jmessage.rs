@@ -56,7 +56,7 @@ pub enum MessageChange {
     },
     /// The attributes whole, for records [`Field`]s don't describe or bytes
     /// none of them cover.
-    Attributes(Vec<u8>),
+    Attributes(Box<[u8]>),
     /// In a file with a MID1, also rewrites the copy of the id in the
     /// attributes.
     PublicId(u16),
@@ -422,7 +422,7 @@ impl BmgDocument {
     fn set_attributes(
         &mut self,
         message: MessageId,
-        mut attributes: Vec<u8>,
+        mut attributes: Box<[u8]>,
     ) -> Result<MessageChange, EditError> {
         let public_id = self
             .message(message)
@@ -775,16 +775,19 @@ mod tests {
     const EDITION: Edition = Edition::default_language(Version::GcnUsa);
 
     fn message(id: u32, text: &[u8]) -> Message {
+        let public_id = u16::try_from(id).unwrap();
+        let mut attributes = [0; 16];
+        attributes[..2].copy_from_slice(&public_id.to_be_bytes());
         Message {
-            public_id: u16::try_from(id).unwrap(),
+            public_id,
             id: MessageId(id),
-            attributes: [&u16::try_from(id).unwrap().to_be_bytes()[..], &[0; 14]].concat(),
-            text: vec![TextSegment::Text(text.to_vec())],
+            attributes: Box::new(attributes),
+            text: vec![TextSegment::Text(text.into())],
         }
     }
 
     fn text(text: &[u8]) -> Vec<TextSegment> {
-        vec![TextSegment::Text(text.to_vec())]
+        vec![TextSegment::Text(text.into())]
     }
 
     fn field(offset: usize) -> Field {
@@ -848,7 +851,7 @@ mod tests {
                 messages: vec![Message {
                     public_id: 0,
                     id: MessageId(0),
-                    attributes: vec![0; attributes],
+                    attributes: vec![0; attributes].into(),
                     text: Vec::new(),
                 }],
                 flow: None,
@@ -925,7 +928,7 @@ mod tests {
                 EditError::DuplicateMessage(MessageId(1)),
             ),
             (
-                set_message(MessageId(0), MessageChange::Attributes(vec![0; 3])),
+                set_message(MessageId(0), MessageChange::Attributes(Box::new([0; 3]))),
                 EditError::AttributeWidth {
                     expected: 16,
                     actual: 3,

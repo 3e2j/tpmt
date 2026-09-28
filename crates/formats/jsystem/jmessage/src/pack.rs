@@ -100,8 +100,8 @@ mod tests {
             messages: vec![Message {
                 public_id: 5,
                 id: MessageId(0),
-                attributes: vec![0, 5],
-                text: vec![TextSegment::Text(b"Hi".to_vec())],
+                attributes: Box::new([0, 5]),
+                text: vec![TextSegment::Text(Box::new(*b"Hi"))],
             }],
             flow: Some(Flow {
                 nodes: vec![Node::Text {

@@ -27,12 +27,12 @@ pub struct MessageId(pub u32);
 /// reads it, and its opener and length byte are worked out again on write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextSegment {
-    Text(Vec<u8>),
+    Text(Box<[u8]>),
     /// One escape sequence. What the group and code mean is game data.
     Tag {
         group: u8,
         code: u16,
-        args: Vec<u8>,
+        args: Box<[u8]>,
     },
 }
 
@@ -56,7 +56,7 @@ pub struct Message {
     pub id: MessageId,
     /// The attributes as stored: animation, sound, box style and the rest of it.
     /// Which byte is which is game data, so it stays raw here.
-    pub attributes: Vec<u8>,
+    pub attributes: Box<[u8]>,
     pub text: Vec<TextSegment>,
 }
 
@@ -180,7 +180,7 @@ pub fn read(
     for (id, record) in (0..).zip(records.chunks_exact(record_len as usize)) {
         let mut record = Reader::new(record);
         let dat_offset = record.u32()? as usize;
-        let attributes = record.take(attributes_len as usize)?.to_vec();
+        let attributes = record.take(attributes_len as usize)?.into();
 
         let public_id = match ids {
             Some(ids) => u16::try_from(ids[id as usize].get())
@@ -221,13 +221,13 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
         match byte {
             0x00 => {
                 if i > text_start {
-                    segments.push(TextSegment::Text(dat1[text_start..i].to_vec()));
+                    segments.push(TextSegment::Text(dat1[text_start..i].into()));
                 }
                 return Ok(segments);
             }
             TAG_OPENER => {
                 if i > text_start {
-                    segments.push(TextSegment::Text(dat1[text_start..i].to_vec()));
+                    segments.push(TextSegment::Text(dat1[text_start..i].into()));
                 }
                 let len = *dat1
                     .get(i + 1)
@@ -245,7 +245,7 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
                 segments.push(TextSegment::Tag {
                     group: *group,
                     code: u16::from_be_bytes([*high, *low]),
-                    args: args.to_vec(),
+                    args: args.into(),
                 });
                 i = end;
                 text_start = end;
@@ -401,13 +401,13 @@ mod tests {
         assert_eq!(
             segments,
             vec![
-                TextSegment::Text(b"Hi ".to_vec()),
+                TextSegment::Text(Box::new(*b"Hi ")),
                 TextSegment::Tag {
                     group: 0x01,
                     code: 0x0002,
-                    args: vec![0xAA],
+                    args: Box::new([0xAA]),
                 },
-                TextSegment::Text(b" there".to_vec()),
+                TextSegment::Text(Box::new(*b" there")),
             ]
         );
     }
@@ -425,12 +425,12 @@ mod tests {
                 TextSegment::Tag {
                     group: 0,
                     code: 0xAA,
-                    args: vec![],
+                    args: Box::new([]),
                 },
                 TextSegment::Tag {
                     group: 0,
                     code: 0xBB,
-                    args: vec![],
+                    args: Box::new([]),
                 },
             ]
         );
@@ -545,11 +545,11 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].id, MessageId(0));
         assert_eq!(messages[0].public_id, 0);
-        assert_eq!(messages[0].attributes, [0xAA, 0xBB]);
-        assert_eq!(messages[0].text, [TextSegment::Text(b"Hi".to_vec())]);
+        assert_eq!(*messages[0].attributes, [0xAA, 0xBB]);
+        assert_eq!(messages[0].text, [TextSegment::Text(Box::new(*b"Hi"))]);
         assert_eq!(messages[1].id, MessageId(1));
-        assert_eq!(messages[1].attributes, [0xCC, 0xDD]);
-        assert_eq!(messages[1].text, [TextSegment::Text(b"Yo".to_vec())]);
+        assert_eq!(*messages[1].attributes, [0xCC, 0xDD]);
+        assert_eq!(messages[1].text, [TextSegment::Text(Box::new(*b"Yo"))]);
     }
 
     /// An id comes out of its MID1 entry whole, not masked to the entry's
@@ -580,7 +580,7 @@ mod tests {
         mid1.extend(5u32.to_be_bytes());
         let (messages, _, _) = read(&inf1, b"Hi\0", Some(&mid1)).unwrap();
         assert_eq!(messages[0].public_id, 5);
-        assert_eq!(messages[0].attributes, [0x00, 0x06]);
+        assert_eq!(*messages[0].attributes, [0x00, 0x06]);
 
         let mut narrow = inf1_header(1, 4);
         narrow.extend(record(0, &[]));
@@ -610,14 +610,14 @@ mod tests {
         Message {
             public_id,
             id: MessageId(id),
-            attributes: attributes.to_vec(),
+            attributes: attributes.into(),
             text: text.to_vec(),
         }
     }
 
     fn sample() -> Vec<Message> {
         vec![
-            message(0, 5, &[0x00, 0x05], &[TextSegment::Text(b"Hi".to_vec())]),
+            message(0, 5, &[0x00, 0x05], &[TextSegment::Text(Box::new(*b"Hi"))]),
             message(
                 1,
                 10,
@@ -626,9 +626,9 @@ mod tests {
                     TextSegment::Tag {
                         group: 0x01,
                         code: 0x0002,
-                        args: vec![],
+                        args: Box::new([]),
                     },
-                    TextSegment::Text(b"Yo".to_vec()),
+                    TextSegment::Text(Box::new(*b"Yo")),
                 ],
             ),
         ]
@@ -704,7 +704,7 @@ mod tests {
     /// The run would be read back ending at the terminator.
     #[test]
     fn a_text_run_holding_a_terminator_is_unwritable() {
-        let terminator = [message(0, 0, &[], &[TextSegment::Text(b"a\0b".to_vec())])];
+        let terminator = [message(0, 0, &[], &[TextSegment::Text(Box::new(*b"a\0b"))])];
         assert!(matches!(
             write(&terminator, 4, None),
             Err(Error::Unwritable(_))
@@ -721,7 +721,7 @@ mod tests {
                 &[TextSegment::Tag {
                     group: 0,
                     code: 0,
-                    args: vec![0; len],
+                    args: vec![0; len].into(),
                 }],
             )]
         };

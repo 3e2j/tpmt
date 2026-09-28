@@ -17,16 +17,20 @@
 use std::io::Write;
 
 use sha1::{Digest, Sha1};
-use tpmt_bytes::Be32;
+use tpmt_bytes::{Be32, Layout as _};
 
 use crate::{Entry, Error, Item, Metadata, Result, Span, fst, sys};
 
 /// A disc laid out but not yet written.
 pub struct Layout {
     entries: Vec<Entry>,
-    /// The three pieces nobody hands over, each at the offset it goes to: the
-    /// boot header, the disc metadata, and the file table.
-    generated: Vec<(u64, Vec<u8>)>,
+    /// The pieces nobody hands over: the boot header, the disc metadata, and
+    /// the file table's records and names, which the disc stores back to back.
+    boot: sys::BootBin,
+    bi2: sys::Bi2Bin,
+    records: Box<[fst::Record]>,
+    names: Box<[u8]>,
+    fst_offset: u64,
     len: u64,
 }
 
@@ -75,7 +79,7 @@ impl Layout {
             return Err(Error::TooLarge { len: total, end });
         }
 
-        let mut fst = fst::build(&files)?;
+        let fst = fst::build(&files)?;
         let dol_offset = (sys::APPLOADER_OFFSET + apploader).next_multiple_of(sys::PREAMBLE_ALIGN);
         let fst_offset = (dol_offset + dol).next_multiple_of(sys::PREAMBLE_ALIGN);
         let fst_len = fst.len() as u64;
@@ -116,7 +120,12 @@ impl Layout {
         let mut last = at;
 
         // The root's record has no slot, so the rest pair up in order.
-        for (slot, record) in fst.slots.drain(..).zip(fst.records.iter_mut().skip(1)) {
+        let fst::Table {
+            mut records,
+            names,
+            slots,
+        } = fst;
+        for (slot, record) in slots.into_iter().zip(records.iter_mut().skip(1)) {
             entries.push(match slot {
                 fst::Slot::Directory { path } => Entry::Directory { path },
                 fst::Slot::File { path, size } => {
@@ -153,11 +162,11 @@ impl Layout {
         )?;
         Ok(Self {
             entries,
-            generated: vec![
-                (0, boot),
-                (sys::BI2_OFFSET, sys::bi2_bin(&metadata.bi2)),
-                (fst_offset, fst.finish()),
-            ],
+            boot,
+            bi2: sys::bi2_bin(&metadata.bi2),
+            records,
+            names,
+            fst_offset,
             len: last,
         })
     }
@@ -170,6 +179,18 @@ impl Layout {
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// The pieces nobody hands over, each at the offset it goes to, in disc
+    /// order.
+    fn generated(&self) -> [(u64, &[u8]); 4] {
+        let records = tpmt_bytes::bytes_of(&self.records);
+        [
+            (0, self.boot.as_bytes()),
+            (sys::BI2_OFFSET, self.bi2.as_bytes()),
+            (self.fst_offset, records),
+            (self.fst_offset + records.len() as u64, &self.names),
+        ]
     }
 
     /// How long the image comes out.
@@ -291,12 +312,12 @@ impl<W: Write> Image<'_, W> {
     /// Runs the image up to a position, laying down whatever the layout put in
     /// between and zeros over the rest.
     fn pad_to(&mut self, offset: u64) -> Result<()> {
-        let layout = self.layout;
-        while let Some((at, bytes)) = layout.generated.get(self.generated) {
-            if *at >= offset {
+        let generated = self.layout.generated();
+        while let Some(&(at, bytes)) = generated.get(self.generated) {
+            if at >= offset {
                 break;
             }
-            self.zeros(*at)?;
+            self.zeros(at)?;
             self.generated += 1;
             self.put(bytes)?;
         }
