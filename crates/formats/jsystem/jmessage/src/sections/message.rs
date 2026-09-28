@@ -107,6 +107,33 @@ mod mid1_offsets {
     // 0x04, 4 bytes: padding.
 }
 
+/// MID1's byte at [`mid1_offsets::ORDERED_FORM`], two nibbles in one `u8`:
+/// `ordered` high, `form` low.
+#[derive(Debug, Clone, Copy)]
+struct OrderedForm(u8);
+
+impl OrderedForm {
+    const ORDERED_MASK: u8 = 0xF0;
+    const FORM_MASK: u8 = 0x0F;
+
+    const fn new(ordered: bool, form: u8) -> Result<Self> {
+        if form & !Self::FORM_MASK != 0 {
+            return Err(Error::Unwritable("a MID1 form does not fit its nibble"));
+        }
+        Ok(Self(
+            (ordered as u8) << Self::ORDERED_MASK.trailing_zeros() | form,
+        ))
+    }
+
+    const fn ordered(self) -> bool {
+        self.0 & Self::ORDERED_MASK != 0
+    }
+
+    const fn form(self) -> u8 {
+        self.0 & Self::FORM_MASK
+    }
+}
+
 /// The text offset at the front of every INF1 record, which
 /// [`Message::attributes`] leaves out.
 pub const TEXT_OFFSET_LEN: u16 = 4;
@@ -223,10 +250,9 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
 /// What MID1 says about its ids, as against the ids themselves, which are
 /// what the `ordered` bit is checked against.
 fn read_mid1(mid1: &Reader<'_>, messages: &[Message]) -> Result<Mid1Header> {
-    let byte = mid1.u8_at(mid1_offsets::ORDERED_FORM)?;
+    let packed = OrderedForm(mid1.u8_at(mid1_offsets::ORDERED_FORM)?);
     let shift_bytes = mid1.u8_at(mid1_offsets::SHIFT_BYTES)?;
-    // `ordered` high nibble
-    if byte & 0xF0 != 0 && !sorted(messages) {
+    if packed.ordered() && !sorted(messages) {
         return Err(Error::Corrupt(
             "a MID1 header claims its ids are sorted, and they are not",
         ));
@@ -243,7 +269,7 @@ fn read_mid1(mid1: &Reader<'_>, messages: &[Message]) -> Result<Mid1Header> {
         ));
     }
     Ok(Mid1Header {
-        form: byte & 0x0F,
+        form: packed.form(),
         shift_bytes,
     })
 }
@@ -335,16 +361,11 @@ fn write_mid1(header: Mid1Header, messages: &[Message]) -> Result<Vec<u8>> {
             "a MID1 header packs a second id into the message id, which is unsupported",
         ));
     }
-    if header.form > 0x0F {
-        return Err(Error::Unwritable("a MID1 form does not fit its nibble"));
-    }
+    let packed = OrderedForm::new(sorted(messages), header.form)?;
     let mut out = Writer::with_capacity(mid1_offsets::LEN + messages.len() * 4);
     out.zeros(mid1_offsets::LEN);
     out.u16_at(mid1_offsets::COUNT, count(messages)?);
-    out.u8_at(
-        mid1_offsets::ORDERED_FORM,
-        u8::from(sorted(messages)) << 4 | header.form,
-    );
+    out.u8_at(mid1_offsets::ORDERED_FORM, packed.0);
     out.u8_at(mid1_offsets::SHIFT_BYTES, header.shift_bytes);
     for message in messages {
         out.u32(message.public_id as u32);
