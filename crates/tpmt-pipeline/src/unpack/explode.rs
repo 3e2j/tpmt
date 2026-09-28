@@ -20,9 +20,11 @@ use tpmt_jkernel_compress::yaz0_decode;
 
 use crate::{Error, Result};
 
-/// What went wrong decoding one file, without where. [`Error::Decode`] adds
-/// the path, attached here at the innermost point so a member of a nested
-/// archive names itself rather than the disc file it came in.
+/// What went wrong decoding one file, without where.
+///
+/// [`Error::Decode`] adds the path, attached here at the innermost point so a
+/// member of a nested archive names itself rather than the disc file it came
+/// in.
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     #[error(transparent)]
