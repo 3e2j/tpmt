@@ -205,9 +205,7 @@ pub fn read_formats(project: &Path) -> Result<Formats> {
 
 /// The digest `hashes.toml` records per project file.
 pub fn sha1_hex(data: &[u8]) -> String {
-    let mut hasher = Sha1::new();
-    hasher.update(data);
-    format!("{:x}", hasher.finalize())
+    hex(Sha1::digest(data))
 }
 
 /// [`sha1_hex`] of a file, streamed rather than read whole. Status hashes
@@ -216,7 +214,11 @@ pub fn sha1_file(path: &Path) -> Result<String> {
     let file = std::fs::File::open(path).map_err(io_at(path))?;
     let mut hasher = Sha1::new();
     std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(io_at(path))?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex(hasher.finalize()))
+}
+
+fn hex(digest: sha1::digest::Output<Sha1>) -> String {
+    format!("{digest:x}")
 }
 
 /// The digest `source.toml` records for the disc, reported as
