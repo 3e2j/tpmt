@@ -19,8 +19,10 @@ tpmt_bytes::layout! {
     /// either side of the directory flag: a file's data offset and length, or
     /// a directory's parent index and the index its subtree ends at.
     pub struct Record {
-        /// Flags in the top byte, the name's pool offset in the low three.
-        pub flags_and_name: Be32,
+        /// Nonzero for a directory.
+        pub flags: u8,
+        /// The name's pool offset, a 24-bit big-endian number.
+        pub name: [u8; 3],
         pub offset_or_parent: Be32,
         pub end_or_size: Be32,
     }
@@ -28,19 +30,26 @@ tpmt_bytes::layout! {
 
 impl Record {
     const fn is_directory(&self) -> bool {
-        self.flags_and_name.get() & DIRECTORY_FLAG != 0
+        self.flags != 0
     }
 
     const fn name_offset(&self) -> u32 {
-        self.flags_and_name.get() & NAME_MASK
+        let [high, mid, low] = self.name;
+        u32::from_be_bytes([0, high, mid, low])
     }
 }
 
-pub const DIRECTORY_FLAG: u32 = 0xFF00_0000;
-pub const NAME_MASK: u32 = 0x00FF_FFFF;
+/// A pool offset as a record's name field holds it, if it fits in 24 bits.
+pub const fn name_field(offset: u32) -> Option<[u8; 3]> {
+    match offset.to_be_bytes() {
+        [0, high, mid, low] => Some([high, mid, low]),
+        _ => None,
+    }
+}
+
 /// What the mastering put in a directory's flag byte. The reader takes any
 /// nonzero one, a writer has to pick.
-const DIRECTORY_TYPE: u32 = 0x0100_0000;
+pub const DIRECTORY_TYPE: u8 = 0x01;
 
 /// The project directory the file table covers.
 pub const ROOT: &str = "files";
@@ -200,7 +209,7 @@ pub fn build(items: &[&Item]) -> Result<Table> {
     let mut nodes = vec![Node {
         path: String::new(),
         name: Vec::new(),
-        name_offset: 0,
+        name_field: [0; 3],
         kind: Kind::Directory { parent: 0, end: 0 },
     }];
     let mut pool = 0;
@@ -240,7 +249,8 @@ fn emit(nodes: Vec<Node>) -> Table {
         let slot = match node.kind {
             Kind::Directory { parent, end } => {
                 records.push(Record {
-                    flags_and_name: Be32::new(DIRECTORY_TYPE | node.name_offset),
+                    flags: DIRECTORY_TYPE,
+                    name: node.name_field,
                     offset_or_parent: Be32::new(parent),
                     end_or_size: Be32::new(end),
                 });
@@ -248,7 +258,8 @@ fn emit(nodes: Vec<Node>) -> Table {
             }
             Kind::File { size } => {
                 records.push(Record {
-                    flags_and_name: Be32::new(node.name_offset),
+                    flags: 0,
+                    name: node.name_field,
                     offset_or_parent: Be32::new(0),
                     end_or_size: Be32::new(size),
                 });
@@ -293,10 +304,7 @@ fn push<'a>(
     for child in siblings {
         // The name's position in the pool shares a word with the flag byte, so
         // there is a limit to how much of it a table can address.
-        let name_offset = *pool;
-        if name_offset > NAME_MASK {
-            return Err(Error::TooManyNames);
-        }
+        let name_field = name_field(*pool).ok_or(Error::TooManyNames)?;
         // A single name reaching anywhere near u32::MAX bytes isn't something
         // any real path component does.
         #[allow(clippy::cast_possible_truncation)]
@@ -310,7 +318,7 @@ fn push<'a>(
                 nodes.push(Node {
                     path: path.clone(),
                     name: child.name.clone(),
-                    name_offset,
+                    name_field,
                     kind: Kind::Directory { parent, end: 0 },
                 });
                 // Same reasoning as above: a node index or subtree end
@@ -329,7 +337,7 @@ fn push<'a>(
             Item::File { path, size } => nodes.push(Node {
                 path: path.clone(),
                 name: child.name.clone(),
-                name_offset,
+                name_field,
                 // Sizes are checked against the end of the user area before a
                 // table is ever built, so none of them is wider than a field.
                 #[allow(clippy::cast_possible_truncation)]
@@ -372,7 +380,7 @@ struct Child<'a> {
 struct Node {
     path: String,
     name: Vec<u8>,
-    name_offset: u32,
+    name_field: [u8; 3],
     kind: Kind,
 }
 

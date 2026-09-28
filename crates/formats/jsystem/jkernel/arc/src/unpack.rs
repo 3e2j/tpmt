@@ -127,9 +127,8 @@ impl<'a> ArchiveReader<'a> {
             };
 
             let record = &self.entries[index];
-            let flags_and_name = record.flags_and_name.get();
-            let flags = flags_and_name >> Entry::FLAGS_SHIFT;
-            let name = self.name(flags_and_name & Entry::NAME_MASK, record.name_hash.get())?;
+            let flags = record.flags;
+            let name = self.name(record.name_offset(), record.name_hash.get())?;
 
             // Every directory carries a `.` entry pointing at itself and a
             // `..` pointing at its parent, the only link back up.
@@ -413,9 +412,7 @@ mod tests {
     #[test]
     fn rejects_a_file_marked_for_no_memory() {
         let mut data = archive();
-        let name = entry(&mut data, 0).flags_and_name.get() & Entry::NAME_MASK;
-        entry(&mut data, 0).flags_and_name =
-            Be32::new(Entry::FLAG_FILE << Entry::FLAGS_SHIFT | name);
+        entry(&mut data, 0).flags = Entry::FLAG_FILE;
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 

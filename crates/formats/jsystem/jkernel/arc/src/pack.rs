@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use tpmt_bytes::{Be16, Be32, Flag, Layout, Writer};
 
 use crate::{
-    Archive, DataHeader, Entry, Error, FileKind, Node, Preload, Result, TopHeader, name_hash,
-    next_free_id,
+    Archive, DataHeader, Entry, Error, FileKind, Node, Preload, Result, TopHeader, name_field,
+    name_hash, next_free_id,
 };
 
 // The string pool opens with `.` and `..`, in that order, so the offset
@@ -313,10 +313,7 @@ fn build_string_pool(archive: &Archive, tree: &DirTree) -> Result<StringPool> {
     let mut pool = Writer::new();
     pool.bytes(b".\0..\0"); // The two `DOT_IN_STRING_POOL` and `DOTDOT_IN_STRING_POOL` point at.
     let name_at = |pool: &mut Writer, name: &[u8]| -> Result<u32> {
-        let at = u32::try_from(pool.len())
-            .ok()
-            .filter(|&at| at <= Entry::NAME_MASK)
-            .ok_or(Error::Oversized)?;
+        let at = u32::try_from(pool.len()).map_err(|_| Error::Oversized)?;
         pool.bytes(name);
         pool.u8(0);
         Ok(at)
@@ -452,7 +449,7 @@ fn write_entries(
                         &tree.dirs[*sub].name,
                         string_pool.dir_name_ats[*sub],
                         tree.node_of[*sub],
-                    );
+                    )?;
                 }
                 Child::File(index) => {
                     let file = &archive.files[*index];
@@ -479,12 +476,12 @@ fn write_entries(
             b".",
             DOT_IN_STRING_POOL,
             u32::try_from(node).map_err(|_| Error::Oversized)?,
-        );
+        )?;
         let parent = match node {
             0 => u32::MAX,
             _ => tree.node_of[tree.dirs[dir].parent],
         };
-        dir_entry(out, b"..", DOTDOT_IN_STRING_POOL, parent);
+        dir_entry(out, b"..", DOTDOT_IN_STRING_POOL, parent)?;
     }
     out.align(ALIGN);
     Ok(())
@@ -504,15 +501,17 @@ fn write_file_data(out: &mut Writer, archive: &Archive, tree: &DirTree) {
 /// rather than at the data section. `name` is what the pool holds at
 /// `name_at`, and is only needed for its hash. Directories share the id that
 /// is no id.
-fn dir_entry(out: &mut Writer, name: &[u8], name_at: u32, node: u32) {
+fn dir_entry(out: &mut Writer, name: &[u8], name_at: u32, node: u32) -> Result<()> {
     out.record(&Entry {
         id: Be16::new(Entry::NO_ID),
         name_hash: Be16::new(name_hash(name)),
-        flags_and_name: Be32::new(Entry::FLAG_DIRECTORY << Entry::FLAGS_SHIFT | name_at),
+        flags: Entry::FLAG_DIRECTORY,
+        name: name_field(name_at).ok_or(Error::Oversized)?,
         data_or_node: Be32::new(node),
         data_size: Be32::new(Entry::DIRECTORY_SIZE),
         unnamed: [0; 4],
     });
+    Ok(())
 }
 
 /// The four fields a file's entry states about itself that nothing else on
@@ -545,7 +544,8 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
     out.record(&Entry {
         id: Be16::new(entry.id),
         name_hash: Be16::new(entry.hash),
-        flags_and_name: Be32::new(flags << Entry::FLAGS_SHIFT | entry.name_at),
+        flags,
+        name: name_field(entry.name_at).ok_or(Error::Oversized)?,
         data_or_node: Be32::new(entry.offset),
         data_size: Be32::new(size),
         unnamed: [0; 4],
@@ -567,8 +567,6 @@ fn encode(name: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 pub mod tests {
-    use std::mem::offset_of;
-
     use tpmt_bytes::Reader;
 
     use super::*;
@@ -664,18 +662,19 @@ pub mod tests {
             let record: &Entry = r.view_at(ENTRIES + index * Entry::LEN).unwrap();
             (
                 record.id.get(),
-                record.flags_and_name.get(),
+                record.flags,
+                record.name_offset(),
                 record.data_or_node.get(),
                 record.data_size.get(),
             )
         };
-        assert_eq!(entry(0), (0, 0x11 << 24 | 0x0A, 0, 5));
-        assert_eq!(entry(1), (0xFFFF, 0x02 << 24 | 16, 1, 0x10));
-        assert_eq!(entry(2), (0xFFFF, 0x02 << 24, 0, 0x10));
-        assert_eq!(entry(3), (0xFFFF, 0x02 << 24 | 2, u32::MAX, 0x10));
-        assert_eq!(entry(4), (1, 0x11 << 24 | 0x14, 0x20, 3));
-        assert_eq!(entry(5), (0xFFFF, 0x02 << 24, 1, 0x10));
-        assert_eq!(entry(6), (0xFFFF, 0x02 << 24 | 2, 0, 0x10));
+        assert_eq!(entry(0), (0, 0x11, 0x0A, 0, 5));
+        assert_eq!(entry(1), (0xFFFF, 0x02, 16, 1, 0x10));
+        assert_eq!(entry(2), (0xFFFF, 0x02, 0, 0, 0x10));
+        assert_eq!(entry(3), (0xFFFF, 0x02, 2, u32::MAX, 0x10));
+        assert_eq!(entry(4), (1, 0x11, 0x14, 0x20, 3));
+        assert_eq!(entry(5), (0xFFFF, 0x02, 0, 1, 0x10));
+        assert_eq!(entry(6), (0xFFFF, 0x02, 2, 0, 0x10));
         let a: &Entry = r.view_at(ENTRIES).unwrap();
         assert_eq!(a.name_hash.get(), name_hash(b"a.bin"));
 
@@ -856,7 +855,8 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(data[ENTRIES + offset_of!(Entry, flags_and_name)], 0x95);
+        let record: &Entry = Reader::new(&data).view_at(ENTRIES).unwrap();
+        assert_eq!(record.flags, 0x95);
     }
 
     /// The two sizes cover one run each, so they only mean anything with the

@@ -271,9 +271,9 @@ tpmt_bytes::layout! {
     struct Entry {
         id: Be16,
         name_hash: Be16,
-        /// Flags in the top byte, and the name's string pool offset in the
-        /// low three.
-        flags_and_name: Be32,
+        flags: u8,
+        /// The name's string pool offset, a 24-bit big-endian number.
+        name: [u8; 3],
         data_or_node: Be32,
         data_size: Be32,
         /// Always zero.
@@ -282,26 +282,37 @@ tpmt_bytes::layout! {
 }
 
 impl Entry {
-    // What splits the field above into its two halves.
-    const FLAGS_SHIFT: u32 = 24;
-    const NAME_MASK: u32 = 0x00FF_FFFF;
-
-    // The flags themselves, once shifted down. An entry is a file or a
-    // directory, a file is preloaded into one of the three memories, and the
-    // last two say the bytes are compressed and which of the two schemes did it.
-    const FLAG_FILE: u32 = 0x01;
-    const FLAG_DIRECTORY: u32 = 0x02;
-    const FLAG_COMPRESSED: u32 = 0x04;
-    const FLAG_MRAM: u32 = 0x10;
-    const FLAG_ARAM: u32 = 0x20;
-    const FLAG_DISC: u32 = 0x40;
-    const FLAG_YAZ0: u32 = 0x80;
+    // An entry is a file or a directory, a file is preloaded into one of the
+    // three memories, and the last two say the bytes are compressed and which
+    // of the two schemes did it.
+    const FLAG_FILE: u8 = 0x01;
+    const FLAG_DIRECTORY: u8 = 0x02;
+    const FLAG_COMPRESSED: u8 = 0x04;
+    const FLAG_MRAM: u8 = 0x10;
+    const FLAG_ARAM: u8 = 0x20;
+    const FLAG_DISC: u8 = 0x40;
+    const FLAG_YAZ0: u8 = 0x80;
 
     /// A directory entry has no bytes, but its size field still says 0x10 on
     /// every retail archive, presumably the record's own size.
     const DIRECTORY_SIZE: u32 = 0x10;
     /// Directories share one id, which is no id at all.
     const NO_ID: u16 = 0xFFFF;
+
+    /// Where the name starts in the string pool.
+    const fn name_offset(&self) -> u32 {
+        let [high, mid, low] = self.name;
+        u32::from_be_bytes([0, high, mid, low])
+    }
+}
+
+/// A string pool offset as an entry's name field holds it, if it fits in 24
+/// bits.
+const fn name_field(offset: u32) -> Option<[u8; 3]> {
+    match offset.to_be_bytes() {
+        [0, high, mid, low] => Some([high, mid, low]),
+        _ => None,
+    }
 }
 
 /// One past the highest id in use, counting entries rather than files when the

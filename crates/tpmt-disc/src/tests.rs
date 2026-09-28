@@ -3,7 +3,7 @@
 
 use std::mem::offset_of;
 
-use tpmt_bytes::Layout as _;
+use tpmt_bytes::{Be32, Layout as _, view_at_mut};
 
 use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, Span, ciso, fst, sys};
 
@@ -58,10 +58,12 @@ fn put32(data: &mut [u8], at: usize, value: u32) {
 /// either side of the directory flag, so a caller sets them directly.
 fn put_fst(data: &mut [u8], entry: usize, dir: bool, name: u32, target: u32, end_or_size: u32) {
     let at = FST_OFFSET as usize + entry * fst::Record::LEN;
-    let flag = if dir { fst::DIRECTORY_FLAG } else { 0 };
-    put32(data, at, flag | name);
-    put32(data, at + 4, target);
-    put32(data, at + 8, end_or_size);
+    *view_at_mut(data, at).unwrap() = fst::Record {
+        flags: if dir { fst::DIRECTORY_TYPE } else { 0 },
+        name: fst::name_field(name).unwrap(),
+        offset_or_parent: Be32::new(target),
+        end_or_size: Be32::new(end_or_size),
+    };
 }
 
 /// A whole disc image, holding:
