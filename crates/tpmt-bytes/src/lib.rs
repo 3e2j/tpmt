@@ -117,6 +117,30 @@ pub unsafe trait Layout: Sized {
     fn as_bytes(&self) -> &[u8] {
         bytes_of(std::slice::from_ref(self))
     }
+
+    /// Reads the same bytes as another record of the same length, for a
+    /// table whose records are laid out one of several ways. A length that
+    /// differs fails to compile.
+    ///
+    /// ```compile_fail
+    /// use tpmt_bytes::{Be16, Be32, Layout};
+    ///
+    /// let wide = Be32::new(0);
+    /// let narrow: &Be16 = wide.cast();
+    /// ```
+    fn cast<U: Layout>(&self) -> &U {
+        const {
+            assert!(
+                size_of::<Self>() == size_of::<U>(),
+                "a cast keeps the length"
+            );
+        }
+        const { assert!(align_of::<U>() == 1, "a Layout type must be aligned to 1") };
+        // SAFETY: `U` is exactly as long as `self` (checked above) and aligned
+        // to 1, so any address suits it, and `Layout` promises every bit
+        // pattern is a valid `U`.
+        unsafe { &*std::ptr::from_ref(self).cast::<U>() }
+    }
 }
 
 /// A run of records exactly as the file stores it.
@@ -549,6 +573,25 @@ mod tests {
         assert_eq!(records[1].narrow.get(), 2);
         assert!(reader.slice_of::<Record>(2, 2).is_err());
         assert!(reader.slice_of::<Record>(0, usize::MAX).is_err());
+    }
+
+    layout! {
+        struct Split {
+            head: [u8; 3],
+            tail: Be32,
+        }
+    }
+
+    #[test]
+    fn a_cast_reads_the_same_bytes() {
+        let record = Record {
+            tag: 0x0D,
+            wide: Be32::new(0x0001_0203),
+            narrow: Be16::new(0xACED),
+        };
+        let split: &Split = record.cast();
+        assert_eq!(split.head, [0x0D, 0x00, 0x01]);
+        assert_eq!(split.tail.get(), 0x0203_ACED);
     }
 
     #[test]

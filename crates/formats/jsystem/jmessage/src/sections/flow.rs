@@ -130,9 +130,15 @@ tpmt_bytes::layout! {
     }
 }
 
-// FLW1 node records are 8 bytes whatever the type, laid out differently per
-// type from byte 1 on. The first byte says which of the three it is, and each
-// type's `KIND` is that byte.
+tpmt_bytes::layout! {
+    /// A FLW1 node record before its type is known. Every type is this long,
+    /// laid out differently from byte 1 on, and is read by casting this to it.
+    struct NodeRecord {
+        /// Which of the three it is: each type's `KIND`.
+        kind: u8,
+        body: [u8; 7],
+    }
+}
 
 tpmt_bytes::layout! {
     /// Doesn't need the indirection table, as its edge and that edge's
@@ -245,7 +251,7 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     let node_count = header.node_count.get() as usize;
     let table_count = header.table_count.get() as usize;
 
-    let records: &[[u8; TextNode::LEN]] = flw.slice_of(Flw1Header::LEN, node_count)?;
+    let records: &[NodeRecord] = flw.slice_of(Flw1Header::LEN, node_count)?;
     let table_at = Flw1Header::LEN + size_of_val(records);
     let table: &[Be16] = flw.slice_of(table_at, table_count)?;
 
@@ -270,13 +276,10 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     // A node's id is its position, counted in the id's own width rather than
     // narrowed out of a `usize` index.
     for (id, record) in (0..).zip(records) {
-        let rec = Reader::new(record);
         let id = NodeId(id);
-        let [kind, ..] = *record;
-
-        match kind {
+        match record.kind {
             TextNode::KIND => {
-                let text: &TextNode = rec.view_at(0)?;
+                let text: &TextNode = record.cast();
                 let next = text.next.get();
                 if text.mask != mask(next) {
                     return Err(Error::Corrupt(
@@ -290,7 +293,7 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
                 });
             }
             BranchNode::KIND => {
-                let branch: &BranchNode = rec.view_at(0)?;
+                let branch: &BranchNode = record.cast();
                 let table_start = branch.table_start.get() as usize;
                 let end = table_start + branch.child_count as usize;
                 let slice = table.get(table_start..end).ok_or(Error::Corrupt(
@@ -304,7 +307,7 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
                 });
             }
             EventNode::KIND => {
-                let event: &EventNode = rec.view_at(0)?;
+                let event: &EventNode = record.cast();
                 let entry = table
                     .get(event.table_index.get() as usize)
                     .ok_or(Error::Corrupt(
@@ -367,10 +370,10 @@ pub fn write(flow: &Flow, messages: &HashMap<MessageId, u16>) -> Result<(Vec<u8>
     // The whole indirection table is only known once every node has been
     // laid down, so the records go into a writer of their own and the header
     // is written in front of them afterwards.
-    let record_count = flow.nodes.len().next_multiple_of(ALIGN / TextNode::LEN);
+    let record_count = flow.nodes.len().next_multiple_of(ALIGN / NodeRecord::LEN);
     let (mut records, mut table) = write_nodes(&flow.nodes, messages, entry)?;
     // The padding record, when the count is odd.
-    records.zeros((record_count - flow.nodes.len()) * TextNode::LEN);
+    records.zeros((record_count - flow.nodes.len()) * NodeRecord::LEN);
 
     table.resize(
         table.len().next_multiple_of(ALIGN / INDIR_TABLE_ENTRY_LEN),
@@ -418,7 +421,7 @@ fn write_nodes(
     messages: &HashMap<MessageId, u16>,
     entry: impl Fn(Option<NodeId>) -> Result<u16>,
 ) -> Result<(Writer, Vec<u16>)> {
-    let mut records = Writer::with_capacity(nodes.len() * TextNode::LEN);
+    let mut records = Writer::with_capacity(nodes.len() * NodeRecord::LEN);
     let mut table = Vec::new();
     for node in nodes {
         match node {
