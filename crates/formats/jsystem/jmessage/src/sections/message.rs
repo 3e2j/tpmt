@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn form_and_shift_bytes_are_read() {
-        let mid1 = [0, 0, 0xF3, 0x00, 0, 0, 0, 0];
+        let mid1 = mid1_header(0xF3, 0x00);
 
         let header = read_mid1(&Reader::new(&mid1), &[]).unwrap();
         assert_eq!(header.form, 0x3);
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn nonzero_shift_bytes_is_corrupt() {
-        let mid1 = [0, 0, 0x00, 0x02, 0, 0, 0, 0];
+        let mid1 = mid1_header(0x00, 0x02);
         assert!(matches!(
             read_mid1(&Reader::new(&mid1), &[]),
             Err(Error::Corrupt(_))
@@ -509,30 +509,48 @@ mod tests {
     #[test]
     fn claiming_unsorted_ids_are_ordered_is_corrupt() {
         let unsorted = [message(0, 10, &[], &[]), message(1, 5, &[], &[])];
-        let ordered = [0, 0, 0x10, 0x00, 0, 0, 0, 0];
+        let ordered = mid1_header(0x10, 0x00);
         assert!(matches!(
             read_mid1(&Reader::new(&ordered), &unsorted),
             Err(Error::Corrupt(_))
         ));
-        let unordered = [0, 0, 0x00, 0x00, 0, 0, 0, 0];
+        let unordered = mid1_header(0x00, 0x00);
         assert!(read_mid1(&Reader::new(&unordered), &unsorted).is_ok());
     }
 
     fn inf1_header(count: u16, record_len: u16) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend(count.to_be_bytes());
-        out.extend(record_len.to_be_bytes());
-        out.extend([0; 4]); // group id + padding, neither read
-        out
+        let mut out = Writer::with_capacity(inf1_header::LEN);
+        out.record(&inf1_header::Header {
+            count: Be16::new(count),
+            record_len: Be16::new(record_len),
+            group_id: Be16::new(0),
+            unnamed: [0; 2],
+        });
+        out.finish()
+    }
+
+    /// A MID1 header with a count of zero, which nothing reads.
+    fn mid1_header(ordered_form: u8, shift_bytes: u8) -> Vec<u8> {
+        let mut out = Writer::with_capacity(mid1_header::LEN);
+        out.record(&mid1_header::Header {
+            count: Be16::new(0),
+            ordered_form,
+            shift_bytes,
+            unnamed: [0; 4],
+        });
+        out.finish()
+    }
+
+    /// One INF1 record: its text offset into DAT1, then its attributes.
+    fn record(text_offset: u32, attributes: &[u8]) -> Vec<u8> {
+        [&text_offset.to_be_bytes()[..], attributes].concat()
     }
 
     #[test]
     fn messages_are_read_with_their_text_and_attributes() {
         let mut inf1 = inf1_header(2, 6);
-        inf1.extend(0u32.to_be_bytes());
-        inf1.extend([0xAA, 0xBB]);
-        inf1.extend(3u32.to_be_bytes());
-        inf1.extend([0xCC, 0xDD]);
+        inf1.extend(record(0, &[0xAA, 0xBB]));
+        inf1.extend(record(3, &[0xCC, 0xDD]));
         let dat1 = b"Hi\0Yo\0";
 
         let (messages, record_len, mid1_header) = read(&inf1, dat1, None).unwrap();
@@ -554,12 +572,10 @@ mod tests {
     #[test]
     fn public_id_comes_from_mid1() {
         let mut inf1 = inf1_header(2, 6);
-        inf1.extend(0u32.to_be_bytes());
-        inf1.extend(5u16.to_be_bytes());
-        inf1.extend(3u32.to_be_bytes());
-        inf1.extend(10u16.to_be_bytes());
+        inf1.extend(record(0, &5u16.to_be_bytes()));
+        inf1.extend(record(3, &10u16.to_be_bytes()));
         let dat1 = b"Hi\0Yo\0";
-        let mut mid1 = vec![0, 0, 0x00, 0x00, 0, 0, 0, 0];
+        let mut mid1 = mid1_header(0x00, 0x00);
         mid1.extend(5u32.to_be_bytes());
         mid1.extend(10u32.to_be_bytes());
 
@@ -574,25 +590,23 @@ mod tests {
     #[test]
     fn attributes_are_not_checked_against_mid1() {
         let mut inf1 = inf1_header(1, 6);
-        inf1.extend(0u32.to_be_bytes());
-        inf1.extend(6u16.to_be_bytes());
-        let mut mid1 = vec![0, 0, 0x00, 0x00, 0, 0, 0, 0];
+        inf1.extend(record(0, &6u16.to_be_bytes()));
+        let mut mid1 = mid1_header(0x00, 0x00);
         mid1.extend(5u32.to_be_bytes());
         let (messages, _, _) = read(&inf1, b"Hi\0", Some(&mid1)).unwrap();
         assert_eq!(messages[0].public_id, 5);
         assert_eq!(messages[0].attributes, [0x00, 0x06]);
 
         let mut narrow = inf1_header(1, 4);
-        narrow.extend(0u32.to_be_bytes());
+        narrow.extend(record(0, &[]));
         assert!(read(&narrow, b"Hi\0", Some(&mid1)).is_ok());
     }
 
     #[test]
     fn mid1_id_too_large_is_corrupt() {
         let mut inf1 = inf1_header(1, 6);
-        inf1.extend(0u32.to_be_bytes());
-        inf1.extend([0, 0]);
-        let mut mid1 = vec![0, 0, 0x00, 0x00, 0, 0, 0, 0];
+        inf1.extend(record(0, &[0, 0]));
+        let mut mid1 = mid1_header(0x00, 0x00);
         mid1.extend(0x0001_0000u32.to_be_bytes());
 
         assert!(matches!(
@@ -648,10 +662,8 @@ mod tests {
         let (inf1, dat1, mid1) = write(&sample(), 6, Some(HEADER)).unwrap();
 
         let mut expected = inf1_header(2, 6);
-        expected.extend(1u32.to_be_bytes());
-        expected.extend([0x00, 0x05]);
-        expected.extend(4u32.to_be_bytes());
-        expected.extend([0x00, 0x0A]);
+        expected.extend(record(1, &[0x00, 0x05]));
+        expected.extend(record(4, &[0x00, 0x0A]));
         assert_eq!(inf1, expected);
         assert_eq!(dat1, b"\0Hi\0\x1A\x05\x01\x00\x02Yo\0");
         assert_eq!(

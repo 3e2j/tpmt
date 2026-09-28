@@ -88,14 +88,23 @@ pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use tpmt_bytes::{Be32, Writer};
+
     use super::*;
+
+    fn header(decompressed_size: u32) -> Vec<u8> {
+        let mut out = Writer::with_capacity(header::LEN);
+        out.record(&Header {
+            magic: *header::MAGIC,
+            decompressed_size: Be32::new(decompressed_size),
+            unnamed: [0; 8],
+        });
+        out.finish()
+    }
 
     /// A literal group, then a back-reference over the four bytes it wrote.
     fn sample() -> Vec<u8> {
-        let mut data = Vec::new();
-        data.extend_from_slice(crate::header::MAGIC);
-        data.extend_from_slice(&10u32.to_be_bytes());
-        data.extend_from_slice(&[0u8; 8]);
+        let mut data = header(10);
         // Four literals, then a reference: length 4 + 2, distance 3 + 1.
         data.push(0b1111_0000);
         data.extend_from_slice(b"abcd");
@@ -125,10 +134,7 @@ mod tests {
     /// declared size is treated as corruption rather than silently accepted.
     #[test]
     fn rejects_a_match_that_misses_the_declared_size() {
-        let mut data = Vec::new();
-        data.extend_from_slice(crate::header::MAGIC);
-        data.extend_from_slice(&3u32.to_be_bytes());
-        data.extend_from_slice(&[0u8; 8]);
+        let mut data = header(3);
         data.push(0b1000_0000);
         data.push(b'a');
         // Length (4 - 1) + 3, distance 0 + 1: writes 7 bytes total, not 3.
@@ -143,10 +149,7 @@ mod tests {
     /// and the byte before the start of a buffer is not readable.
     #[test]
     fn rejects_a_back_reference_past_the_start() {
-        let mut data = Vec::new();
-        data.extend_from_slice(crate::header::MAGIC);
-        data.extend_from_slice(&4u32.to_be_bytes());
-        data.extend_from_slice(&[0u8; 8]);
+        let mut data = header(4);
         data.push(0b0000_0000);
         data.extend_from_slice(&[0x40, 0x03]);
         assert!(matches!(

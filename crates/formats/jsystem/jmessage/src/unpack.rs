@@ -137,22 +137,29 @@ fn read_strings(str1: &[u8]) -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use tpmt_bytes::{Be32, Writer};
+
     use super::*;
+    use crate::sections::header::{self as section, Header as SectionHeader};
 
     /// A file of `magics`, one 0x10 section each, stating `size` for them.
     fn file(size: u32, magics: &[&[u8; 4]]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(header::MAGIC);
-        out.extend_from_slice(&size.to_be_bytes());
-        out.extend_from_slice(&u32::try_from(magics.len()).unwrap().to_be_bytes());
-        out.push(Encoding::ShiftJis.byte());
-        out.resize(header::LEN, 0);
+        let mut out = Writer::with_capacity(header::LEN + magics.len() * 0x10);
+        out.record(&Header {
+            magic: header::MAGIC_FIELD,
+            size: Be32::new(size),
+            section_count: Be32::new(u32::try_from(magics.len()).unwrap()),
+            encoding: Encoding::ShiftJis.byte(),
+            unnamed: [0; 15],
+        });
         for magic in magics {
-            out.extend_from_slice(*magic);
-            out.extend_from_slice(&0x10u32.to_be_bytes());
-            out.resize(out.len() + 8, 0);
+            out.record(&SectionHeader {
+                magic: **magic,
+                size: Be32::new(0x10),
+            });
+            out.zeros(0x10 - section::LEN);
         }
-        out
+        out.finish()
     }
 
     /// The stated size covers the header and every section but the flow pair,

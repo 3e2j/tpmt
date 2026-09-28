@@ -81,8 +81,11 @@ fn write_strings(strings: &[Vec<u8>]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use tpmt_bytes::Reader;
+
     use super::*;
     use crate::sections::flow::{Node, NodeId, Root};
+    use crate::sections::header::Header as SectionHeader;
     use crate::{Encoding, Flow, Format, Message, MessageId, Mid1Header, TextSegment};
 
     fn sample() -> Bmg {
@@ -120,25 +123,26 @@ mod tests {
     #[test]
     fn packs_the_retail_layout() {
         let data = pack(&sample()).unwrap();
+        let reader = Reader::new(&data);
 
-        let mut expected = b"MESGbmg1".to_vec();
-        expected.extend(0x80u32.to_be_bytes());
-        expected.extend(5u32.to_be_bytes());
-        expected.push(0x03);
-        expected.resize(0x20, 0);
-        assert_eq!(&data[..0x20], expected);
+        let top: &Header = reader.view_at(0).unwrap();
+        assert_eq!(top.magic, header::MAGIC_FIELD);
+        assert_eq!(top.size.get(), 0x80);
+        assert_eq!(top.section_count.get(), 5);
+        assert_eq!(top.encoding, Encoding::ShiftJis.byte());
+        assert_eq!(top.unnamed, [0; 15]);
 
-        assert_eq!(&data[0x20..0x24], b"INF1");
-        assert_eq!(&data[0x24..0x28], 0x20u32.to_be_bytes());
-        assert_eq!(&data[0x40..0x44], b"DAT1");
-        assert_eq!(&data[0x44..0x48], 0x20u32.to_be_bytes());
-        assert_eq!(&data[0x60..0x64], b"MID1");
-        assert_eq!(&data[0x64..0x68], 0x20u32.to_be_bytes());
         // One text node, padded to two records, and no table at all.
-        assert_eq!(&data[0x80..0x84], b"FLW1");
-        assert_eq!(&data[0x84..0x88], 0x20u32.to_be_bytes());
-        assert_eq!(&data[0xA0..0xA4], b"FLI1");
-        assert_eq!(&data[0xA4..0xA8], 0x20u32.to_be_bytes());
+        for (at, magic) in [
+            (0x20, b"INF1"),
+            (0x40, b"DAT1"),
+            (0x60, b"MID1"),
+            (0x80, b"FLW1"),
+            (0xA0, b"FLI1"),
+        ] {
+            let section: &SectionHeader = reader.view_at(at).unwrap();
+            assert_eq!((&section.magic, section.size.get()), (magic, 0x20));
+        }
         // Header, count, and one 8 byte root: the padding is left off.
         assert_eq!(data.len(), 0xA8 + 0x10);
     }
@@ -152,8 +156,9 @@ mod tests {
             ..sample()
         };
         let data = pack(&bmg).unwrap();
-        assert_eq!(&data[0x08..0x0C], 0x80u32.to_be_bytes());
-        assert_eq!(&data[0x0C..0x10], 3u32.to_be_bytes());
+        let top: &Header = Reader::new(&data).view_at(0).unwrap();
+        assert_eq!(top.size.get(), 0x80);
+        assert_eq!(top.section_count.get(), 3);
         // MID1 unpadded: the section header, its own header, and one id.
         assert_eq!(data.len(), 0x60 + sections::header::LEN + 8 + 4);
     }
