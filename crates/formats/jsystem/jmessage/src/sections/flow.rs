@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 
-use tpmt_bytes::{Reader, Writer};
+use tpmt_bytes::{Be16, Reader, Writer};
 
 use crate::sections::positions;
 use crate::{Error, MessageId, Result};
@@ -119,69 +119,114 @@ pub struct Flow {
     pub roots: Vec<Root>,
 }
 
-/// The 8 byte header in front of FLW1's node table: how many records follow,
-/// and how many entries the indirection table past them holds.
-mod flw1_offsets {
+/// The header in front of FLW1's node table: how many records follow, and
+/// how many entries the indirection table past them holds.
+mod flw1_header {
+    use tpmt_bytes::Be16;
+
+    tpmt_bytes::layout! {
+        pub struct Header {
+            pub node_count: Be16,
+            pub table_count: Be16,
+            /// Padding.
+            pub unnamed: [u8; 4],
+        }
+    }
+
     pub const LEN: usize = 0x08;
-    pub const NODE_COUNT: usize = 0x00;
-    pub const TABLE_COUNT: usize = 0x02;
-    // 0x04, 4 bytes: padding.
+    const _: () = assert!(size_of::<Header>() == LEN);
 }
 
 /// One FLW1 node record: 8 bytes whatever the type, laid out differently
-/// per type from byte 1 on.
+/// per type from byte 1 on. The first byte says which of the three it is.
 mod node_record {
-    pub const LEN: usize = 0x08;
-    pub const TYPE: usize = 0x00;
+    use tpmt_bytes::{Be16, Layout};
 
-    // Identifiers at TYPE
+    pub const LEN: usize = 0x08;
+
+    // What each record's `kind` byte holds.
     pub const TEXT: u8 = 0x01;
     pub const BRANCH: u8 = 0x02;
     pub const EVENT: u8 = 0x03;
 
-    // Doesn't need the indirection table, as indirection and mask bytes can
-    // live in the record itself
-    pub mod text {
-        // 0x01 unused
-        pub const MESSAGE: usize = 0x02;
-        pub const NEXT: usize = 0x04;
-        /// The same mask byte the indirection table trails, for `NEXT`.
-        pub const MASK: usize = 0x06;
-        // 0x07, 1 byte: padding.
+    tpmt_bytes::layout! {
+        /// Doesn't need the indirection table, as its edge and that edge's
+        /// mask byte both live in the record itself.
+        pub struct TextNode {
+            pub kind: u8,
+            /// Unused.
+            pub unnamed_1: u8,
+            pub message: Be16,
+            pub next: Be16,
+            /// The same mask byte the indirection table trails, for `next`.
+            pub mask: u8,
+            /// Padding.
+            pub unnamed_7: u8,
+        }
     }
 
-    pub mod branch {
-        pub const CHILD_COUNT: usize = 0x01;
-        pub const QUERY: usize = 0x02;
-        pub const PARAM: usize = 0x04;
-        pub const TABLE_START: usize = 0x06;
+    tpmt_bytes::layout! {
+        pub struct BranchNode {
+            pub kind: u8,
+            pub child_count: u8,
+            pub query: Be16,
+            pub param: Be16,
+            pub table_start: Be16,
+        }
     }
 
-    pub mod event {
-        pub const EVENT: usize = 0x01;
-        pub const TABLE_INDEX: usize = 0x02;
-        pub const PARAMS: usize = 0x04;
+    tpmt_bytes::layout! {
+        pub struct EventNode {
+            pub kind: u8,
+            pub event: u8,
+            pub table_index: Be16,
+            pub params: [u8; 4],
+        }
     }
+
+    const fn fits<T: Layout>() -> bool {
+        size_of::<T>() == LEN
+    }
+    const _: () = assert!(fits::<TextNode>() && fits::<BranchNode>() && fits::<EventNode>());
 }
 
-/// The 8 byte header in front of FLI1's root table.
-mod fli1_offsets {
+/// The header in front of FLI1's root table.
+mod fli1_header {
+    use tpmt_bytes::Be16;
+
+    tpmt_bytes::layout! {
+        pub struct Header {
+            pub count: Be16,
+            /// The entry width, always 8. Not read, since the stride is fixed
+            /// either way, but written.
+            pub entry_len: u8,
+            /// Padding.
+            pub unnamed: [u8; 5],
+        }
+    }
+
     pub const LEN: usize = 0x08;
-    pub const COUNT: usize = 0x00;
-    /// The entry width, always 8. Not read, since the stride below is fixed
-    /// either way, but written.
-    pub const ENTRY_LEN: usize = 0x02;
-    // 0x03, 5 bytes: padding.
+    const _: () = assert!(size_of::<Header>() == LEN);
 }
 
 /// One FLI1 entry: an id and the node position it starts at, each padded out
 /// to a u32 of its own.
 mod fli1_entry {
+    use tpmt_bytes::Be16;
+
+    tpmt_bytes::layout! {
+        pub struct Entry {
+            pub flow_id: Be16,
+            /// Padding.
+            pub unnamed_2: [u8; 2],
+            pub node: Be16,
+            /// Padding.
+            pub unnamed_6: [u8; 2],
+        }
+    }
+
     pub const LEN: usize = 0x08;
-    pub const FLOW_ID: usize = 0x00;
-    // 0x02, 2 bytes: padding.
-    pub const NODE: usize = 0x04;
-    // 0x06, 2 bytes: padding.
+    const _: () = assert!(size_of::<Entry>() == LEN);
 }
 
 /// What marks a dead end wherever an edge is stored: a node record's own
@@ -219,86 +264,80 @@ const fn mask(entry: u16) -> u8 {
 #[allow(clippy::similar_names)]
 pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     let flw = Reader::new(flw1);
-    let node_count = flw.u16_at(flw1_offsets::NODE_COUNT)? as usize;
-    let table_count = flw.u16_at(flw1_offsets::TABLE_COUNT)? as usize;
+    let header: &flw1_header::Header = flw.view_at(0)?;
+    let node_count = header.node_count.get() as usize;
+    let table_count = header.table_count.get() as usize;
 
-    let records = flw.slice_at(flw1_offsets::LEN, node_count * node_record::LEN)?;
-    let table_at = flw1_offsets::LEN + records.len();
-    let mut table = Vec::with_capacity(table_count);
-    for i in 0..table_count {
-        table.push(flw.u16_at(table_at + i * INDIR_TABLE_ENTRY_LEN)?);
-    }
+    let records: &[[u8; node_record::LEN]] = flw.slice_of(flw1_header::LEN, node_count)?;
+    let table_at = flw1_header::LEN + size_of_val(records);
+    let table: &[Be16] = flw.slice_of(table_at, table_count)?;
 
     // The mask is never dereferenced by the game, so nothing downstream
     // needs it, but every file has one. It is read and checked against the
     // table it shadows, since disagreement here is the one free corruption
     // check this section offers.
-    let mask_at = table_at + table_count * INDIR_TABLE_ENTRY_LEN;
-    if flw1.len() < mask_at + table_count {
+    let masks = flw
+        .slice_at(table_at + size_of_val(table), table_count)
+        .map_err(|_| Error::Corrupt("a flow indirection table has no mask table trailing it"))?;
+    if table
+        .iter()
+        .zip(masks)
+        .any(|(entry, &byte)| byte != mask(entry.get()))
+    {
         return Err(Error::Corrupt(
-            "a flow indirection table has no mask table trailing it",
+            "a flow indirection table entry disagrees with its own mask byte",
         ));
-    }
-    for (i, &entry) in table.iter().enumerate() {
-        if flw.u8_at(mask_at + i)? != mask(entry) {
-            return Err(Error::Corrupt(
-                "a flow indirection table entry disagrees with its own mask byte",
-            ));
-        }
     }
 
     let mut nodes = Vec::with_capacity(node_count);
     // A node's id is its position, counted in the id's own width rather than
     // narrowed out of a `usize` index.
-    let (records, _) = records.as_chunks::<{ node_record::LEN }>();
     for (id, record) in (0..).zip(records) {
         let rec = Reader::new(record);
         let id = NodeId(id);
+        let [kind, ..] = *record;
 
-        match record[node_record::TYPE] {
+        match kind {
             node_record::TEXT => {
-                let message = rec.u16_at(node_record::text::MESSAGE)?;
-                let next = rec.u16_at(node_record::text::NEXT)?;
-                if rec.u8_at(node_record::text::MASK)? != mask(next) {
+                let text: &node_record::TextNode = rec.view_at(0)?;
+                let next = text.next.get();
+                if text.mask != mask(next) {
                     return Err(Error::Corrupt(
                         "a text node's edge disagrees with its own mask byte",
                     ));
                 }
                 nodes.push(Node::Text {
                     id,
-                    message: MessageId(message as u32),
+                    message: MessageId(text.message.get() as u32),
                     next: edge(next),
                 });
             }
             node_record::BRANCH => {
-                let query = rec.u16_at(node_record::branch::QUERY)?;
-                let param = rec.u16_at(node_record::branch::PARAM)?;
-                let table_start = rec.u16_at(node_record::branch::TABLE_START)? as usize;
-                let count = record[node_record::branch::CHILD_COUNT] as usize;
-
-                let end = table_start + count;
+                let branch: &node_record::BranchNode = rec.view_at(0)?;
+                let table_start = branch.table_start.get() as usize;
+                let end = table_start + branch.child_count as usize;
                 let slice = table.get(table_start..end).ok_or(Error::Corrupt(
                     "a branch's children run past the indirection table",
                 ))?;
                 nodes.push(Node::Branch {
                     id,
-                    query,
-                    param,
-                    children: slice.iter().map(|&entry| edge(entry)).collect(),
+                    query: branch.query.get(),
+                    param: branch.param.get(),
+                    children: slice.iter().map(|entry| edge(entry.get())).collect(),
                 });
             }
             node_record::EVENT => {
-                let table_index = rec.u16_at(node_record::event::TABLE_INDEX)? as usize;
-                let params = rec.bytes_at(node_record::event::PARAMS)?;
-
-                let entry = *table.get(table_index).ok_or(Error::Corrupt(
-                    "an event's next pointer is past the indirection table",
-                ))?;
+                let event: &node_record::EventNode = rec.view_at(0)?;
+                let entry = table
+                    .get(event.table_index.get() as usize)
+                    .ok_or(Error::Corrupt(
+                        "an event's next pointer is past the indirection table",
+                    ))?;
                 nodes.push(Node::Event {
                     id,
-                    event: record[node_record::event::EVENT],
-                    params,
-                    next: edge(entry),
+                    event: event.event,
+                    params: event.params,
+                    next: edge(entry.get()),
                 });
             }
             _ if id.0 as usize == node_count - 1 => {
@@ -314,19 +353,16 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     }
 
     let fli = Reader::new(fli1);
-    let root_count = fli.u16_at(fli1_offsets::COUNT)? as usize;
-    let entries = fli.slice_at(fli1_offsets::LEN, root_count * fli1_entry::LEN)?;
-    let (entries, _) = entries.as_chunks::<{ fli1_entry::LEN }>();
+    let header: &fli1_header::Header = fli.view_at(0)?;
+    let entries: &[fli1_entry::Entry] =
+        fli.slice_of(fli1_header::LEN, header.count.get() as usize)?;
     let roots = entries
         .iter()
-        .map(|entry| {
-            let entry = Reader::new(entry);
-            Ok(Root {
-                public_id: entry.u16_at(fli1_entry::FLOW_ID)?,
-                node: NodeId(entry.u16_at(fli1_entry::NODE)? as u32),
-            })
+        .map(|entry| Root {
+            public_id: entry.flow_id.get(),
+            node: NodeId(entry.node.get() as u32),
         })
-        .collect::<Result<_>>()?;
+        .collect();
 
     Ok(Flow { nodes, roots })
 }
@@ -352,28 +388,77 @@ pub fn write(flow: &Flow, messages: &HashMap<MessageId, u16>) -> Result<(Vec<u8>
     };
     let entry = |edge: Option<NodeId>| edge.map_or(Ok(DEAD_END), position);
 
+    // The whole indirection table is only known once every node has been
+    // laid down, so the records go into a writer of their own and the header
+    // is written in front of them afterwards.
     let record_count = flow.nodes.len().next_multiple_of(ALIGN / node_record::LEN);
-    let mut flw1 = Writer::with_capacity(flw1_offsets::LEN + record_count * node_record::LEN);
-    flw1.zeros(flw1_offsets::LEN);
-    flw1.u16_at(
-        flw1_offsets::NODE_COUNT,
-        u16::try_from(record_count).map_err(|_| Error::Oversized)?,
-    );
+    let (mut records, mut table) = write_nodes(&flow.nodes, messages, entry)?;
+    // The padding record, when the count is odd.
+    records.zeros((record_count - flow.nodes.len()) * node_record::LEN);
 
+    table.resize(
+        table.len().next_multiple_of(ALIGN / INDIR_TABLE_ENTRY_LEN),
+        0,
+    );
+    let records = records.finish();
+    let mut flw1 = Writer::with_capacity(
+        flw1_header::LEN + records.len() + table.len() * (INDIR_TABLE_ENTRY_LEN + 1),
+    );
+    flw1.record(&flw1_header::Header {
+        node_count: Be16::new(u16::try_from(record_count).map_err(|_| Error::Oversized)?),
+        table_count: Be16::new(u16::try_from(table.len()).map_err(|_| Error::Oversized)?),
+        unnamed: [0; 4],
+    });
+    flw1.bytes(&records);
+    for &entry in &table {
+        flw1.u16(entry);
+    }
+    for &entry in &table {
+        flw1.u8(mask(entry));
+    }
+
+    let mut fli1 = Writer::with_capacity(fli1_header::LEN + flow.roots.len() * fli1_entry::LEN);
+    fli1.record(&fli1_header::Header {
+        count: Be16::new(u16::try_from(flow.roots.len()).map_err(|_| Error::Oversized)?),
+        entry_len: u8::try_from(fli1_entry::LEN).map_err(|_| Error::Oversized)?,
+        unnamed: [0; 5],
+    });
+    for root in &flow.roots {
+        fli1.record(&fli1_entry::Entry {
+            flow_id: Be16::new(root.public_id),
+            unnamed_2: [0; 2],
+            node: Be16::new(position(root.node)?),
+            unnamed_6: [0; 2],
+        });
+    }
+
+    Ok((flw1.finish(), fli1.finish()))
+}
+
+/// One record per node, in order, and the indirection table the branches and
+/// events among them index, both short of their padding.
+fn write_nodes(
+    nodes: &[Node],
+    messages: &HashMap<MessageId, u16>,
+    entry: impl Fn(Option<NodeId>) -> Result<u16>,
+) -> Result<(Writer, Vec<u16>)> {
+    let mut records = Writer::with_capacity(nodes.len() * node_record::LEN);
     let mut table = Vec::new();
-    for node in &flow.nodes {
-        let at = flw1.len();
-        flw1.zeros(node_record::LEN);
+    for node in nodes {
         match node {
             Node::Text { message, next, .. } => {
                 let message = *messages.get(message).ok_or(Error::Unwritable(
                     "a text node displays a message the file does not hold",
                 ))?;
                 let next = entry(*next)?;
-                flw1.u8_at(at + node_record::TYPE, node_record::TEXT);
-                flw1.u16_at(at + node_record::text::MESSAGE, message);
-                flw1.u16_at(at + node_record::text::NEXT, next);
-                flw1.u8_at(at + node_record::text::MASK, mask(next));
+                records.record(&node_record::TextNode {
+                    kind: node_record::TEXT,
+                    unnamed_1: 0,
+                    message: Be16::new(message),
+                    next: Be16::new(next),
+                    mask: mask(next),
+                    unnamed_7: 0,
+                });
             }
             Node::Branch {
                 query,
@@ -387,11 +472,13 @@ pub fn write(flow: &Flow, messages: &HashMap<MessageId, u16>) -> Result<(Vec<u8>
                 for &child in children {
                     table.push(entry(child)?);
                 }
-                flw1.u8_at(at + node_record::TYPE, node_record::BRANCH);
-                flw1.u8_at(at + node_record::branch::CHILD_COUNT, count);
-                flw1.u16_at(at + node_record::branch::QUERY, *query);
-                flw1.u16_at(at + node_record::branch::PARAM, *param);
-                flw1.u16_at(at + node_record::branch::TABLE_START, start);
+                records.record(&node_record::BranchNode {
+                    kind: node_record::BRANCH,
+                    child_count: count,
+                    query: Be16::new(*query),
+                    param: Be16::new(*param),
+                    table_start: Be16::new(start),
+                });
             }
             Node::Event {
                 event,
@@ -401,46 +488,16 @@ pub fn write(flow: &Flow, messages: &HashMap<MessageId, u16>) -> Result<(Vec<u8>
             } => {
                 let index = u16::try_from(table.len()).map_err(|_| Error::Oversized)?;
                 table.push(entry(*next)?);
-                flw1.u8_at(at + node_record::TYPE, node_record::EVENT);
-                flw1.u8_at(at + node_record::event::EVENT, *event);
-                flw1.u16_at(at + node_record::event::TABLE_INDEX, index);
-                flw1.bytes_at(at + node_record::event::PARAMS, params);
+                records.record(&node_record::EventNode {
+                    kind: node_record::EVENT,
+                    event: *event,
+                    table_index: Be16::new(index),
+                    params: *params,
+                });
             }
         }
     }
-    // The padding record, when the count is odd.
-    flw1.zeros((record_count - flow.nodes.len()) * node_record::LEN);
-
-    table.resize(
-        table.len().next_multiple_of(ALIGN / INDIR_TABLE_ENTRY_LEN),
-        0,
-    );
-    flw1.u16_at(
-        flw1_offsets::TABLE_COUNT,
-        u16::try_from(table.len()).map_err(|_| Error::Oversized)?,
-    );
-    for &entry in &table {
-        flw1.u16(entry);
-    }
-    for &entry in &table {
-        flw1.u8(mask(entry));
-    }
-
-    let mut fli1 = Writer::with_capacity(fli1_offsets::LEN + flow.roots.len() * fli1_entry::LEN);
-    fli1.zeros(fli1_offsets::LEN);
-    fli1.u16_at(
-        fli1_offsets::COUNT,
-        u16::try_from(flow.roots.len()).map_err(|_| Error::Oversized)?,
-    );
-    fli1.u8_at(fli1_offsets::ENTRY_LEN, 8);
-    for root in &flow.roots {
-        let at = fli1.len();
-        fli1.zeros(fli1_entry::LEN);
-        fli1.u16_at(at + fli1_entry::FLOW_ID, root.public_id);
-        fli1.u16_at(at + fli1_entry::NODE, position(root.node)?);
-    }
-
-    Ok((flw1.finish(), fli1.finish()))
+    Ok((records, table))
 }
 
 #[cfg(test)]

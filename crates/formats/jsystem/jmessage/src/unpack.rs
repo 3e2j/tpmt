@@ -3,8 +3,9 @@
 
 use tpmt_bytes::Reader;
 
+use crate::header::{self, Header};
 use crate::sections::{self, flow, message};
-use crate::{Bmg, Encoding, Error, Format, Result, header};
+use crate::{Bmg, Encoding, Error, Format, Result};
 
 /// The sections a file holds, sorted out by name on the way past.
 /// INF1 and DAT1 are always there, so they are required fields rather than
@@ -29,8 +30,9 @@ struct Sections<'a> {
 #[allow(clippy::similar_names)]
 fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let reader = Reader::new(data);
-    let encoding = Encoding::from_byte(reader.u8_at(header::ENCODING)?);
-    let count = reader.u32_at(header::SECTION_COUNT)? as usize;
+    let header: &Header = reader.view_at(0)?;
+    let encoding = Encoding::from_byte(header.encoding);
+    let count = header.section_count.get() as usize;
 
     let mut at = header::LEN;
     // What the header should have stated: the flow sections are left out of
@@ -44,16 +46,17 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let mut fli1 = None;
 
     for _ in 0..count {
-        let magic: [u8; 4] = reader.bytes_at(at)?;
-        let size = reader.u32_at(at + sections::SIZE)? as usize;
-        if size < sections::HEADER_LEN {
+        let section: &sections::header::Header = reader.view_at(at)?;
+        let magic = section.magic;
+        let size = section.size.get() as usize;
+        if size < sections::header::LEN {
             return Err(Error::Corrupt("a section is smaller than its own header"));
         }
 
         // The last section in a file is allowed to stop where the file does,
         // with the padding its stated size counts left off the end.
-        let body_at = at + sections::HEADER_LEN;
-        let len = (size - sections::HEADER_LEN).min(data.len() - body_at);
+        let body_at = at + sections::header::LEN;
+        let len = (size - sections::header::LEN).min(data.len() - body_at);
         let body = reader.slice_at(body_at, len)?;
 
         match magic {
@@ -74,7 +77,7 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     // The one number in the file that says anything about the rest of it, so
     // it is checked rather than skipped: a walk that ends somewhere else read
     // a size wrong, or the file is not laid out the way it claims.
-    if reader.u32_at(header::SIZE)? as usize != stated {
+    if header.size.get() as usize != stated {
         return Err(Error::Corrupt(
             "the stated size is not where the sections end",
         ));

@@ -66,13 +66,32 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 mod header {
+    use tpmt_bytes::Be32;
+
+    tpmt_bytes::layout! {
+        pub struct Header {
+            /// Always [`MAGIC`].
+            pub magic: [u8; 8],
+            /// The size of the file with the flow sections left out.
+            pub size: Be32,
+            pub section_count: Be32,
+            /// An [`Encoding`](crate::Encoding) byte.
+            pub encoding: u8,
+            /// Unnamed, and zero.
+            pub unnamed: [u8; 15],
+        }
+    }
+
     pub const LEN: usize = 0x20;
+    const _: () = assert!(size_of::<Header>() == LEN);
     pub const MAGIC: &[u8] = tpmt_format::FileKind::Bmg.magic();
-    /// The size of the file with the flow sections left out.
-    pub const SIZE: usize = 0x08;
-    pub const SECTION_COUNT: usize = 0x0C;
-    pub const ENCODING: usize = 0x10;
-    // The rest of the header, 0x11 to the end of it, is zero.
+    /// [`MAGIC`] at the width of the field that holds it. A magic of any
+    /// other length fails to compile here.
+    pub const MAGIC_FIELD: [u8; 8] = {
+        let mut field = [0; 8];
+        field.copy_from_slice(MAGIC);
+        field
+    };
 }
 
 /// Which encoding the bmg text is in.

@@ -1,96 +1,72 @@
 //! The write path: turns a [`Bmg`] back into bytes.
 
-use tpmt_bytes::Writer;
+use tpmt_bytes::{Be32, Writer};
 
+use crate::header::{self, Header};
 use crate::sections::{self, flow, message, positions};
-use crate::{Bmg, Encoding, Error, Result, header};
+use crate::{Bmg, Error, Result};
 
 /// Lays the sections out in the order the retail files have them.
+///
+/// Every section is written padded out to the size it states, and the
+/// padding after the last one is trimmed off at the end, as on the discs,
+/// though that section's stated size still counts it.
 // similar names `flw1`/`fli1` are warrented
 #[allow(clippy::similar_names)]
 pub fn pack(bmg: &Bmg) -> Result<Vec<u8>> {
-    let mut file = File::new(bmg.encoding);
-
     let (inf1, dat1, mid1) = message::write(&bmg.messages, bmg.record_len, bmg.mid1)?;
-    file.section(sections::INF1, &inf1)?;
-    file.section(sections::DAT1, &dat1)?;
+    let mut bodies = vec![(sections::INF1, inf1), (sections::DAT1, dat1)];
     if let Some(mid1) = mid1 {
-        file.section(sections::MID1, &mid1)?;
+        bodies.push((sections::MID1, mid1));
     }
     if let Some(strings) = &bmg.strings {
-        file.section(sections::STR1, &write_strings(strings)?)?;
+        bodies.push((sections::STR1, write_strings(strings)?));
     }
     // The stated size stops here, whether or not a flow pair follows.
-    let stated = file.len();
+    let stated = bodies.len();
     if let Some(flow) = &bmg.flow {
         let messages = positions(
             bmg.messages.iter().map(|message| message.id),
             "two messages share an id",
         )?;
         let (flw1, fli1) = flow::write(flow, &messages)?;
-        file.section(sections::FLW1, &flw1)?;
-        file.section(sections::FLI1, &fli1)?;
+        bodies.push((sections::FLW1, flw1));
+        bodies.push((sections::FLI1, fli1));
     }
 
-    file.finish(stated)
-}
+    let padded =
+        |body: &[u8]| (sections::header::LEN + body.len()).next_multiple_of(sections::ALIGN);
+    let field = |len: usize| {
+        u32::try_from(len)
+            .map(Be32::new)
+            .map_err(|_| Error::Oversized)
+    };
+    let len_of = |bodies: &[([u8; 4], Vec<u8>)]| {
+        header::LEN + bodies.iter().map(|(_, body)| padded(body)).sum::<usize>()
+    };
 
-/// A file being laid out: the header, then one section after another.
-///
-/// Every section is written padded out to the size it states, and the
-/// padding after the last one is trimmed off at the end, as on the discs,
-/// though that section's stated size still counts it.
-struct File {
-    out: Writer,
-    /// How many sections have been written, for the header's count field.
-    section_count: usize,
-    /// Where the latest section's body ends, before its padding: where the
-    /// file is cut off once the last section is in.
-    body_end: usize,
-}
-
-impl File {
-    fn new(encoding: Encoding) -> Self {
-        let mut out = Writer::new();
-        out.bytes(header::MAGIC);
-        out.zeros(header::LEN - header::MAGIC.len());
-        out.u8_at(header::ENCODING, encoding.byte());
-        Self {
-            out,
-            section_count: 0,
-            body_end: header::LEN,
-        }
+    let mut out = Writer::with_capacity(len_of(&bodies));
+    out.record(&Header {
+        magic: header::MAGIC_FIELD,
+        size: field(len_of(&bodies[..stated]))?,
+        section_count: field(bodies.len())?,
+        encoding: bmg.encoding.byte(),
+        unnamed: [0; 15],
+    });
+    let mut body_end = out.len();
+    for (magic, body) in &bodies {
+        out.record(&sections::header::Header {
+            magic: *magic,
+            size: field(padded(body))?,
+        });
+        out.bytes(body);
+        body_end = out.len();
+        out.align(sections::ALIGN);
     }
 
-    const fn len(&self) -> usize {
-        self.out.len()
-    }
-
-    fn section(&mut self, magic: [u8; 4], body: &[u8]) -> Result<()> {
-        let size = (sections::HEADER_LEN + body.len()).next_multiple_of(sections::ALIGN);
-        self.out.bytes(&magic);
-        self.out
-            .u32(u32::try_from(size).map_err(|_| Error::Oversized)?);
-        self.out.bytes(body);
-        self.body_end = self.out.len();
-        self.out.align(sections::ALIGN);
-        self.section_count += 1;
-        Ok(())
-    }
-
-    fn finish(mut self, stated: usize) -> Result<Vec<u8>> {
-        self.out.u32_at(
-            header::SECTION_COUNT,
-            u32::try_from(self.section_count).map_err(|_| Error::Oversized)?,
-        );
-        self.out.u32_at(
-            header::SIZE,
-            u32::try_from(stated).map_err(|_| Error::Oversized)?,
-        );
-        let mut out = self.out.finish();
-        out.truncate(self.body_end);
-        Ok(out)
-    }
+    let mut out = out.finish();
+    out.truncate(body_end);
+    Ok(out)
 }
 
 /// The string pool rejoined on its terminators, the inverse of
@@ -107,7 +83,7 @@ fn write_strings(strings: &[Vec<u8>]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::sections::flow::{Node, NodeId, Root};
-    use crate::{Flow, Format, Message, MessageId, Mid1Header, TextSegment};
+    use crate::{Encoding, Flow, Format, Message, MessageId, Mid1Header, TextSegment};
 
     fn sample() -> Bmg {
         Bmg {
@@ -179,7 +155,7 @@ mod tests {
         assert_eq!(&data[0x08..0x0C], 0x80u32.to_be_bytes());
         assert_eq!(&data[0x0C..0x10], 3u32.to_be_bytes());
         // MID1 unpadded: the section header, its own header, and one id.
-        assert_eq!(data.len(), 0x60 + sections::HEADER_LEN + 8 + 4);
+        assert_eq!(data.len(), 0x60 + sections::header::LEN + 8 + 4);
     }
 
     #[test]

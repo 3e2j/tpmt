@@ -4,7 +4,7 @@
 //! record in INF1, the text that record points at in DAT1, and, when the
 //! file has one, the public-facing id sitting at the same position in MID1.
 
-use tpmt_bytes::{Reader, Writer};
+use tpmt_bytes::{Be16, Be32, Reader, Writer};
 
 use crate::{Error, Result};
 
@@ -80,35 +80,56 @@ pub struct Mid1Header {
     pub shift_bytes: u8,
 }
 
-/// The 8 byte header in front of INF1's records: how many there are, and how
-/// wide one is.
-mod inf1_offsets {
+/// The header in front of INF1's records: how many there are, and how wide
+/// one is.
+mod inf1_header {
+    use tpmt_bytes::Be16;
+
+    tpmt_bytes::layout! {
+        pub struct Header {
+            pub count: Be16,
+            pub record_len: Be16,
+            /// Neither read nor kept. `JMessage::TResource` can branch on
+            /// this (see JSystem/JMessage/resource.cpp), but TP's
+            /// `dMsgObject_c` bypasses that parser and derives group purely
+            /// from message id (> 5000).
+            pub group_id: Be16,
+            /// Padding.
+            pub unnamed: [u8; 2],
+        }
+    }
+
     /// How wide the header is, so also where its records start.
     pub const LEN: usize = 0x08;
-    pub const COUNT: usize = 0x00;
-    pub const RECORD_LEN: usize = 0x02;
-    /// Neither read nor kept. `JMessage::TResource` can branch on this (see
-    /// JSystem/JMessage/resource.cpp), but TP's `dMsgObject_c` bypasses that
-    /// parser and derives group purely from message id (> 5000).
-    pub const _GROUP_ID: usize = 0x04;
-    // 0x06, 2 bytes: padding.
+    const _: () = assert!(size_of::<Header>() == LEN);
 }
 
-/// The 8 byte header in front of MID1's id array.
-mod mid1_offsets {
+/// The header in front of MID1's id array.
+mod mid1_header {
+    use tpmt_bytes::Be16;
+
+    tpmt_bytes::layout! {
+        pub struct Header {
+            /// Not read: `count` is redundant with INF1's own record count,
+            /// which is what the array is actually walked by. Written as that
+            /// count.
+            pub count: Be16,
+            /// High nibble `ordered`, low nibble `form`. See
+            /// [`OrderedForm`](super::OrderedForm).
+            pub ordered_form: u8,
+            pub shift_bytes: u8,
+            /// Padding.
+            pub unnamed: [u8; 4],
+        }
+    }
+
     /// How wide the header is, so also where the id array starts.
     pub const LEN: usize = 0x08;
-    /// Not read: `count` is redundant with INF1's own record count, which is
-    /// what the array is actually walked by. Written as that count.
-    pub const COUNT: usize = 0x00;
-    /// High nibble `ordered`, low nibble `form`.
-    pub const ORDERED_FORM: usize = 0x02;
-    pub const SHIFT_BYTES: usize = 0x03;
-    // 0x04, 4 bytes: padding.
+    const _: () = assert!(size_of::<Header>() == LEN);
 }
 
-/// MID1's byte at [`mid1_offsets::ORDERED_FORM`], two nibbles in one `u8`:
-/// `ordered` high, `form` low.
+/// MID1's `ordered_form` byte, two nibbles in one `u8`: `ordered` high,
+/// `form` low.
 #[derive(Debug, Clone, Copy)]
 struct OrderedForm(u8);
 
@@ -149,19 +170,24 @@ pub fn read(
     mid1: Option<&[u8]>,
 ) -> Result<(Vec<Message>, u16, Option<Mid1Header>)> {
     let reader = Reader::new(inf1);
-    let count = reader.u16_at(inf1_offsets::COUNT)? as usize;
+    let header: &inf1_header::Header = reader.view_at(0)?;
+    let count = header.count.get() as usize;
     // Text offset into DAT1 + attribute bytes
-    let record_len = reader.u16_at(inf1_offsets::RECORD_LEN)?;
+    let record_len = header.record_len.get();
     let attributes_len = record_len
         .checked_sub(TEXT_OFFSET_LEN)
         .ok_or(Error::Corrupt(
             "an INF1 record is narrower than its own text offset",
         ))?;
-    let records = reader.slice_at(inf1_offsets::LEN, count * record_len as usize)?;
+    let records = reader.slice_at(inf1_header::LEN, count * record_len as usize)?;
 
     // `shift_bytes` is guaranteed zero by `read_mid1`, so a MID1 entry is
     // always the id whole; see `Mid1Header::shift_bytes`.
     let mid1 = mid1.map(Reader::new);
+    let ids: Option<&[Be32]> = mid1
+        .as_ref()
+        .map(|mid1| mid1.slice_of(mid1_header::LEN, count))
+        .transpose()?;
 
     let mut messages = Vec::with_capacity(count);
     // A message's id is its position, counted in the id's own width rather
@@ -171,12 +197,9 @@ pub fn read(
         let dat_offset = record.u32()? as usize;
         let attributes = record.take(attributes_len as usize)?.to_vec();
 
-        let public_id = match &mid1 {
-            Some(mid1) => {
-                let entry = mid1.u32_at(mid1_offsets::LEN + id as usize * 4)?;
-                u16::try_from(entry)
-                    .map_err(|_| Error::Corrupt("a MID1 id does not fit in 16 bits"))?
-            }
+        let public_id = match ids {
+            Some(ids) => u16::try_from(ids[id as usize].get())
+                .map_err(|_| Error::Corrupt("a MID1 id does not fit in 16 bits"))?,
             None => 0,
         };
 
@@ -250,8 +273,9 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
 /// What MID1 says about its ids, as against the ids themselves, which are
 /// what the `ordered` bit is checked against.
 fn read_mid1(mid1: &Reader<'_>, messages: &[Message]) -> Result<Mid1Header> {
-    let packed = OrderedForm(mid1.u8_at(mid1_offsets::ORDERED_FORM)?);
-    let shift_bytes = mid1.u8_at(mid1_offsets::SHIFT_BYTES)?;
+    let header: &mid1_header::Header = mid1.view_at(0)?;
+    let packed = OrderedForm(header.ordered_form);
+    let shift_bytes = header.shift_bytes;
     if packed.ordered() && !sorted(messages) {
         return Err(Error::Corrupt(
             "a MID1 header claims its ids are sorted, and they are not",
@@ -293,10 +317,13 @@ pub fn write(
             "an INF1 record is narrower than its own text offset",
         ))?;
 
-    let mut inf1 = Writer::with_capacity(inf1_offsets::LEN + messages.len() * record_len as usize);
-    inf1.zeros(inf1_offsets::LEN);
-    inf1.u16_at(inf1_offsets::COUNT, count(messages)?);
-    inf1.u16_at(inf1_offsets::RECORD_LEN, record_len);
+    let mut inf1 = Writer::with_capacity(inf1_header::LEN + messages.len() * record_len as usize);
+    inf1.record(&inf1_header::Header {
+        count: Be16::new(count(messages)?),
+        record_len: Be16::new(record_len),
+        group_id: Be16::new(0),
+        unnamed: [0; 2],
+    });
 
     let mut dat1 = Writer::new();
     dat1.u8(0);
@@ -362,13 +389,15 @@ fn write_mid1(header: Mid1Header, messages: &[Message]) -> Result<Vec<u8>> {
         ));
     }
     let packed = OrderedForm::new(sorted(messages), header.form)?;
-    let mut out = Writer::with_capacity(mid1_offsets::LEN + messages.len() * 4);
-    out.zeros(mid1_offsets::LEN);
-    out.u16_at(mid1_offsets::COUNT, count(messages)?);
-    out.u8_at(mid1_offsets::ORDERED_FORM, packed.0);
-    out.u8_at(mid1_offsets::SHIFT_BYTES, header.shift_bytes);
+    let mut out = Writer::with_capacity(mid1_header::LEN + messages.len() * 4);
+    out.record(&mid1_header::Header {
+        count: Be16::new(count(messages)?),
+        ordered_form: packed.0,
+        shift_bytes: header.shift_bytes,
+        unnamed: [0; 4],
+    });
     for message in messages {
-        out.u32(message.public_id as u32);
+        out.record(&Be32::new(message.public_id as u32));
     }
     Ok(out.finish())
 }
@@ -648,7 +677,7 @@ mod tests {
     fn attributes_are_written_as_given() {
         let stale = [message(0, 5, &[0xAA, 0xBB], &[])];
         let (inf1, _, _) = write(&stale, 6, Some(HEADER)).unwrap();
-        assert_eq!(&inf1[inf1_offsets::LEN + 4..], [0xAA, 0xBB]);
+        assert_eq!(&inf1[inf1_header::LEN + 4..], [0xAA, 0xBB]);
 
         let no_room = [message(0, 5, &[], &[])];
         assert!(write(&no_room, 4, Some(HEADER)).is_ok());

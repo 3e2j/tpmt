@@ -13,11 +13,23 @@ use crate::{Error, Result};
 pub mod flow;
 pub mod message;
 
-// What every section opens with: a four character name, then the size of the
-// whole section, its own header and trailing padding included.
-pub const HEADER_LEN: usize = 0x08;
-// 0x00 - Name/magic
-pub const SIZE: usize = 0x04;
+/// What every section opens with.
+pub mod header {
+    use tpmt_bytes::Be32;
+
+    tpmt_bytes::layout! {
+        pub struct Header {
+            /// One of the section names below, such as [`INF1`](super::INF1).
+            pub magic: [u8; 4],
+            /// The whole section, this header and trailing padding included.
+            pub size: Be32,
+        }
+    }
+
+    pub const LEN: usize = 0x08;
+    const _: () = assert!(size_of::<Header>() == LEN);
+}
+
 /// Every section's stated size is padded to this, and every section but
 /// the last in the file is written padded out to it.
 pub const ALIGN: usize = 0x20;
