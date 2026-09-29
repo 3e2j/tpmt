@@ -258,32 +258,21 @@ fn disc_with_contents() -> Vec<u8> {
     data
 }
 
-fn digest(data: &[u8]) -> String {
-    use sha1::{Digest, Sha1};
-    format!("{:x}", Sha1::digest(data))
-}
-
-/// Streams `data` and checks the last files it hands out, then that every
-/// byte of the image went through the digest exactly once.
+/// Streams `data` and checks the last files it hands out.
 fn assert_streams(data: &[u8], last: &[(&str, &[u8])]) {
     let disc = open(data).unwrap();
     let entries = disc.entries().unwrap();
-    let mut hashed = 0;
-    let mut stream = disc.stream(&entries, |size| hashed += size);
-    let files = stream.by_ref().collect::<Result<Vec<_>>>().unwrap();
+    let files = disc.stream(&entries).collect::<Result<Vec<_>>>().unwrap();
     let files: Vec<_> = files
         .iter()
         .map(|(path, bytes)| (*path, bytes.as_slice()))
         .collect();
     assert_eq!(files[files.len() - last.len()..], *last);
-    assert_eq!(stream.finish().unwrap(), digest(data));
-    assert_eq!(hashed, data.len() as u64);
 }
 
-/// One pass hands out every file nearest first, and hashes every byte of the
-/// image exactly once, the gaps between files included.
+/// One pass hands out every file nearest first.
 #[test]
-fn a_stream_hands_out_files_in_offset_order_and_hashes_the_whole_image() {
+fn a_stream_hands_out_files_in_offset_order() {
     assert_streams(
         &disc_with_contents(),
         &[
@@ -294,11 +283,10 @@ fn a_stream_hands_out_files_in_offset_order_and_hashes_the_whole_image() {
     );
 }
 
-/// A file table can point one file into another's bytes. Those bytes are
-/// hashed once, both files still come out whole, and the disc's order wins
-/// over the table's.
+/// A file table can point one file into another's bytes. Both files still
+/// come out whole, and the disc's order wins over the table's.
 #[test]
-fn a_stream_hashes_shared_bytes_once() {
+fn a_stream_hands_out_overlapping_files_whole() {
     let mut data = disc_with_contents();
     put_fst(&mut data, 5, false, NAME_C, DATA_OFFSET + 2, 6);
     assert_streams(
@@ -309,19 +297,6 @@ fn a_stream_hashes_shared_bytes_once() {
             ("files/sub/b.bin", b"bbbbb"),
         ],
     );
-}
-
-/// Stopping part way still finishes on the image's digest, reading the rest
-/// without handing it out.
-#[test]
-fn a_stream_stopped_early_still_hashes_the_whole_image() {
-    let data = disc_with_contents();
-    let disc = open(&data).unwrap();
-    let entries = disc.entries().unwrap();
-    let mut stream = disc.stream(&entries, |_| {});
-    stream.next().unwrap().unwrap();
-    assert_eq!(stream.finish().unwrap(), digest(&data));
-    assert_eq!(disc.sha1(|_| {}).unwrap(), digest(&data));
 }
 
 /// Neither length is stored anywhere on the disc, so both come out of their own

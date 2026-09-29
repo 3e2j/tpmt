@@ -5,7 +5,7 @@
 //! base/disc.toml      DiscMetadata   preamble values a build cannot derive
 //! base/yaz0.toml      Yaz0           which loose files arrived Yaz0 wrapped
 //! mod/mod.json        ModMetadata    id, name, version, author, ...
-//! .tpmt/source.toml   Source         where the ISO was last seen, plus its sha1
+//! .tpmt/source.toml   Source         where the ISO was last seen, and which game
 //! .tpmt/hashes.toml   Hashes         vanilla sha1 of every base/ file
 //! .tpmt/formats.toml  Formats        which base/ files hold a known leaf format
 //! ```
@@ -24,7 +24,6 @@ use sha1::{Digest, Sha1};
 
 use super::{DISC_TOML, FORMATS_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::fs::{io_at, read_toml, write_json, write_toml};
-use crate::progress::{Progress, Step};
 use crate::{Error, FileKind, Result};
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
@@ -111,11 +110,22 @@ pub fn write_mod(mod_dir: &Path, metadata: &ModMetadata<'_>) -> Result<()> {
 }
 
 /// `source.toml`: where the ISO this project came from was last seen, and
-/// its sha1, so a build can tell if it moved or changed.
+/// the game id and revision it held, so a build can tell if it moved or now
+/// holds another version.
+///
+/// Kept apart from `disc.toml`, which a modder may edit to rename the build.
 #[derive(Serialize, Deserialize)]
 pub struct Source {
     pub iso: PathBuf,
-    pub sha1: String,
+    pub id: String,
+    pub revision: u8,
+}
+
+impl Source {
+    /// Whether `boot` is the version this project was unpacked from.
+    pub fn matches(&self, boot: &tpmt_disc::Boot) -> bool {
+        self.id == boot.id && self.revision == boot.revision
+    }
 }
 
 /// Writes `.tpmt/`, which is what makes `project` a project. The caller
@@ -126,7 +136,7 @@ pub struct Source {
 pub fn write_store(
     project: &Path,
     iso: &Path,
-    sha1: &str,
+    boot: &tpmt_disc::Boot,
     hashes: &BTreeMap<String, String>,
     formats: &Formats,
 ) -> Result<()> {
@@ -142,7 +152,8 @@ pub fn write_store(
         &store.join(SOURCE_TOML),
         &Source {
             iso,
-            sha1: sha1.to_string(),
+            id: boot.id.clone(),
+            revision: boot.revision,
         },
     )
 }
@@ -219,11 +230,4 @@ pub fn sha1_file(path: &Path) -> Result<String> {
 
 fn hex(digest: sha1::digest::Output<Sha1>) -> String {
     format!("{digest:x}")
-}
-
-/// The digest `source.toml` records for the disc, reported as
-/// [`Step::HashDisc`].
-pub fn sha1_disc(disc: &tpmt_disc::Disc, progress: &Progress) -> Result<String> {
-    let hashing = progress.begin(Step::HashDisc, disc.len());
-    Ok(disc.sha1(|size| hashing.add(size))?)
 }

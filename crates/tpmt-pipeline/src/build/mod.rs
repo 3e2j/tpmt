@@ -128,40 +128,17 @@ fn rebuild(job: &Job, into: &Path) -> Result<()> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tpmt_disc::{Bi2, Boot, Metadata};
     use tpmt_jkernel_arc::editable::sidecar::{Member, Sidecar};
 
     use super::*;
     use crate::project::metadata::sha1_hex;
-    use crate::test_support::Scratch;
+    use crate::test_support::{Scratch, metadata};
     use crate::unpack::explode;
     use crate::{Error, FileKind};
 
     /// [`super::run`] with nobody watching its progress.
     fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {
         super::run(project, target, output, &Progress::default())
-    }
-
-    fn metadata() -> Metadata {
-        Metadata {
-            boot: Boot {
-                id: "GZ2E".to_string(),
-                maker: "01".to_string(),
-                disc_number: 0,
-                revision: 0,
-                audio_streaming: 0,
-                stream_buffer_size: 0,
-                title: "test".to_string(),
-            },
-            bi2: Bi2 {
-                simulated_memory_size: 0x0180_0000,
-                debug_flag: 0,
-                country: 1,
-                unknown_1c: 1,
-                unknown_20: 1,
-                pad_spec: 0,
-            },
-        }
     }
 
     /// A project holding one wrapped archive of two members and one loose
@@ -222,7 +199,14 @@ mod tests {
         // path it can canonicalize.
         let iso = project.join("source.iso");
         fs::write(&iso, b"").unwrap();
-        metadata::write_store(project, &iso, "0", &hashes, &metadata::Formats::new()).unwrap();
+        metadata::write_store(
+            project,
+            &iso,
+            &metadata().boot,
+            &hashes,
+            &metadata::Formats::new(),
+        )
+        .unwrap();
 
         scratch
     }

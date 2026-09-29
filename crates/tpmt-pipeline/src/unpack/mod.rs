@@ -21,7 +21,6 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
 
     let staging = project::Staging::begin(&project::base(project))?;
     let Unpacked {
-        sha1,
         yaz0_compressed,
         hashes,
         formats,
@@ -31,15 +30,13 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
     project::metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
     staging.promote()?;
 
-    project::metadata::write_store(project, iso, &sha1, &hashes, &formats)?;
+    project::metadata::write_store(project, iso, &disc.metadata().boot, &hashes, &formats)?;
 
     project::scaffold_mod(project)
 }
 
 /// What one read of the disc leaves for the project to record.
 struct Unpacked {
-    /// The whole image's SHA-1, for `source.toml`.
-    sha1: String,
     /// The disc files that arrived Yaz0 wrapped, for `yaz0.toml`.
     yaz0_compressed: BTreeSet<String>,
     /// What every project file hashed to, keyed by project path.
@@ -61,20 +58,20 @@ fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked
         }
     }
 
-    let unpacking = progress.begin(Step::Unpack, disc.len());
-    let mut stream = disc.stream(&entries, |size| unpacking.add(size));
+    let total = entries.iter().filter_map(Entry::span).map(|span| span.size);
+    let unpacking = progress.begin(Step::Unpack, total.sum());
 
     // Workers pull files off the stream one at a time, so the disc is still
     // read in order and at most one file per worker sits in memory.
-    let unpacked_files = stream
-        .by_ref()
+    let unpacked_files = disc
+        .stream(&entries)
         .par_bridge()
         .map(|file| {
             let (path, data) = file?;
+            unpacking.add(data.len() as u64);
             unpack_file(base, path, &data)
         })
         .collect::<Result<Vec<_>>>()?;
-    let sha1 = stream.finish()?;
 
     let yaz0_compressed = unpacked_files
         .iter()
@@ -92,7 +89,6 @@ fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked
     }
 
     Ok(Unpacked {
-        sha1,
         yaz0_compressed,
         hashes,
         formats,

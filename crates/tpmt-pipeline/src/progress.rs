@@ -17,11 +17,9 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Step {
-    /// SHA-1 over the whole source disc before a build, counted in bytes.
-    HashDisc = 1,
-    /// Reading the disc once, hashing it and taking every file apart into
-    /// `base/` on the way, counted in image bytes read.
-    Unpack,
+    /// Reading the disc once and taking every file apart into `base/` on the
+    /// way, counted in file bytes read.
+    Unpack = 1,
     /// Writing the project's own files and swapping `base/` in. No total.
     Save,
     /// Re-encoding each changed disc file, counted in files.
@@ -40,19 +38,12 @@ pub enum Unit {
 }
 
 impl Step {
-    pub const ALL: [Self; 5] = [
-        Self::HashDisc,
-        Self::Unpack,
-        Self::Save,
-        Self::Rebuild,
-        Self::WriteImage,
-    ];
+    pub const ALL: [Self; 4] = [Self::Unpack, Self::Save, Self::Rebuild, Self::WriteImage];
 
     /// What the step is doing, as a short present-tense phrase.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::HashDisc => "hashing disc",
             Self::Unpack => "unpacking disc",
             Self::Save => "saving project",
             Self::Rebuild => "rebuilding files",
@@ -63,7 +54,7 @@ impl Step {
     #[must_use]
     pub const fn unit(self) -> Unit {
         match self {
-            Self::HashDisc | Self::Unpack | Self::WriteImage => Unit::Bytes,
+            Self::Unpack | Self::WriteImage => Unit::Bytes,
             Self::Rebuild => Unit::Files,
             Self::Save => Unit::None,
         }
@@ -131,7 +122,7 @@ mod tests {
     #[test]
     fn a_new_step_replaces_the_last() {
         let progress = Progress::default();
-        progress.begin(Step::HashDisc, 100).add(100);
+        progress.begin(Step::Rebuild, 100).add(100);
         progress.begin(Step::Unpack, 10).add(4);
         assert_eq!(
             progress.current(),

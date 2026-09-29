@@ -39,7 +39,7 @@ pub fn diff(
 mod tests {
     use super::*;
     use crate::project::metadata::sha1_hex;
-    use crate::test_support::Scratch;
+    use crate::test_support::{Scratch, metadata};
 
     /// A project whose unpack wrote two files.
     fn unpacked(name: &str) -> Scratch {
@@ -55,7 +55,14 @@ mod tests {
 
         let iso = scratch.0.join("source.iso");
         fs::write(&iso, b"").unwrap();
-        metadata::write_store(&scratch.0, &iso, "0", &hashes, &metadata::Formats::new()).unwrap();
+        metadata::write_store(
+            &scratch.0,
+            &iso,
+            &metadata().boot,
+            &hashes,
+            &metadata::Formats::new(),
+        )
+        .unwrap();
         scratch
     }
 

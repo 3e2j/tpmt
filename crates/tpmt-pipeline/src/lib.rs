@@ -105,8 +105,14 @@ pub enum Error {
     #[error("the disc this project was unpacked from is no longer at `{}`", .0.display())]
     SourceMissing(PathBuf),
 
-    #[error("`{}` is not the disc this project was unpacked from", .0.display())]
-    SourceChanged(PathBuf),
+    /// The source disc now holds another version. Its unchanged files would
+    /// not match what `base/` and the overlay were made against.
+    #[error("`{}` holds {found}, but this project was unpacked from {unpacked}", .iso.display())]
+    SourceChanged {
+        iso: PathBuf,
+        unpacked: String,
+        found: String,
+    },
 
     #[error("the {0} target is not implemented yet")]
     Unsupported(Target),
@@ -227,7 +233,7 @@ pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
 /// `build/targets/`, and must be missing or empty.
 ///
 /// Reports [`Step::Rebuild`] through `progress`, and for an image
-/// [`Step::HashDisc`] and [`Step::WriteImage`] as well.
+/// [`Step::WriteImage`] as well.
 ///
 /// # Errors
 ///

@@ -7,9 +7,7 @@
 //! executable) followed by a file string table describing everything else as a
 //! directory tree.
 //!
-//! Also identifies a disc. The game id and revision come out of the boot
-//! header, and a SHA-1 over the whole image says whether this is the same dump
-//! a project was unpacked from.
+//! Also identifies a disc, by the game id and revision in its boot header.
 //!
 //! Hands out byte ranges. Decoding the file contents is the job of the format
 //! crates.
@@ -273,33 +271,13 @@ impl Disc {
         read_at(&self.handle, span)
     }
 
-    /// The SHA-1 of the image, which is what says whether a project's source
-    /// disc is still the same dump it was unpacked from.
-    ///
-    /// Over the image rather than the file, so a container and a raw dump of
-    /// the same disc answer the same.
-    ///
-    /// Calls `hashed` with the size of each chunk once it is hashed, so a
-    /// caller can report progress across the whole [`len`](Self::len).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Read`].
-    pub fn sha1(&self, hashed: impl FnMut(u64)) -> Result<String> {
-        Stream::new(self, &[], hashed).finish()
-    }
-
-    /// Reads the image once, front to back. Every file in `entries` comes out in
-    /// offset order, and [`Stream::finish`] returns the image's
-    /// [`sha1`](Self::sha1).
-    ///
-    /// The gaps between files are read too, since the hash covers them. Calls
-    /// `hashed` with each read's size, so a caller can report progress across
-    /// the whole [`len`](Self::len).
+    /// Reads the files in `entries` once, front to back, in offset order
+    /// rather than file table order.
     ///
     /// `entries` is what [`entries`](Self::entries) returned, or any part of it.
-    pub fn stream<'a, F: FnMut(u64)>(&'a self, entries: &'a [Entry], hashed: F) -> Stream<'a, F> {
-        Stream::new(self, entries, hashed)
+    #[must_use]
+    pub fn stream<'a>(&'a self, entries: &'a [Entry]) -> Stream<'a> {
+        Stream::new(self, entries)
     }
 
     /// Everything the disc holds: the preamble under `sys/`, then the game's

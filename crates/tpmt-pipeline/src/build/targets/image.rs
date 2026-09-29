@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use tpmt_disc::{Disc, Entry, Item, Layout, Span};
 
 use crate::build::{Job, rebuild};
-use crate::progress::{Progress, Step};
-use crate::project::metadata::{self, Source};
+use crate::progress::Step;
+use crate::project::metadata::Source;
 use crate::{Error, Result, fs};
 
 /// Where rebuilt disc files wait while the image is laid out around them.
@@ -26,11 +26,11 @@ const STAGING: &str = ".rebuilt";
 /// # Errors
 ///
 /// - [`Error::SourceMissing`] if the disc this project came from has moved
-/// - [`Error::SourceChanged`] if it is no longer the same dump
+/// - [`Error::SourceChanged`] if it now holds another game or revision
 /// - [`Error::Disc`] if the image will not lay out or will not write
 /// - whatever assembling a changed file hit. See [`crate::build::run`]
 pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
-    let disc = open(job.source, job.progress)?;
+    let disc = open(job.source)?;
     let staged = out.join(STAGING);
     rebuild(job, &staged)?;
 
@@ -122,16 +122,24 @@ fn items(original: &[Entry], sources: &BTreeMap<&str, Bytes>) -> Vec<Item> {
     directories.chain(files).collect()
 }
 
-/// Opens the disc this project was unpacked from, and checks it is still the
-/// same one.
-fn open(source: &Source, progress: &Progress) -> Result<Disc> {
+/// Opens the disc this project was unpacked from, and checks it still holds
+/// the same game and revision.
+///
+/// Another dump of the same revision passes, since its unchanged files are
+/// the same bytes. A disc edited in place under the same id passes too.
+fn open(source: &Source) -> Result<Disc> {
     if !source.iso.is_file() {
         return Err(Error::SourceMissing(source.iso.clone()));
     }
 
     let disc = Disc::open(&source.iso)?;
-    if metadata::sha1_disc(&disc, progress)? != source.sha1 {
-        return Err(Error::SourceChanged(source.iso.clone()));
+    let boot = &disc.metadata().boot;
+    if !source.matches(boot) {
+        return Err(Error::SourceChanged {
+            iso: source.iso.clone(),
+            unpacked: format!("{} revision {}", source.id, source.revision),
+            found: format!("{} revision {}", boot.id, boot.revision),
+        });
     }
     Ok(disc)
 }
