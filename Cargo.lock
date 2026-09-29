@@ -543,8 +543,11 @@ version = "0.1.0"
 dependencies = [
  "libtest-mimic",
  "rayon",
+ "tpmt-disc",
  "tpmt-format",
  "tpmt-game",
+ "tpmt-jkernel-arc",
+ "tpmt-jkernel-compress",
  "tpmt-jmessage",
  "tpmt-pipeline",
 ]
