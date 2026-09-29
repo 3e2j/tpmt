@@ -515,7 +515,6 @@ dependencies = [
 name = "tpmt-jmessage"
 version = "0.1.0"
 dependencies = [
- "encoding_rs",
  "thiserror",
  "tpmt-bytes",
  "tpmt-format",

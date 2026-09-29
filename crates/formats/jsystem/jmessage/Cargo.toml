@@ -10,7 +10,6 @@ license.workspace = true
 tpmt-bytes.workspace = true
 tpmt-format.workspace = true
 thiserror.workspace = true
-encoding_rs.workspace = true # message text
 
 [lints]
 workspace = true
