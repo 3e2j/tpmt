@@ -23,16 +23,6 @@ pub trait Format<'a>: Sized {
 
     type Error: std::error::Error + From<WrongKind>;
 
-    /// Whether `data` opens with this format's magic.
-    ///
-    /// Says nothing about whether the rest is intact; that is
-    /// [`decode`](Self::decode)'s job. Split out so a caller can pick a format
-    /// before committing to it.
-    #[must_use]
-    fn recognises(data: &[u8]) -> bool {
-        Self::KIND.matches(data)
-    }
-
     /// Takes the file apart.
     ///
     /// # Errors
@@ -40,23 +30,19 @@ pub trait Format<'a>: Sized {
     /// [`WrongKind`] when `data` doesn't open with this format's magic, and
     /// whatever [`decode_body`](Self::decode_body) returns otherwise.
     fn decode(data: &'a [u8]) -> Result<Self, Self::Error> {
-        if !Self::recognises(data) {
-            return Err(WrongKind {
-                expected: Self::KIND,
-            }
-            .into());
-        }
-        Self::decode_body(data)
+        Self::KIND.check(data)?;
+        Self::decode_body(Checked(data))
     }
 
     /// Takes apart a file [`decode`](Self::decode) has already matched to
     /// this format, so an error out of it always means "this format, but
-    /// broken", never "not this format". Call `decode` instead.
+    /// broken", never "not this format". Only `decode` can make a
+    /// [`Checked`], so nothing else calls this.
     ///
     /// # Errors
     ///
     /// When the file is broken. Each format's own error type says how.
-    fn decode_body(data: &'a [u8]) -> Result<Self, Self::Error>;
+    fn decode_body(data: Checked<'a>) -> Result<Self, Self::Error>;
 
     /// Writes the file back out.
     ///
@@ -65,6 +51,19 @@ pub trait Format<'a>: Sized {
     /// When the value doesn't fit the format: a size field overflows, a name
     /// won't encode, or similar.
     fn encode(&self) -> Result<Vec<u8>, Self::Error>;
+}
+
+/// Bytes [`Format::decode`] has matched to a kind's magic, handed on to
+/// [`Format::decode_body`]. Only this crate makes one.
+#[derive(Debug, Clone, Copy)]
+pub struct Checked<'a>(&'a [u8]);
+
+impl<'a> Checked<'a> {
+    /// The whole file, magic included.
+    #[must_use]
+    pub const fn bytes(self) -> &'a [u8] {
+        self.0
+    }
 }
 
 /// Data handed to a decoder that doesn't open with its magic.
@@ -103,13 +102,19 @@ impl FileKind {
     /// The kind whose magic `data` opens with, if any.
     #[must_use]
     pub fn identify(data: &[u8]) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.matches(data))
+        Self::ALL.into_iter().find(|kind| kind.check(data).is_ok())
     }
 
-    /// Whether `data` opens with this kind's magic.
-    #[must_use]
-    pub fn matches(self, data: &[u8]) -> bool {
+    /// Checks that `data` opens with this kind's magic, for a decoder to
+    /// open with.
+    ///
+    /// # Errors
+    ///
+    /// [`WrongKind`] when it doesn't.
+    pub fn check(self, data: &[u8]) -> Result<(), WrongKind> {
         data.starts_with(&self.magic())
+            .then_some(())
+            .ok_or(WrongKind { expected: self })
     }
 
     #[must_use]

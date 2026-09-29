@@ -17,8 +17,62 @@ mod decode;
 mod encode;
 mod token;
 
-pub use decode::yaz0_decode;
-pub use encode::yaz0_encode;
+use std::borrow::Cow;
+
+pub use tpmt_format::{FileKind, Format};
+
+/// How the encoder searches for back-references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strategy {
+    /// Nintendo's own search, so a retail file comes back byte for byte.
+    Parity,
+    /// Chases longer back-references for a smaller file. Slower, and no
+    /// longer byte for byte with retail.
+    Extensive,
+}
+
+/// A Yaz0 wrapper, held unwrapped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Yaz0<'a> {
+    /// What the wrapper holds, decompressed. Decoding owns it; encoding can
+    /// borrow the caller's buffer.
+    pub data: Cow<'a, [u8]>,
+    /// How [`encode`](Format::encode) searches for back-references.
+    /// Decoding sets [`Strategy::Parity`].
+    pub strategy: Strategy,
+}
+
+impl<'a> Format<'a> for Yaz0<'a> {
+    const KIND: FileKind = FileKind::Yaz0;
+
+    type Error = Error;
+
+    /// Decompresses. See the crate docs for the token format.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::WrongKind`]
+    /// - [`Error::BackReference`] if a back-reference reaches before the
+    ///   start of the output.
+    /// - [`Error::SizeMismatch`] if the output doesn't match the header's
+    ///   declared size.
+    /// - [`Error::Bytes`] if the data is truncated.
+    fn decode_body(data: tpmt_format::Checked<'a>) -> Result<Self> {
+        Ok(Self {
+            data: Cow::Owned(decode::decompress(data.bytes())?),
+            strategy: Strategy::Parity,
+        })
+    }
+
+    /// Compresses [`data`](Self::data) with [`strategy`](Self::strategy).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TooLarge`].
+    fn encode(&self) -> Result<Vec<u8>> {
+        encode::compress(&self.data, self.strategy)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

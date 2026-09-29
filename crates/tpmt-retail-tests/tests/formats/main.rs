@@ -24,9 +24,7 @@ fn main() -> ExitCode {
 /// The one problem with `original`, if there is one.
 fn round_trip<F: for<'a> Format<'a>>(_: Version, _path: &str, original: &[u8]) -> Vec<String> {
     let result = (|| {
-        if !F::recognises(original) {
-            return Err("not recognised".to_owned());
-        }
+        F::KIND.check(original).map_err(|error| error.to_string())?;
         let decoded = F::decode(original).map_err(|error| format!("decode failed: {error}"))?;
         // TODO: once a format holds cross-references, stand in for the linker
         // here. Hand each id the decode gave out straight back as its own

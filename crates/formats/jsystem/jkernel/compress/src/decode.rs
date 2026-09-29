@@ -1,31 +1,13 @@
 //! The read path: turns Yaz0 data into raw bytes.
 
-use tpmt_bytes::{Layout, Reader};
-use tpmt_format::{FileKind, WrongKind};
-
 use crate::Header;
 use crate::token::backref::Backreference;
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
 use crate::{Error, Result};
+use tpmt_bytes::{Layout, Reader};
 
-/// Decompresses Yaz0 data. See the crate docs for the token format.
-///
-/// # Errors
-///
-/// Returns [`Error::WrongKind`] if `input` lacks the magic, [`Error::BackReference`]
-/// if a back-reference reaches before the start of the output,
-/// [`Error::SizeMismatch`] if the decoded output doesn't match the header's
-/// declared size, or [`Error::Bytes`] if `input` is truncated.
-pub fn yaz0_decode(input: &[u8]) -> Result<Vec<u8>> {
-    // The raw buffer goes to the check, which copes with one shorter than
-    // the magic, so nothing here needs to know the magic's length.
-    if !FileKind::Yaz0.matches(input) {
-        return Err(WrongKind {
-            expected: FileKind::Yaz0,
-        }
-        .into());
-    }
-
+/// Decompresses `input`, whose magic the caller has already checked.
+pub fn decompress(input: &[u8]) -> Result<Vec<u8>> {
     let mut reader = Reader::new(input);
     let header: &Header = reader.view_at(0)?;
     let decompressed_size = header.decompressed_size.get() as usize;
@@ -96,6 +78,7 @@ mod tests {
     use tpmt_bytes::Be32;
 
     use super::*;
+    use crate::{FileKind, Format, Yaz0};
 
     fn header(decompressed_size: u32) -> Vec<u8> {
         Header {
@@ -120,19 +103,22 @@ mod tests {
     #[test]
     fn decodes_literals_and_overlapping_runs() {
         // The tail of the run reads back bytes the run itself just wrote.
-        assert_eq!(yaz0_decode(&sample()).unwrap(), b"abcdabcdab");
+        assert_eq!(*Yaz0::decode(&sample()).unwrap().data, *b"abcdabcdab");
     }
 
     #[test]
     fn rejects_other_data() {
-        assert!(matches!(yaz0_decode(b"RARC...."), Err(Error::WrongKind(_))));
+        assert!(matches!(
+            Yaz0::decode(b"RARC...."),
+            Err(Error::WrongKind(_))
+        ));
     }
 
     /// Truncated input is an error, never a short buffer passed off as whole.
     #[test]
     fn rejects_truncated_input() {
         let data = sample();
-        assert!(yaz0_decode(&data[..data.len() - 3]).is_err());
+        assert!(Yaz0::decode(&data[..data.len() - 3]).is_err());
     }
 
     /// A match that leaves the output short of, or past, the header's
@@ -145,7 +131,7 @@ mod tests {
         // Length (4 - 1) + 3, distance 0 + 1: writes 7 bytes total, not 3.
         data.extend_from_slice(&[0x40, 0x00]);
         assert!(matches!(
-            yaz0_decode(&data),
+            Yaz0::decode(&data),
             Err(Error::SizeMismatch { .. })
         ));
     }
@@ -158,7 +144,7 @@ mod tests {
         data.push(0b0000_0000);
         data.extend_from_slice(&[0x40, 0x03]);
         assert!(matches!(
-            yaz0_decode(&data),
+            Yaz0::decode(&data),
             Err(Error::BackReference { .. })
         ));
     }

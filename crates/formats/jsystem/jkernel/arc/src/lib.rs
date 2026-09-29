@@ -171,8 +171,8 @@ impl<'a> Format<'a> for Archive<'a> {
     ///   would misplace or lose an entry (a wrong stated size, a missing root,
     ///   more entries than it claims to hold, a file with no memory tag, a
     ///   directory tree that loops, or similar).
-    fn decode_body(data: &'a [u8]) -> Result<Self> {
-        unpack::unpack(data)
+    fn decode_body(data: tpmt_format::Checked<'a>) -> Result<Self> {
+        unpack::unpack(data.bytes())
     }
 
     /// Writes a whole archive from its file list.

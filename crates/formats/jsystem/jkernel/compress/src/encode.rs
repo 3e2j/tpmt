@@ -6,7 +6,7 @@ use tpmt_format::FileKind;
 use crate::Header;
 use crate::token::backref::{Backreference, MAX_DISTANCE, MAX_LENGTH, MIN_LENGTH};
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
-use crate::{Error, Result};
+use crate::{Error, Result, Strategy};
 
 /// After finding a valid backref match, we look to see if a match beside it is
 /// better, a "lazy match". These are the knobs that shape detection.
@@ -57,25 +57,18 @@ impl LazyMatch {
         slack: 0,
     };
 
-    const fn pick(extensive: bool) -> Self {
-        if extensive {
-            Self::EXTENSIVE
-        } else {
-            Self::PARITY
+    const fn of(strategy: Strategy) -> Self {
+        match strategy {
+            Strategy::Parity => Self::PARITY,
+            Strategy::Extensive => Self::EXTENSIVE,
         }
     }
 }
 
-/// Compresses a buffer into Yaz0 data. See the module docs for the token format.
-///
-/// `extensive` picks the [`LazyMatch::EXTENSIVE`] strategy to chase a longer
-/// backreference over [`LazyMatch::PARITY`] at the cost of speed and byte-accuracy.
-///
-/// # Errors
-///
-/// Returns [`Error::TooLarge`].
-pub fn yaz0_encode(input: &[u8], extensive: bool) -> Result<Vec<u8>> {
-    encode_with(input, &LazyMatch::pick(extensive))
+/// Compresses `input` into Yaz0 data. See the module docs for the token
+/// format.
+pub fn compress(input: &[u8], strategy: Strategy) -> Result<Vec<u8>> {
+    encode_with(input, &LazyMatch::of(strategy))
 }
 
 /// Runs the encoder against an explicit strategy.
@@ -325,8 +318,10 @@ impl Chains {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
-    use crate::yaz0_decode;
+    use crate::{Format, Yaz0};
 
     /// Deterministic noise, so a failure repeats.
     fn noise(len: usize) -> Vec<u8> {
@@ -344,16 +339,20 @@ mod tests {
     }
 
     fn round_trip(input: &[u8]) {
-        for extensive in [false, true] {
-            let encoded = yaz0_encode(input, extensive).unwrap();
-            assert!(
-                FileKind::Yaz0.matches(&encoded),
-                "encoder wrote something else entirely, extensive={extensive}"
-            );
+        for strategy in [Strategy::Parity, Strategy::Extensive] {
+            let encoded = Yaz0 {
+                data: Cow::Borrowed(input),
+                strategy,
+            }
+            .encode()
+            .unwrap();
+            FileKind::Yaz0.check(&encoded).unwrap_or_else(|err| {
+                panic!("encoder wrote something else entirely, {strategy:?}: {err}")
+            });
             assert_eq!(
-                yaz0_decode(&encoded).unwrap(),
-                input,
-                "on {} bytes, extensive={extensive}",
+                *Yaz0::decode(&encoded).unwrap().data,
+                *input,
+                "on {} bytes, {strategy:?}",
                 input.len()
             );
         }

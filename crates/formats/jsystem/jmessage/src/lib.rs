@@ -175,8 +175,8 @@ impl Format<'_> for Bmg {
     ///   section: a size that doesn't fit its header, a stated file size that
     ///   doesn't match where the sections end, a required section missing, or a
     ///   flow graph with only one of its two sections.
-    fn decode_body(data: &[u8]) -> Result<Self> {
-        unpack::unpack(data)
+    fn decode_body(data: tpmt_format::Checked<'_>) -> Result<Self> {
+        unpack::unpack(data.bytes())
     }
 
     /// Writes a whole message file from what [`decode`](Self::decode) took

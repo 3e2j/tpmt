@@ -235,10 +235,9 @@ mod tests {
     /// unpack side would make of it.
     fn exploded(built: &Path, path: &str) -> BTreeMap<String, Vec<u8>> {
         let data = fs::read(&built.join(path)).unwrap();
-        assert!(
-            FileKind::Yaz0.matches(&data),
-            "the disc held this one wrapped"
-        );
+        FileKind::Yaz0
+            .check(&data)
+            .expect("the disc held this one wrapped");
 
         let mut outputs = BTreeMap::new();
         explode::file(path, &data, &mut |at, bytes| {

@@ -535,7 +535,7 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
             Preload::Aram => Entry::FLAG_ARAM,
             Preload::Disc => Entry::FLAG_DISC,
         }
-        | if FileKind::Yaz0.matches(data) {
+        | if FileKind::Yaz0.check(data).is_ok() {
             Entry::FLAG_COMPRESSED | Entry::FLAG_YAZ0
         } else {
             0

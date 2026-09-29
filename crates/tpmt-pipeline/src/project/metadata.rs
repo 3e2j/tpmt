@@ -172,7 +172,7 @@ pub fn read_store(project: &Path) -> Result<Store> {
 
 /// `formats.toml`: every `base/` file whose magic a [`FileKind`] recognised,
 /// grouped by kind. A file no kind recognises isn't listed. On disk each kind
-/// is its [`FileKind::name`], since `tpmt-format` carries no serde.
+/// is its [`FileKind`] `Display` form, since `tpmt-format` carries no serde.
 ///
 /// It exists because a name on the disc can't be trusted: some files carry
 /// no extension, or one that doesn't match what's inside. Only the magic

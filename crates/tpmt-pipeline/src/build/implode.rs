@@ -7,10 +7,12 @@
 //! then encodes the archive. A disc file's own wrapper goes on last, because
 //! the disc records it, not an archive.
 
+use std::borrow::Cow;
+
 use rayon::prelude::*;
 use tpmt_jkernel_arc::editable::sidecar::Sidecar;
 use tpmt_jkernel_arc::{Archive, File, Format};
-use tpmt_jkernel_compress::yaz0_encode;
+use tpmt_jkernel_compress::{Strategy, Yaz0};
 
 use super::tree::Tree;
 use crate::{Error, Result};
@@ -108,7 +110,12 @@ fn archive(tree: &Tree, path: &str) -> Result<Vec<u8>> {
 fn wrap(path: &str, data: &[u8]) -> Result<Vec<u8>> {
     // Forced cheap (vanilla) strategy here. May be opened up in future
     // when customization comes into play.
-    yaz0_encode(data, false).map_err(at(path))
+    Yaz0 {
+        data: Cow::Borrowed(data),
+        strategy: Strategy::Parity,
+    }
+    .encode()
+    .map_err(at(path))
 }
 
 fn at<E: Into<EncodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {

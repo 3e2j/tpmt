@@ -13,10 +13,12 @@
 //! holds the file. An archive writes it on the member's sidecar entry, the
 //! disc on `yaz0.toml`. A file never records its own.
 
+use std::borrow::Cow;
+
 use tpmt_format::{FileKind, Format};
 use tpmt_jkernel_arc::Archive;
 use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_jkernel_compress::yaz0_decode;
+use tpmt_jkernel_compress::Yaz0;
 
 use crate::{Error, Result};
 
@@ -57,32 +59,31 @@ pub fn file(
 ) -> Result<bool> {
     // On this disc the wrapper is a convention of where a file sits, not
     // something the file itself declares, so the caller records it.
-    let yaz0_compressed = FileKind::Yaz0.matches(data);
-    let unwrapped = yaz0_compressed
-        .then(|| yaz0_decode(data))
-        .transpose()
-        .map_err(at(path))?;
-    let bare = unwrapped.as_deref().unwrap_or(data);
+    let kind = FileKind::identify(data);
+    let bare = match kind {
+        Some(FileKind::Yaz0) => Yaz0::decode(data).map_err(at(path))?.data,
+        _ => Cow::Borrowed(data),
+    };
 
-    if Archive::recognises(bare) {
-        archive(path, bare, sink)?;
-    } else {
+    match FileKind::identify(&bare) {
+        Some(FileKind::Rarc) => {
+            archive(path, Archive::decode(&bare).map_err(at(path))?, sink)?;
+        }
         // Leaf formats pass through as raw bytes. Decoding one is a separate,
         // on-demand call.
-        sink(path, bare)?;
+        _ => sink(path, &bare)?,
     }
 
-    Ok(yaz0_compressed)
+    Ok(kind == Some(FileKind::Yaz0))
 }
 
-/// Sinks every member of the archive in `bare`, then a [`SIDECAR`] recording
-/// each member's path, preload flag, id, and Yaz0 wrapper.
+/// Sinks every member of `archive`, then a [`SIDECAR`] recording each
+/// member's path, preload flag, id, and Yaz0 wrapper.
 fn archive(
     path: &str,
-    bare: &[u8],
+    archive: Archive<'_>,
     sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
 ) -> Result<()> {
-    let archive = Archive::decode(bare).map_err(at(path))?;
     let mut members = Vec::with_capacity(archive.files.len());
 
     for member in &archive.files {
@@ -112,13 +113,20 @@ fn at<E: Into<DecodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {
 mod tests {
     use std::collections::BTreeMap;
 
+    use std::borrow::Cow;
     use tpmt_jkernel_arc::File;
-    use tpmt_jkernel_compress::yaz0_encode;
+
+    use tpmt_jkernel_compress::Strategy;
 
     use super::*;
 
     fn wrap(data: &[u8]) -> Vec<u8> {
-        yaz0_encode(data, false).unwrap()
+        Yaz0 {
+            data: Cow::Borrowed(data),
+            strategy: Strategy::Parity,
+        }
+        .encode()
+        .unwrap()
     }
 
     fn archive(root: &str, files: Vec<File<'_>>) -> Vec<u8> {
