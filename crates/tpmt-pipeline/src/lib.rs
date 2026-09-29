@@ -251,13 +251,3 @@ pub fn build(
 ) -> Result<Built, Error> {
     build::run(project, target, output, progress)
 }
-
-/// Puts an edited file back to its vanilla bytes, re-unpacking its archive
-/// fresh when it lives inside one.
-///
-/// # Errors
-///
-/// Not yet designed.
-pub fn revert(_project: &Path, _target: &Path) -> Result<(), Error> {
-    todo!()
-}

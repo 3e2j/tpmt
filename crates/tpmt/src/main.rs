@@ -41,17 +41,6 @@ enum Command {
         #[arg(short = 'C', long = "dir")]
         dir: Option<PathBuf>,
     },
-    /// Restore a file, or every file under a directory, from the disc
-    Revert {
-        /// File or directory in the project to put back
-        path: PathBuf,
-        /// Project the path is in, defaults to the current directory
-        #[arg(short = 'C', long = "dir")]
-        dir: Option<PathBuf>,
-        /// Don't ask for confirmation
-        #[arg(short = 'y', long = "yes")]
-        yes: bool,
-    },
     /// Pack the changes for one target
     Build {
         /// What to build
@@ -110,25 +99,11 @@ fn run(command: Command) -> Result<(), Error> {
 
             progress::show(|progress| tpmt_pipeline::unpack(&iso, &project, progress))?;
             println!("unpacked {} into {}", iso.display(), project.display());
-            Ok(())
         }
         Command::Status { dir } => {
             let root = project(dir.as_ref())?;
             let changes = tpmt_pipeline::status(&root)?;
             print_status(&changes);
-            Ok(())
-        }
-        Command::Revert { path, dir, yes } => {
-            let root = project(dir.as_ref())?;
-            // `git -C` semantics: a relative path resolves against where you're
-            // standing, not against the project root `-C`/`dir` points at.
-            let cwd = std::env::current_dir()?;
-            let absolute = if path.is_absolute() {
-                path
-            } else {
-                cwd.join(path)
-            };
-            revert(&root, &absolute, yes)
         }
         Command::Build {
             target,
@@ -140,9 +115,9 @@ fn run(command: Command) -> Result<(), Error> {
                 tpmt_pipeline::build(&root, target, output.as_deref(), progress)
             })?;
             print_built(&built);
-            Ok(())
         }
     }
+    Ok(())
 }
 
 /// The project a command works on: discovered by walking up from `dir` (or
@@ -193,23 +168,6 @@ fn print_built(built: &Built) {
         println!("rebuilt {path}");
     }
     println!("wrote {}", built.path.display());
-}
-
-/// Reverts `target`, an absolute filesystem path, asking first unless `yes`
-/// was given.
-fn revert(project: &Path, target: &Path, yes: bool) -> Result<(), Error> {
-    if !yes
-        && !ask(&format!(
-            "Revert {} back to vanilla? [y/N] ",
-            target.display()
-        ))?
-    {
-        return Ok(());
-    }
-
-    tpmt_pipeline::revert(project, target)?;
-    println!("Reverted {}", target.display());
-    Ok(())
 }
 
 fn ask(prompt: &str) -> Result<bool, Error> {
