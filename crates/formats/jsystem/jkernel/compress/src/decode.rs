@@ -2,7 +2,7 @@
 
 use crate::Header;
 use crate::token::backref::Backreference;
-use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
+use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT};
 use crate::{Error, Result};
 use tpmt_bytes::{Layout, Reader};
 
@@ -13,11 +13,12 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>> {
     let decompressed_size = header.decompressed_size.get() as usize;
     reader.seek(Header::LEN);
 
-    let mut out = Vec::with_capacity(decompressed_size);
+    let mut out = vec![0; decompressed_size];
+    let mut pos = 0;
     let mut flags: Flags = 0;
     let mut items_left = 0;
 
-    while out.len() < decompressed_size {
+    while pos < decompressed_size {
         if items_left == 0 {
             flags = reader.u8()?;
             items_left = GROUP_SIZE;
@@ -27,49 +28,34 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>> {
         flags <<= 1;
         items_left -= 1;
 
-        let token = if is_literal {
-            Token::Literal(reader.u8()?)
-        } else {
-            Token::BackReference(Backreference::read(&mut reader)?)
-        };
-        let backref = match token {
-            Token::Literal(byte) => {
-                out.push(byte);
-                continue;
-            }
-            Token::BackReference(backref) => backref,
-        };
-        let (distance, length) = (backref.distance(), backref.length());
+        if is_literal {
+            out[pos] = reader.u8()?;
+            pos += 1;
+            continue;
+        }
 
-        let start = out
-            .len()
-            .checked_sub(distance as usize)
-            .ok_or(Error::BackReference {
-                pos: out.len(),
-                distance: distance as usize,
-            })?;
-        if distance >= length {
-            // Source and destination don't overlap, so the whole run already
-            // sits in `out` and can be copied in one shot.
-            out.extend_from_within(start..start + length as usize);
-        } else {
-            // A run longer than its distance repeats the `distance` bytes behind
-            // it, so everything from `start` on has that period. Copying from
-            // `start` again after each pass doubles the chunk and keeps the period.
-            let end = out.len() + length as usize;
-            while out.len() < end {
-                let chunk = (out.len() - start).min(end - out.len());
-                out.extend_from_within(start..start + chunk);
-            }
+        let backref = Backreference::read(&mut reader)?;
+        let (distance, length) = (backref.distance() as usize, backref.length() as usize);
+        let start = pos
+            .checked_sub(distance)
+            .ok_or(Error::BackReference { pos, distance })?;
+        let end = pos + length;
+        if end > decompressed_size {
+            return Err(Error::SizeMismatch {
+                expected: decompressed_size,
+                actual: end,
+            });
+        }
+
+        // A run longer than its distance repeats the bytes behind it, so each
+        // pass can copy everything written since `start`, doubling the chunk.
+        while pos < end {
+            let chunk = (pos - start).min(end - pos);
+            out.copy_within(start..start + chunk, pos);
+            pos += chunk;
         }
     }
 
-    if out.len() != decompressed_size {
-        return Err(Error::SizeMismatch {
-            expected: decompressed_size,
-            actual: out.len(),
-        });
-    }
     Ok(out)
 }
 
