@@ -3,7 +3,7 @@
 //!
 //! Unpack and build only handle containers: compression and archives.
 //! A leaf format (BMG, ...) passes through both as raw bytes. Unpack sniffs
-//! each file's magic to record its kind in `.tpmt/formats.toml`, but never
+//! each file's magic to record its kind in `.tpmt/formats`, but never
 //! decodes it.
 //!
 //! A caller edits a leaf through three calls, none of which decode it.
@@ -158,7 +158,7 @@ pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(), Err
 }
 
 /// Every file the unpack recognised a leaf format in, by project path under
-/// `base/`, grouped by [`FileKind`]. Read from `.tpmt/formats.toml`, so no
+/// `base/`, grouped by [`FileKind`]. Read from `.tpmt/formats`, so no
 /// file in `base/` is opened.
 ///
 /// Go through this, not file extensions, to find files of one kind. Names on
@@ -166,7 +166,7 @@ pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(), Err
 ///
 /// # Errors
 ///
-/// - [`Error::Io`] if `.tpmt/formats.toml` is missing
+/// - [`Error::Io`] if `.tpmt/formats` is missing
 /// - [`Error::Parse`] if it is not what an unpack wrote
 pub fn formats(project: &Path) -> Result<BTreeMap<FileKind, BTreeSet<String>>, Error> {
     project::metadata::read_formats(project)

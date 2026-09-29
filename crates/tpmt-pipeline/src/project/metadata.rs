@@ -7,7 +7,7 @@
 //! mod/mod.json        ModMetadata    id, name, version, author, ...
 //! .tpmt/source.toml   Source         where the ISO was last seen, and which game
 //! .tpmt/digests      Digests        vanilla digest of every base/ file
-//! .tpmt/formats.toml  Formats        which base/ files hold a known leaf format
+//! .tpmt/formats      Formats        which base/ files hold a known leaf format
 //! ```
 //!
 //! `disc.toml` and `mod.json` are safe to edit by hand. `.tpmt/` is not:
@@ -17,13 +17,13 @@
 //! goes both ways.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write;
+use std::fmt::{Display, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-use super::{DIGESTS, DISC_TOML, FORMATS_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
+use super::{DIGESTS, DISC_TOML, FORMATS, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::fs::{self, io_at, parse_at, read_toml, write_json, write_toml};
 use crate::{Error, FileKind, Result};
 
@@ -144,11 +144,7 @@ pub fn write_store(
     let iso = iso.canonicalize().map_err(io_at(iso))?;
     let store = project.join(STORE_DIR);
     write_digests(&store.join(DIGESTS), digests)?;
-    let named: BTreeMap<_, _> = formats
-        .iter()
-        .map(|(kind, paths)| (kind.name(), paths))
-        .collect();
-    write_toml(&store.join(FORMATS_TOML), &named)?;
+    write_formats(&store.join(FORMATS), formats)?;
     write_toml(
         &store.join(SOURCE_TOML),
         &Source {
@@ -187,25 +183,32 @@ pub fn read_store(project: &Path) -> Result<Store> {
 /// Nobody edits it by hand, so it skips TOML
 pub type Digests = BTreeMap<String, u128>;
 
+/// A digest as the 32 hex digits it is written as, with no `String` built per
+/// line.
+struct Hex(u128);
+
+impl Display for Hex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:032x}", self.0)
+    }
+}
+
 fn write_digests(path: &Path, digests: &Digests) -> Result<()> {
     let mut text = String::new();
     for (file, digest) in digests {
-        // A newline in a name would split its line in two on the way back.
-        if file.contains('\n') {
-            return Err(Error::UnusablePath(file.into()));
-        }
-        writeln!(text, "{digest:032x}  {file}").map_err(|source| Error::Serialize {
-            path: path.to_path_buf(),
-            source: source.into(),
+        writeln!(text, "{}  {}", Hex(*digest), one_line(file)?).map_err(|source| {
+            Error::Serialize {
+                path: path.to_path_buf(),
+                source: source.into(),
+            }
         })?;
     }
     fs::write(path, text.as_bytes())
 }
 
 fn read_digests(path: &Path) -> Result<Digests> {
-    let bytes = fs::read(path)?;
-    let text = std::str::from_utf8(&bytes).map_err(parse_at(path))?;
-    text.lines()
+    read_text(path)?
+        .lines()
         .map(|line| {
             let (digest, file) = line
                 .split_once("  ")
@@ -216,9 +219,11 @@ fn read_digests(path: &Path) -> Result<Digests> {
         .collect()
 }
 
-/// `formats.toml`: every `base/` file whose magic a [`FileKind`] recognised,
-/// grouped by kind. A file no kind recognises isn't listed. On disk each kind
-/// is its [`FileKind`] `Display` form, since `tpmt-format` carries no serde.
+/// `formats`: every `base/` file whose magic a [`FileKind`] recognised,
+/// grouped by kind. A file no kind recognises isn't listed.
+///
+/// On disk each kind is a `[name]` line with its paths one per line under
+/// it, sorted by kind and then path.
 ///
 /// It exists because a name on the disc can't be trusted: some files carry
 /// no extension, or one that doesn't match what's inside. Only the magic
@@ -226,7 +231,21 @@ fn read_digests(path: &Path) -> Result<Digests> {
 /// and records it here, and a lookup by kind never reopens `base/`.
 pub type Formats = BTreeMap<FileKind, BTreeSet<String>>;
 
-/// Reads back the `formats.toml` [`write_store`] wrote. Apart from
+fn write_formats(path: &Path, formats: &Formats) -> Result<()> {
+    let mut text = String::new();
+    for (kind, files) in formats {
+        text.push('[');
+        text.push_str(kind.name());
+        text.push_str("]\n");
+        for file in files {
+            text.push_str(one_line(file)?);
+            text.push('\n');
+        }
+    }
+    fs::write(path, text.as_bytes())
+}
+
+/// Reads back the `formats` [`write_store`] wrote. Apart from
 /// [`read_store`], since a lookup by kind has no use for 27,000 digests.
 ///
 /// # Errors
@@ -235,18 +254,38 @@ pub type Formats = BTreeMap<FileKind, BTreeSet<String>>;
 /// - [`Error::Parse`](crate::Error::Parse) if it is not what it was, or names a
 ///   kind this build doesn't know
 pub fn read_formats(project: &Path) -> Result<Formats> {
-    let path = project.join(STORE_DIR).join(FORMATS_TOML);
-    let named: BTreeMap<String, BTreeSet<String>> = read_toml(&path)?;
-    named
-        .into_iter()
-        .map(|(name, paths)| {
-            let kind = FileKind::from_name(&name).ok_or_else(|| Error::Parse {
-                path: path.clone(),
-                source: format!("no file kind is named `{name}`").into(),
-            })?;
-            Ok((kind, paths))
-        })
-        .collect()
+    let path = project.join(STORE_DIR).join(FORMATS);
+    let mut formats = Formats::new();
+    let mut files = None;
+    for line in read_text(&path)?.lines() {
+        if let Some(name) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
+            let kind = FileKind::from_name(name)
+                .ok_or_else(|| parse_at(&path)(format!("no file kind is named `{name}`")))?;
+            files = Some(formats.entry(kind).or_default());
+        } else {
+            files
+                .as_mut()
+                .ok_or_else(|| parse_at(&path)(format!("`{line}` comes before any `[kind]`")))?
+                .insert(line.to_string());
+        }
+    }
+    Ok(formats)
+}
+
+/// `file`, if it reads back as itself from a line of its own. A newline would
+/// split it in two, and a leading `[` would read as a `formats` group.
+fn one_line(file: &str) -> Result<&str> {
+    if file.contains('\n') || file.starts_with('[') {
+        return Err(Error::UnusablePath(file.into()));
+    }
+    Ok(file)
+}
+
+fn read_text(path: &Path) -> Result<String> {
+    String::from_utf8(fs::read(path)?).map_err(parse_at(path))
 }
 
 /// The digest [`Digests`] records per project file.
@@ -264,4 +303,29 @@ pub fn digest_file(path: &Path) -> Result<u128> {
     let mut hasher = Xxh3::new();
     std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(io_at(path))?;
     Ok(hasher.digest128())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::Scratch;
+
+    fn formats_path(project: &Path) -> PathBuf {
+        project.join(STORE_DIR).join(FORMATS)
+    }
+
+    #[test]
+    fn formats_read_back_as_written() {
+        let scratch = Scratch::new("formats-round-trip");
+        let formats = Formats::from([
+            (
+                FileKind::Mesg,
+                BTreeSet::from(["files/a.arc/b.bmg".to_string(), "files/c.bmg".to_string()]),
+            ),
+            (FileKind::Rarc, BTreeSet::from(["files/d.arc".to_string()])),
+        ]);
+        write_formats(&formats_path(&scratch.0), &formats).unwrap();
+
+        assert_eq!(read_formats(&scratch.0).unwrap(), formats);
+    }
 }

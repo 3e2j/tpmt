@@ -41,7 +41,7 @@ struct Unpacked {
     yaz0_compressed: BTreeSet<String>,
     /// What every project file hashed to, keyed by project path.
     digests: Digests,
-    /// Which project files hold a known leaf format, for `formats.toml`.
+    /// Which project files hold a known leaf format, for `.tpmt/formats`.
     formats: Formats,
 }
 
