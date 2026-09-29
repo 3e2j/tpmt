@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
 
-use crate::project::metadata::sha1_hex;
+use crate::project::metadata::digest;
 use crate::{Error, Result, fs, project, status};
 
 /// The two layers a build reads, in the order it reads them.
 pub struct Tree {
     base: PathBuf,
     overlay: PathBuf,
-    /// The vanilla sha1 of every file the unpack wrote, keyed by project path.
+    /// The vanilla digest of every file the unpack wrote, keyed by project path.
     hashes: BTreeMap<String, String>,
     /// Every file under `mod/overlay/` that differs from vanilla, as sorted
     /// project paths.
@@ -168,5 +168,5 @@ impl Tree {
 /// Whether `data` is what the unpack wrote at `path`. A path it never wrote
 /// has no hash, so it never is.
 fn is_vanilla(hashes: &BTreeMap<String, String>, path: &str, data: &[u8]) -> bool {
-    hashes.get(path).is_some_and(|want| *want == sha1_hex(data))
+    hashes.get(path).is_some_and(|want| *want == digest(data))
 }

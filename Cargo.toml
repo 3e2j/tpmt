@@ -42,6 +42,7 @@ toml = "1"
 # Not 0.11. That release changed the output type and dropped its LowerHex impl,
 # and every digest here is written out as hex.
 sha1 = "0.10"
+xxhash-rust = { version = "0.8", features = ["std", "xxh3"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }

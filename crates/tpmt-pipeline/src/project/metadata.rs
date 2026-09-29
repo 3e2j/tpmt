@@ -6,7 +6,7 @@
 //! base/yaz0.toml      Yaz0           which loose files arrived Yaz0 wrapped
 //! mod/mod.json        ModMetadata    id, name, version, author, ...
 //! .tpmt/source.toml   Source         where the ISO was last seen, and which game
-//! .tpmt/hashes.toml   Hashes         vanilla sha1 of every base/ file
+//! .tpmt/hashes.toml   Hashes         vanilla digest of every base/ file
 //! .tpmt/formats.toml  Formats        which base/ files hold a known leaf format
 //! ```
 //!
@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha1::{Digest, Sha1};
+use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
 use super::{DISC_TOML, FORMATS_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::fs::{io_at, read_toml, write_json, write_toml};
@@ -162,7 +162,7 @@ pub fn write_store(
 /// the unpack wrote hashed to.
 pub struct Store {
     pub source: Source,
-    /// The vanilla sha1 of every project file, keyed by project path. Around
+    /// The vanilla digest of every project file, keyed by project path. Around
     /// 27,000 entries for one disc.
     pub hashes: BTreeMap<String, String>,
 }
@@ -215,19 +215,22 @@ pub fn read_formats(project: &Path) -> Result<Formats> {
 }
 
 /// The digest `hashes.toml` records per project file.
-pub fn sha1_hex(data: &[u8]) -> String {
-    hex(Sha1::digest(data))
+///
+/// XXH3-128 rather than a cryptographic hash, since it only has to catch
+/// edits, not forgeries.
+pub fn digest(data: &[u8]) -> String {
+    hex(xxh3_128(data))
 }
 
-/// [`sha1_hex`] of a file, streamed rather than read whole. Status hashes
+/// [`digest`] of a file, streamed rather than read whole. Status hashes
 /// every file in the project, videos included.
-pub fn sha1_file(path: &Path) -> Result<String> {
+pub fn digest_file(path: &Path) -> Result<String> {
     let file = std::fs::File::open(path).map_err(io_at(path))?;
-    let mut hasher = Sha1::new();
+    let mut hasher = Xxh3::new();
     std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(io_at(path))?;
-    Ok(hex(hasher.finalize()))
+    Ok(hex(hasher.digest128()))
 }
 
-fn hex(digest: sha1::digest::Output<Sha1>) -> String {
-    format!("{digest:x}")
+fn hex(digest: u128) -> String {
+    format!("{digest:032x}")
 }

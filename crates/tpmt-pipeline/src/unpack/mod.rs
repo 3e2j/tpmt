@@ -115,7 +115,7 @@ fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
     let mut kinds = Vec::new();
     let yaz0_compressed = explode::file(path, data, &mut |path, data| {
         fs::write(&base.join(path), data)?;
-        hashes.insert(path.to_string(), project::metadata::sha1_hex(data));
+        hashes.insert(path.to_string(), project::metadata::digest(data));
         if let Some(kind) = FileKind::identify(data) {
             kinds.push((kind, path.to_string()));
         }

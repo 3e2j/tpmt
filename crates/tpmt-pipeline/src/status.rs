@@ -9,7 +9,7 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::project::metadata::{self, sha1_file};
+use crate::project::metadata::{self, digest_file};
 use crate::{Change, ChangeKind, Result, fs, project};
 
 pub fn run(project: &Path) -> Result<Vec<Change>> {
@@ -32,13 +32,13 @@ pub fn diff(
     let Some(want) = hashes.get(path) else {
         return Ok(Some(ChangeKind::Added));
     };
-    Ok((sha1_file(&dir.join(path))? != *want).then_some(ChangeKind::Modified))
+    Ok((digest_file(&dir.join(path))? != *want).then_some(ChangeKind::Modified))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::metadata::sha1_hex;
+    use crate::project::metadata::digest;
     use crate::test_support::{Scratch, metadata};
 
     /// A project whose unpack wrote two files.
@@ -49,7 +49,7 @@ mod tests {
         let mut hashes = BTreeMap::new();
         for (path, data) in [("files/a.bin", b"a"), ("files/b.arc/m.bin", b"m")] {
             fs::write(&base.join(path), data).unwrap();
-            hashes.insert(path.to_string(), sha1_hex(data));
+            hashes.insert(path.to_string(), digest(data));
         }
         fs::create_dir_all(&project::overlay(&scratch.0)).unwrap();
 

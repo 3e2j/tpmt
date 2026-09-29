@@ -131,7 +131,7 @@ mod tests {
     use tpmt_jkernel_arc::editable::sidecar::{Member, Sidecar};
 
     use super::*;
-    use crate::project::metadata::sha1_hex;
+    use crate::project::metadata::digest;
     use crate::test_support::{Scratch, metadata};
     use crate::unpack::explode;
     use crate::{Error, FileKind};
@@ -185,7 +185,7 @@ mod tests {
         let mut hashes = BTreeMap::new();
         for (path, data) in &files {
             fs::write(&base.join(path), data).unwrap();
-            hashes.insert((*path).to_string(), sha1_hex(data));
+            hashes.insert((*path).to_string(), digest(data));
         }
 
         metadata::write_base(
