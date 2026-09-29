@@ -12,8 +12,8 @@ use crate::{Error, Result, Span, ciso};
 enum Layout {
     /// The file is the image.
     Raw,
-    /// The image is inside a container, so an offset has to be looked up rather
-    /// than seeked to.
+    /// The image is inside a container, so an offset goes through the map
+    /// before it can be read.
     Ciso(ciso::Map),
 }
 

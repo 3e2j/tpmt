@@ -637,7 +637,7 @@ mod tests {
     /// the table entries themselves, so this is caught only once its
     /// children are actually resolved.
     #[test]
-    fn a_branchs_children_running_past_the_indirection_table_is_corrupt() {
+    fn a_branch_whose_children_run_past_the_indirection_table_is_corrupt() {
         let (mut flw1, fli1) = sample();
         flw1[23] = 0x07; // the branch's table_start, now 7 with a count of 2
         assert!(matches!(read(&flw1, &fli1), Err(Error::Corrupt(_))));

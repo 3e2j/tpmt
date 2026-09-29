@@ -6,7 +6,7 @@
 //! inline tags for colour, ruby text, button glyphs, and control flow.
 //!
 //! Additionally, BMGs also allow for connecting a flow graph between message nodes,
-//! allowing for messages to flow seemlessly between each other. This flow may
+//! allowing for messages to flow seamlessly between each other. This flow may
 //! branch based on conditions, or emit events which do certain actions (such as
 //! giving the player an item, setting flags, or triggering screen effects).
 //!
