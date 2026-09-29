@@ -186,8 +186,8 @@ pub fn boot(project: &Path) -> Result<tpmt_disc::Boot> {
 /// One project file's bytes, from `mod/overlay/` when it holds `path` and
 /// from `base/` otherwise. `path` is a project path, as [`formats`] lists.
 ///
-/// A `base/` copy isn't checked against its vanilla hash here, since that
-/// means reading every hash the unpack recorded. [`build`] refuses one that
+/// A `base/` copy isn't checked against its vanilla digest here, since that
+/// means reading every digest the unpack recorded. [`build`] refuses one that
 /// drifted.
 ///
 /// # Errors
@@ -210,7 +210,7 @@ pub fn write(project: &Path, path: &str, data: &[u8]) -> Result<()> {
     leaf::write(project, path, data)
 }
 
-/// Hashes `mod/overlay/` against the vanilla hashes taken at [`unpack`], and
+/// Hashes `mod/overlay/` against the vanilla digests taken at [`unpack`], and
 /// reports whatever doesn't match, sorted by path.
 ///
 /// An overlay file identical to vanilla is not a change. `base/` is not

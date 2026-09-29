@@ -76,9 +76,9 @@ pub fn run(
         None => project::target_output(project, target.name()),
     };
 
-    let metadata::Store { source, hashes } = metadata::read_store(project)?;
+    let metadata::Store { source, digests } = metadata::read_store(project)?;
     let base = metadata::read_base(&project::base(project))?;
-    let (tree, unchanged) = Tree::open(project, hashes)?;
+    let (tree, unchanged) = Tree::open(project, digests)?;
     let changed = tree.changed();
 
     let job = Job {
@@ -182,10 +182,10 @@ mod tests {
             ),
         ];
 
-        let mut hashes = BTreeMap::new();
+        let mut digests = metadata::Digests::new();
         for (path, data) in &files {
             fs::write(&base.join(path), data).unwrap();
-            hashes.insert((*path).to_string(), digest(data));
+            digests.insert((*path).to_string(), digest(data));
         }
 
         metadata::write_base(
@@ -203,7 +203,7 @@ mod tests {
             project,
             &iso,
             &metadata().boot,
-            &hashes,
+            &digests,
             &metadata::Formats::new(),
         )
         .unwrap();

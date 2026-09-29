@@ -1,14 +1,14 @@
 //! Walks a disc, explodes each file (see [`explode`]), and lays the
 //! result out under `base/`. See [`crate::unpack`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use rayon::prelude::*;
 use tpmt_disc::{Disc, Entry};
 
 use crate::progress::{Progress, Step};
-use crate::project::metadata::Formats;
+use crate::project::metadata::{Digests, Formats};
 use crate::{FileKind, Result, fs, project};
 
 pub mod explode;
@@ -22,7 +22,7 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
     let staging = project::Staging::begin(&project::base(project))?;
     let Unpacked {
         yaz0_compressed,
-        hashes,
+        digests,
         formats,
     } = unpack_disc(&disc, staging.dir(), progress)?;
 
@@ -30,7 +30,7 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
     project::metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
     staging.promote()?;
 
-    project::metadata::write_store(project, iso, &disc.metadata().boot, &hashes, &formats)?;
+    project::metadata::write_store(project, iso, &disc.metadata().boot, &digests, &formats)?;
 
     project::scaffold_mod(project)
 }
@@ -40,7 +40,7 @@ struct Unpacked {
     /// The disc files that arrived Yaz0 wrapped, for `yaz0.toml`.
     yaz0_compressed: BTreeSet<String>,
     /// What every project file hashed to, keyed by project path.
-    hashes: BTreeMap<String, String>,
+    digests: Digests,
     /// Which project files hold a known leaf format, for `formats.toml`.
     formats: Formats,
 }
@@ -79,10 +79,10 @@ fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked
         .map(|file| file.path.clone())
         .collect();
 
-    let mut hashes = BTreeMap::new();
+    let mut digests = Digests::new();
     let mut formats = Formats::new();
     for file in unpacked_files {
-        hashes.extend(file.hashes);
+        digests.extend(file.digests);
         for (kind, path) in file.kinds {
             formats.entry(kind).or_default().insert(path);
         }
@@ -90,7 +90,7 @@ fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked
 
     Ok(Unpacked {
         yaz0_compressed,
-        hashes,
+        digests,
         formats,
     })
 }
@@ -102,8 +102,8 @@ struct UnpackedFile {
     /// Whether a Yaz0 wrapper came off it. The disc is the container that
     /// records this for a loose file, in `yaz0.toml`.
     yaz0_compressed: bool,
-    /// What every project file it became hashed to, keyed by project path.
-    hashes: BTreeMap<String, String>,
+    /// What every project file it became hashed to, in the order it landed.
+    digests: Vec<(String, u128)>,
     /// The project files it became that hold a known leaf format.
     kinds: Vec<(FileKind, String)>,
 }
@@ -111,11 +111,11 @@ struct UnpackedFile {
 /// Explodes one disc file into `base/`, hashing and identifying each project
 /// file as it lands.
 fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
-    let mut hashes = BTreeMap::new();
+    let mut digests = Vec::new();
     let mut kinds = Vec::new();
     let yaz0_compressed = explode::file(path, data, &mut |path, data| {
         fs::write(&base.join(path), data)?;
-        hashes.insert(path.to_string(), project::metadata::digest(data));
+        digests.push((path.to_string(), project::metadata::digest(data)));
         if let Some(kind) = FileKind::identify(data) {
             kinds.push((kind, path.to_string()));
         }
@@ -125,7 +125,7 @@ fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
     Ok(UnpackedFile {
         path: path.to_string(),
         yaz0_compressed,
-        hashes,
+        digests,
         kinds,
     })
 }

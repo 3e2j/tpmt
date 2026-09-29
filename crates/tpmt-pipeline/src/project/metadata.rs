@@ -6,7 +6,7 @@
 //! base/yaz0.toml      Yaz0           which loose files arrived Yaz0 wrapped
 //! mod/mod.json        ModMetadata    id, name, version, author, ...
 //! .tpmt/source.toml   Source         where the ISO was last seen, and which game
-//! .tpmt/hashes.toml   Hashes         vanilla digest of every base/ file
+//! .tpmt/digests      Digests        vanilla digest of every base/ file
 //! .tpmt/formats.toml  Formats        which base/ files hold a known leaf format
 //! ```
 //!
@@ -17,13 +17,14 @@
 //! goes both ways.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-use super::{DISC_TOML, FORMATS_TOML, HASHES_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
-use crate::fs::{io_at, read_toml, write_json, write_toml};
+use super::{DIGESTS, DISC_TOML, FORMATS_TOML, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
+use crate::fs::{self, io_at, parse_at, read_toml, write_json, write_toml};
 use crate::{Error, FileKind, Result};
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
@@ -137,12 +138,12 @@ pub fn write_store(
     project: &Path,
     iso: &Path,
     boot: &tpmt_disc::Boot,
-    hashes: &BTreeMap<String, String>,
+    digests: &Digests,
     formats: &Formats,
 ) -> Result<()> {
     let iso = iso.canonicalize().map_err(io_at(iso))?;
     let store = project.join(STORE_DIR);
-    write_toml(&store.join(HASHES_TOML), hashes)?;
+    write_digests(&store.join(DIGESTS), digests)?;
     let named: BTreeMap<_, _> = formats
         .iter()
         .map(|(kind, paths)| (kind.name(), paths))
@@ -162,9 +163,7 @@ pub fn write_store(
 /// the unpack wrote hashed to.
 pub struct Store {
     pub source: Source,
-    /// The vanilla digest of every project file, keyed by project path. Around
-    /// 27,000 entries for one disc.
-    pub hashes: BTreeMap<String, String>,
+    pub digests: Digests,
 }
 
 /// Reads back what [`write_store`] wrote.
@@ -177,8 +176,44 @@ pub fn read_store(project: &Path) -> Result<Store> {
     let store = project.join(STORE_DIR);
     Ok(Store {
         source: read_toml(&store.join(SOURCE_TOML))?,
-        hashes: read_toml(&store.join(HASHES_TOML))?,
+        digests: read_digests(&store.join(DIGESTS))?,
     })
+}
+
+/// `digests`: the vanilla [`digest`] of every project file, keyed by project
+/// path. Around 27,000 entries for one disc.
+///
+/// On disk it is one `<32 hex digits>  <path>` line per file, sorted by path.
+/// Nobody edits it by hand, so it skips TOML
+pub type Digests = BTreeMap<String, u128>;
+
+fn write_digests(path: &Path, digests: &Digests) -> Result<()> {
+    let mut text = String::new();
+    for (file, digest) in digests {
+        // A newline in a name would split its line in two on the way back.
+        if file.contains('\n') {
+            return Err(Error::UnusablePath(file.into()));
+        }
+        writeln!(text, "{digest:032x}  {file}").map_err(|source| Error::Serialize {
+            path: path.to_path_buf(),
+            source: source.into(),
+        })?;
+    }
+    fs::write(path, text.as_bytes())
+}
+
+fn read_digests(path: &Path) -> Result<Digests> {
+    let bytes = fs::read(path)?;
+    let text = std::str::from_utf8(&bytes).map_err(parse_at(path))?;
+    text.lines()
+        .map(|line| {
+            let (digest, file) = line
+                .split_once("  ")
+                .ok_or_else(|| parse_at(path)(format!("`{line}` is not a digest and a path")))?;
+            let digest = u128::from_str_radix(digest, 16).map_err(parse_at(path))?;
+            Ok((file.to_string(), digest))
+        })
+        .collect()
 }
 
 /// `formats.toml`: every `base/` file whose magic a [`FileKind`] recognised,
@@ -192,7 +227,7 @@ pub fn read_store(project: &Path) -> Result<Store> {
 pub type Formats = BTreeMap<FileKind, BTreeSet<String>>;
 
 /// Reads back the `formats.toml` [`write_store`] wrote. Apart from
-/// [`read_store`], since a lookup by kind has no use for 27,000 hashes.
+/// [`read_store`], since a lookup by kind has no use for 27,000 digests.
 ///
 /// # Errors
 ///
@@ -214,23 +249,19 @@ pub fn read_formats(project: &Path) -> Result<Formats> {
         .collect()
 }
 
-/// The digest `hashes.toml` records per project file.
+/// The digest [`Digests`] records per project file.
 ///
 /// XXH3-128 rather than a cryptographic hash, since it only has to catch
 /// edits, not forgeries.
-pub fn digest(data: &[u8]) -> String {
-    hex(xxh3_128(data))
+pub fn digest(data: &[u8]) -> u128 {
+    xxh3_128(data)
 }
 
 /// [`digest`] of a file, streamed rather than read whole. Status hashes
 /// every file in the project, videos included.
-pub fn digest_file(path: &Path) -> Result<String> {
+pub fn digest_file(path: &Path) -> Result<u128> {
     let file = std::fs::File::open(path).map_err(io_at(path))?;
     let mut hasher = Xxh3::new();
     std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(io_at(path))?;
-    Ok(hex(hasher.digest128()))
-}
-
-fn hex(digest: u128) -> String {
-    format!("{digest:032x}")
+    Ok(hasher.digest128())
 }

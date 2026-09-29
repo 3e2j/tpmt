@@ -40,7 +40,7 @@
 // A modder may bring more than one region (GZ2E, GZ2P, GZ2J), in which case
 // the first unpacked (by the modder) is the primary copy and each other region's
 // files show only where their hash differs from the primary's file at the same path.
-// That needs `hashes.toml` and `source.toml` keyed per region; both hold
+// That needs `digests` and `source.toml` keyed per region; both hold
 // one disc today.
 // Nothing here decides which regions an edit applies to yet.
 //
@@ -83,7 +83,7 @@ const TARGETS_DIR: &str = "targets";
 // TPMT specifics
 const STORE_DIR: &str = ".tpmt";
 const FORMATS_TOML: &str = "formats.toml";
-const HASHES_TOML: &str = "hashes.toml";
+const DIGESTS: &str = "digests.xxh128";
 const SOURCE_TOML: &str = "source.toml";
 
 /// Every top-level name this crate writes. A directory holding nothing but

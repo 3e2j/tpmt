@@ -4,13 +4,13 @@
 //! from `base/` otherwise. Only overlay files that differ from vanilla count
 //! as changes, so only the disc files holding them get rebuilt.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
 
-use crate::project::metadata::digest;
+use crate::project::metadata::{Digests, digest};
 use crate::{Error, Result, fs, project, status};
 
 /// The two layers a build reads, in the order it reads them.
@@ -18,7 +18,7 @@ pub struct Tree {
     base: PathBuf,
     overlay: PathBuf,
     /// The vanilla digest of every file the unpack wrote, keyed by project path.
-    hashes: BTreeMap<String, String>,
+    digests: Digests,
     /// Every file under `mod/overlay/` that differs from vanilla, as sorted
     /// project paths.
     edits: Vec<String>,
@@ -35,13 +35,13 @@ impl Tree {
     ///
     /// - [`Error::Io`] if the overlay cannot be walked or read
     /// - [`Error::UnusablePath`] if a name in it is not UTF-8
-    pub fn open(project: &Path, hashes: BTreeMap<String, String>) -> Result<(Self, Vec<String>)> {
+    pub fn open(project: &Path, digests: Digests) -> Result<(Self, Vec<String>)> {
         let overlay = project::overlay(project);
         let overlaid = fs::files(&overlay)?;
 
         let flagged = overlaid
             .into_par_iter()
-            .map(|path| Ok((status::diff(&overlay, &path, &hashes)?.is_none(), path)))
+            .map(|path| Ok((status::diff(&overlay, &path, &digests)?.is_none(), path)))
             .collect::<Result<Vec<_>>>()?;
         let (identical, edits): (Vec<_>, Vec<_>) = flagged.into_iter().partition(|(same, _)| *same);
         let paths =
@@ -50,7 +50,7 @@ impl Tree {
         let tree = Self {
             base: project::base(project),
             overlay,
-            hashes,
+            digests,
             edits: paths(edits),
         };
         Ok((tree, paths(identical)))
@@ -86,7 +86,7 @@ impl Tree {
         let vanilla = self.base.join(path);
         if vanilla.is_file() {
             let data = fs::read(&vanilla)?;
-            if !is_vanilla(&self.hashes, path, &data) {
+            if !is_vanilla(&self.digests, path, &data) {
                 return Err(Error::BaseModified(path.to_string()));
             }
             return Ok(data);
@@ -166,7 +166,7 @@ impl Tree {
 }
 
 /// Whether `data` is what the unpack wrote at `path`. A path it never wrote
-/// has no hash, so it never is.
-fn is_vanilla(hashes: &BTreeMap<String, String>, path: &str, data: &[u8]) -> bool {
-    hashes.get(path).is_some_and(|want| *want == digest(data))
+/// has no digest, so it never is.
+fn is_vanilla(digests: &Digests, path: &str, data: &[u8]) -> bool {
+    digests.get(path).is_some_and(|want| *want == digest(data))
 }
