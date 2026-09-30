@@ -7,12 +7,12 @@ use crate::{Error, Result, fs, project};
 
 pub fn read(project: &Path, path: &str) -> Result<Vec<u8>> {
     let at = checked(path)?;
-    let file = [project::overlay(project), project::base(project)]
-        .into_iter()
-        .map(|layer| layer.join(at))
-        .find(|file| file.is_file())
-        .ok_or_else(|| Error::MissingFile(path.to_string()))?;
-    fs::read(&file)
+    for layer in [project::overlay(project), project::base(project)] {
+        if let Some(data) = fs::read_if_exists(&layer.join(at))? {
+            return Ok(data);
+        }
+    }
+    Err(Error::MissingFile(path.to_string()))
 }
 
 pub fn write(project: &Path, path: &str, data: &[u8]) -> Result<()> {

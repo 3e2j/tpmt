@@ -128,11 +128,15 @@ fn items(original: &[Entry], sources: &BTreeMap<&str, Bytes>) -> Vec<Item> {
 /// Another dump of the same revision passes, since its unchanged files are
 /// the same bytes. A disc edited in place under the same id passes too.
 fn open(source: &Source) -> Result<Disc> {
-    if !source.iso.is_file() {
-        return Err(Error::SourceMissing(source.iso.clone()));
-    }
-
-    let disc = Disc::open(&source.iso)?;
+    let disc = match Disc::open(&source.iso) {
+        Ok(disc) => disc,
+        Err(tpmt_disc::Error::Open { source: io, .. })
+            if io.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Err(Error::SourceMissing(source.iso.clone()));
+        }
+        Err(error) => return Err(error.into()),
+    };
     let boot = &disc.metadata().boot;
     if !source.matches(boot) {
         return Err(Error::SourceChanged {

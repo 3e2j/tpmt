@@ -78,21 +78,16 @@ impl Tree {
     /// shipped it. A path the unpack never wrote fails the same way: either
     /// answer means `base/` is no longer the disc it came from.
     pub fn file(&self, path: &str) -> Result<Vec<u8>> {
-        let overlaid = self.overlay.join(path);
-        if overlaid.is_file() {
-            return fs::read(&overlaid);
-        }
-
-        let vanilla = self.base.join(path);
-        if vanilla.is_file() {
-            let data = fs::read(&vanilla)?;
-            if !is_vanilla(&self.digests, path, &data) {
-                return Err(Error::BaseModified(path.to_string()));
-            }
+        if let Some(data) = fs::read_if_exists(&self.overlay.join(path))? {
             return Ok(data);
         }
 
-        Err(Error::MissingFile(path.to_string()))
+        let data = fs::read_if_exists(&self.base.join(path))?
+            .ok_or_else(|| Error::MissingFile(path.to_string()))?;
+        if !is_vanilla(&self.digests, path, &data) {
+            return Err(Error::BaseModified(path.to_string()));
+        }
+        Ok(data)
     }
 
     /// Whether a project path is an unpacked archive rather than a leaf file.

@@ -69,6 +69,35 @@ pub fn read(path: &Path) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// Like [`read`], but `None` when there is no file at `path`, either because
+/// nothing is there or because a directory is.
+pub fn read_if_exists(path: &Path) -> Result<Option<Vec<u8>>> {
+    match read(path) {
+        Ok(data) => Ok(Some(data)),
+        // Asked only after the read failed. A directory fails differently per
+        // platform (IsADirectory on Linux, PermissionDenied on Windows).
+        Err(Error::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound || path.is_dir() =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Like [`fs::rename`], but a missing `from` is not an error, since there is
+/// nothing to move.
+pub fn rename_if_exists(from: &Path, to: &Path) -> Result<()> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: from.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// How long a file is, without reading it.
 pub fn len(path: &Path) -> Result<u64> {
     Ok(fs::metadata(path).map_err(io_at(path))?.len())

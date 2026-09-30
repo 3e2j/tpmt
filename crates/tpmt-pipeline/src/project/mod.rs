@@ -52,7 +52,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::fs::{create_dir_all, io_at, remove_dir_all_if_exists};
+use crate::fs::{create_dir_all, io_at, remove_dir_all_if_exists, rename_if_exists};
 use crate::{Error, Result};
 
 pub mod metadata;
@@ -232,9 +232,7 @@ impl Staging {
         let old = beside(&self.target, REPLACED_SUFFIX)?;
 
         remove_dir_all_if_exists(&old)?;
-        if self.target.exists() {
-            fs::rename(&self.target, &old).map_err(io_at(&self.target))?;
-        }
+        rename_if_exists(&self.target, &old)?;
         fs::rename(&self.dir, &self.target).map_err(io_at(&self.target))?;
         remove_dir_all_if_exists(&old)
     }
