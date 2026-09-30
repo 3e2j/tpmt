@@ -282,16 +282,16 @@ tpmt_bytes::layout! {
 }
 
 impl Entry {
-    // An entry is a file or a directory, a file is preloaded into one of the
-    // three memories, and the last two say the bytes are compressed and which
-    // of the two schemes did it.
+    // Each flag is one bit of the entry's flags byte, read with `flags & FLAG`.
+    // FLAG_YAZ0 only counts when FLAG_COMPRESSED is set.
     const FLAG_FILE: u8 = 0x01;
     const FLAG_DIRECTORY: u8 = 0x02;
-    const FLAG_COMPRESSED: u8 = 0x04;
+    const FLAG_COMPRESSED: u8 = 0x04; // yaz0 or yay0
+    // 0x08 unused
     const FLAG_MRAM: u8 = 0x10;
     const FLAG_ARAM: u8 = 0x20;
     const FLAG_DISC: u8 = 0x40;
-    const FLAG_YAZ0: u8 = 0x80;
+    const FLAG_YAZ0: u8 = 0x80; // absence with FLAG_COMPRESSED is yay0 (unused)
 
     /// A directory entry has no bytes, but its size field still says 0x10 on
     /// every retail archive, presumably the record's own size.
