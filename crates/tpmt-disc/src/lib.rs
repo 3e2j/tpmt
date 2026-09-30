@@ -66,6 +66,20 @@ pub enum Error {
         source: io::Error,
     },
 
+    /// A span that runs past the end of the image, which only a corrupt
+    /// header or file table hands out.
+    #[error(
+        "read of {len} bytes at {offset:#x} runs past the end of the {image_len:#x} byte image"
+    )]
+    OutOfBounds {
+        offset: u64,
+        len: u64,
+        image_len: u64,
+    },
+
+    #[error("read of {len} bytes at {offset:#x} is too long for this platform to hold in memory")]
+    ReadTooLarge { offset: u64, len: u64 },
+
     #[error("not a GameCube disc image")]
     NotADisc,
 
@@ -194,7 +208,7 @@ impl Disc {
     /// # Errors
     ///
     /// - [`Error::Open`]
-    /// - [`Error::Read`]
+    /// - [`Error::Read`], [`Error::OutOfBounds`], [`Error::ReadTooLarge`]
     /// - [`Error::NotADisc`]
     /// - [`Error::WiiDisc`]
     /// - [`Error::CorruptHeader`]
@@ -234,7 +248,7 @@ impl Disc {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Read`].
+    /// Returns [`Error::Read`], [`Error::OutOfBounds`], or [`Error::ReadTooLarge`].
     pub fn boot_bin(&self) -> Result<Vec<u8>> {
         self.read(sys::BOOT)
     }
@@ -243,7 +257,7 @@ impl Disc {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Read`].
+    /// Returns [`Error::Read`], [`Error::OutOfBounds`], or [`Error::ReadTooLarge`].
     pub fn bi2_bin(&self) -> Result<Vec<u8>> {
         self.read(sys::BI2)
     }
@@ -266,7 +280,7 @@ impl Disc {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Read`].
+    /// Returns [`Error::Read`], [`Error::OutOfBounds`], or [`Error::ReadTooLarge`].
     pub fn read(&self, span: Span) -> Result<Vec<u8>> {
         read_at(&self.handle, span)
     }
@@ -287,7 +301,7 @@ impl Disc {
     ///
     /// # Errors
     ///
-    /// - [`Error::Read`]
+    /// - [`Error::Read`], [`Error::OutOfBounds`], [`Error::ReadTooLarge`]
     /// - [`Error::CorruptHeader`]
     /// - [`Error::CorruptFileTable`]
     pub fn entries(&self) -> Result<Vec<Entry>> {

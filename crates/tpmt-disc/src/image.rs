@@ -117,24 +117,14 @@ pub fn read_at(handle: &Handle, span: Span) -> Result<Vec<u8>> {
     // the read that would have refused it ever runs.
     let past_the_end = |end: u64| end > handle.len;
     if offset.checked_add(len).is_none_or(past_the_end) {
-        return Err(Error::Read {
+        return Err(Error::OutOfBounds {
             offset,
             len,
-            source: io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!("the image is only {:#x} bytes long", handle.len),
-            ),
+            image_len: handle.len,
         });
     }
 
-    let size = usize::try_from(len).map_err(|_| Error::Read {
-        offset,
-        len,
-        source: io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the read is too long for this platform to hold in memory",
-        ),
-    })?;
+    let size = usize::try_from(len).map_err(|_| Error::ReadTooLarge { offset, len })?;
     let mut buf = vec![0u8; size];
     handle
         .read(&mut buf, offset)

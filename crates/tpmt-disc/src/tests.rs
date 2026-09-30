@@ -396,7 +396,7 @@ fn refuses_to_read_past_the_end_of_the_image() {
 
     let entries = disc.entries().expect("the table itself is still fine");
     let span = entries[SYS_ENTRIES].span().expect("a.bin is a file");
-    assert!(matches!(disc.read(span), Err(Error::Read { .. })));
+    assert!(matches!(disc.read(span), Err(Error::OutOfBounds { .. })));
 }
 
 /// A title long enough to fill its field leaves no terminator, so the read has
