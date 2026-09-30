@@ -102,7 +102,13 @@ impl FileKind {
     /// The kind whose magic `data` opens with, if any.
     #[must_use]
     pub fn identify(data: &[u8]) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.check(data).is_ok())
+        Self::ALL.into_iter().find(|kind| kind.matches(data))
+    }
+
+    /// Whether `data` opens with this kind's magic.
+    #[must_use]
+    pub fn matches(self, data: &[u8]) -> bool {
+        data.starts_with(&self.magic())
     }
 
     /// Checks that `data` opens with this kind's magic, for a decoder to
@@ -112,7 +118,7 @@ impl FileKind {
     ///
     /// [`WrongKind`] when it doesn't.
     pub fn check(self, data: &[u8]) -> Result<(), WrongKind> {
-        data.starts_with(&self.magic())
+        self.matches(data)
             .then_some(())
             .ok_or(WrongKind { expected: self })
     }
