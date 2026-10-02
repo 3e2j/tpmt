@@ -6,11 +6,14 @@
 //! each file's magic to record its kind in `.tpmt/formats`, but never
 //! decodes it.
 //!
+//! Everything after the unpack goes through a [`Project`], found with
+//! [`Project::discover`] or returned by [`unpack`].
+//!
 //! A caller edits a leaf through three calls, none of which decode it.
-//! [`formats`] lists every leaf by kind. [`read()`] returns one leaf's bytes,
-//! the `mod/overlay/` copy when there is one and the `base/` copy otherwise.
-//! [`write()`] puts new bytes in `mod/overlay/`. The caller hands the bytes to
-//! `tpmt-editor`, which decodes them.
+//! [`Project::formats`] lists every leaf by kind. [`Project::read`] returns
+//! one leaf's bytes, the `mod/overlay/` copy when there is one and the `base/`
+//! copy otherwise. [`Project::write`] puts new bytes in `mod/overlay/`. The
+//! caller hands the bytes to `tpmt-editor`, which decodes them.
 //!
 //! This crate owns what it takes to get from a disc to a project and back:
 //! the disc image, archives, compression, and anything that spans files, like
@@ -46,7 +49,7 @@ mod unpack;
 
 pub use build::{Built, EncodeError, Target};
 pub use progress::{Progress, Snapshot, Step, Unit};
-pub use project::{base, discover, is_project};
+pub use project::is_project;
 pub use tpmt_format::FileKind;
 pub use unpack::explode::{DecodeError, file as explode};
 
@@ -136,7 +139,7 @@ pub enum ChangeKind {
 
 /// Walks the disc, peels off compression, opens archives, and hands each
 /// file to whichever format crate can decode it, writing the result out as
-/// `base/`.
+/// `base/`. Returns the project it made.
 ///
 /// Also scaffolds an empty `mod/` next to it.
 ///
@@ -153,101 +156,136 @@ pub enum ChangeKind {
 /// - [`Error::Disc`] if the ISO can't be opened or read
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
 /// - [`Error::Io`] on any write
-pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(), Error> {
-    unpack::run(iso, project, progress)
+pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<Project, Error> {
+    unpack::run(iso, project, progress)?;
+    Project::discover(project)
 }
 
-/// Every file the unpack recognised a leaf format in, by project path under
-/// `base/`, grouped by [`FileKind`]. Read from `.tpmt/formats`, so no
-/// file in `base/` is opened.
-///
-/// Go through this, not file extensions, to find files of one kind. Names on
-/// the disc lie; the kinds here came from each file's magic.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if `.tpmt/formats` is missing
-/// - [`Error::Parse`] if it is not what an unpack wrote
-pub fn formats(project: &Path) -> Result<BTreeMap<FileKind, BTreeSet<String>>, Error> {
-    project::metadata::read_formats(project)
+/// A finished unpack, by its canonical root.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Project {
+    root: PathBuf,
 }
 
-/// Who the unpacked disc says it is, from `base/disc.toml`. Its game id and
-/// revision pick the version, through `tpmt_game::Version::from_disc`.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if `base/disc.toml` is missing
-/// - [`Error::Parse`] if it is not what an unpack wrote
-pub fn boot(project: &Path) -> Result<tpmt_disc::Boot> {
-    project::metadata::read_boot(&project::base(project))
-}
+impl Project {
+    /// Finds the project holding `dir` by walking upward from it, the way
+    /// `git -C` starts its search from wherever it is pointed.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] if `dir` cannot be canonicalized
+    /// - [`Error::NoProjectFound`] if nothing above `dir` is a project
+    pub fn discover(dir: &Path) -> Result<Self> {
+        Ok(Self {
+            root: project::discover(dir)?,
+        })
+    }
 
-/// One project file's bytes, from `mod/overlay/` when it holds `path` and
-/// from `base/` otherwise. `path` is a project path, as [`formats`] lists.
-///
-/// A `base/` copy isn't checked against its vanilla digest here, since that
-/// means reading every digest the unpack recorded. [`build`] refuses one that
-/// drifted.
-///
-/// # Errors
-///
-/// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
-/// - [`Error::MissingFile`] if neither layer holds a file at `path`
-/// - [`Error::Io`] if the file can't be read
-pub fn read(project: &Path, path: &str) -> Result<Vec<u8>> {
-    leaf::read(project, path)
-}
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 
-/// Writes `data` to `path` under `mod/overlay/`, creating any missing
-/// directories. `base/` is never written.
-///
-/// # Errors
-///
-/// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
-/// - [`Error::Io`] on the write
-pub fn write(project: &Path, path: &str, data: &[u8]) -> Result<()> {
-    leaf::write(project, path, data)
-}
+    /// The read-only unpack of the disc.
+    #[must_use]
+    pub fn base(&self) -> PathBuf {
+        project::base(&self.root)
+    }
 
-/// Hashes `mod/overlay/` against the vanilla digests taken at [`unpack`], and
-/// reports whatever doesn't match, sorted by path.
-///
-/// An overlay file identical to vanilla is not a change. `base/` is not
-/// checked; a build refuses drift there when it reads the file.
-///
-/// # Errors
-///
-/// - [`Error::Io`] or [`Error::Parse`] if `.tpmt/` cannot be read back
-/// - [`Error::Io`] if a project file cannot be walked or read
-/// - [`Error::UnusablePath`] if a name in the project is not UTF-8
-pub fn status(project: &Path) -> Result<Vec<Change>, Error> {
-    status::run(project)
-}
+    /// Every file the unpack recognised a leaf format in, by project path
+    /// under `base/`, grouped by [`FileKind`]. Read from `.tpmt/formats`, so
+    /// no file in `base/` is opened.
+    ///
+    /// Go through this, not file extensions, to find files of one kind. Names
+    /// on the disc lie; the kinds here came from each file's magic.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] if `.tpmt/formats` is missing
+    /// - [`Error::Parse`] if it is not what an unpack wrote
+    pub fn formats(&self) -> Result<BTreeMap<FileKind, BTreeSet<String>>> {
+        project::metadata::read_formats(&self.root)
+    }
 
-/// Re-encodes whatever `mod/overlay/` changed and hands it to `target`,
-/// which decides what to do with it: a tree of the changed disc files, a
-/// whole disc image, or a mod bundle.
-///
-/// `output` stands in for the directory the target would otherwise own under
-/// `build/targets/`, and must be missing or empty.
-///
-/// Reports [`Step::Rebuild`] through `progress`, and for an image
-/// [`Step::WriteImage`] as well.
-///
-/// # Errors
-///
-/// - [`Error::ForeignDirectory`] if `output` is not empty
-/// - [`Error::Io`] or [`Error::Parse`] if the project's own files cannot be
-///   read
-/// - [`Error::BaseModified`] if `base/` no longer matches the disc it came from
-/// - [`Error::Encode`] if a rebuilt file does not fit its format
-/// - whatever else the target needs, which for an image is the source disc
-pub fn build(
-    project: &Path,
-    target: Target,
-    output: Option<&Path>,
-    progress: &Progress,
-) -> Result<Built, Error> {
-    build::run(project, target, output, progress)
+    /// Who the unpacked disc says it is, from `base/disc.toml`. Its game id
+    /// and revision pick the version, through `tpmt_game::Version::from_disc`.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] if `base/disc.toml` is missing
+    /// - [`Error::Parse`] if it is not what an unpack wrote
+    pub fn boot(&self) -> Result<tpmt_disc::Boot> {
+        project::metadata::read_boot(&self.base())
+    }
+
+    /// One project file's bytes, from `mod/overlay/` when it holds `path` and
+    /// from `base/` otherwise. `path` is a project path, as
+    /// [`formats`](Self::formats) lists.
+    ///
+    /// A `base/` copy isn't checked against its vanilla digest here, since
+    /// that means reading every digest the unpack recorded.
+    /// [`build`](Self::build) refuses one that drifted.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
+    /// - [`Error::MissingFile`] if neither layer holds a file at `path`
+    /// - [`Error::Io`] if the file can't be read
+    pub fn read(&self, path: &str) -> Result<Vec<u8>> {
+        leaf::read(&self.root, path)
+    }
+
+    /// Writes `data` to `path` under `mod/overlay/`, creating any missing
+    /// directories. `base/` is never written.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
+    /// - [`Error::Io`] on the write
+    pub fn write(&self, path: &str, data: &[u8]) -> Result<()> {
+        leaf::write(&self.root, path, data)
+    }
+
+    /// Hashes `mod/overlay/` against the vanilla digests taken at [`unpack`],
+    /// and reports whatever doesn't match, sorted by path.
+    ///
+    /// An overlay file identical to vanilla is not a change. `base/` is not
+    /// checked; a build refuses drift there when it reads the file.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] or [`Error::Parse`] if `.tpmt/` cannot be read back
+    /// - [`Error::Io`] if a project file cannot be walked or read
+    /// - [`Error::UnusablePath`] if a name in the project is not UTF-8
+    pub fn status(&self) -> Result<Vec<Change>> {
+        status::run(&self.root)
+    }
+
+    /// Re-encodes whatever `mod/overlay/` changed and hands it to `target`,
+    /// which decides what to do with it: a tree of the changed disc files, a
+    /// whole disc image, or a mod bundle.
+    ///
+    /// `output` stands in for the directory the target would otherwise own
+    /// under `build/targets/`, and must be missing or empty.
+    ///
+    /// Reports [`Step::Rebuild`] through `progress`, and for an image
+    /// [`Step::WriteImage`] as well.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ForeignDirectory`] if `output` is not empty
+    /// - [`Error::Io`] or [`Error::Parse`] if the project's own files cannot
+    ///   be read
+    /// - [`Error::BaseModified`] if `base/` no longer matches the disc it came
+    ///   from
+    /// - [`Error::Encode`] if a rebuilt file does not fit its format
+    /// - whatever else the target needs, which for an image is the source disc
+    pub fn build(
+        &self,
+        target: Target,
+        output: Option<&Path>,
+        progress: &Progress,
+    ) -> Result<Built> {
+        build::run(&self.root, target, output, progress)
+    }
 }

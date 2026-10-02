@@ -24,7 +24,7 @@ use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
 use tpmt_disc::{Boot, Disc};
 use tpmt_game::Version;
-use tpmt_pipeline::{FileKind, Progress};
+use tpmt_pipeline::{FileKind, Progress, Project};
 
 /// Reports past this many are counted but not printed.
 const REPORT_LIMIT: usize = 50;
@@ -40,7 +40,7 @@ pub type Checks = &'static [(&'static str, Source, Check)];
 #[derive(Clone, Copy)]
 pub enum Source {
     /// Every file of this kind in the unpack, by its path there. Found through
-    /// [`tpmt_pipeline::formats`], not by name.
+    /// [`tpmt_pipeline::Project::formats`], not by name.
     Unpack(FileKind),
     /// Every file as the image holds it, by its path on the disc, for what an
     /// unpack doesn't keep, like the bytes of a Yaz0 stream.
@@ -112,11 +112,9 @@ fn trial((name, source, check): (&str, Source, Check), iso: &Path) -> Trial {
 /// `check` over every file of `kind` in the unpack of `iso`.
 fn from_unpack(iso: &Path, kind: FileKind, check: Check) -> Result<Tally, Failed> {
     let project = unpacked(iso)?;
-    let version = version(&tpmt_pipeline::boot(&project)?)?;
-    let base = tpmt_pipeline::base(&project);
-    let paths = tpmt_pipeline::formats(&project)?
-        .remove(&kind)
-        .unwrap_or_default();
+    let version = version(&project.boot()?)?;
+    let base = project.base();
+    let paths = project.formats()?.remove(&kind).unwrap_or_default();
     let files = paths.par_iter().map(|path| {
         let mut bytes = Vec::new();
         File::open(base.join(path))?.read_to_end(&mut bytes)?;
@@ -218,7 +216,7 @@ fn report(Tally { checked, failures }: &Tally) -> Result<(), Failed> {
 /// locked from the read to the write, so a disc's trials, started together
 /// in their own processes, unpack it once between them. The stamp is written
 /// only after the unpack finishes, so one that fails part way is redone.
-fn unpacked(iso: &Path) -> Result<PathBuf, Failed> {
+fn unpacked(iso: &Path) -> Result<Project, Failed> {
     let root = std::env::temp_dir().join("tpmt-retail-tests");
     fs::create_dir_all(&root)?;
     let name = file_name(iso);
@@ -240,11 +238,11 @@ fn unpacked(iso: &Path) -> Result<PathBuf, Failed> {
     let mut saved = String::new();
     file.read_to_string(&mut saved)?;
     if saved == stamp && tpmt_pipeline::is_project(&project) {
-        return Ok(project);
+        return Ok(Project::discover(&project)?);
     }
 
     file.set_len(0)?;
-    tpmt_pipeline::unpack(iso, &project, &Progress::default())?;
+    let project = tpmt_pipeline::unpack(iso, &project, &Progress::default())?;
     file.rewind()?;
     file.write_all(stamp.as_bytes())?;
     Ok(project)

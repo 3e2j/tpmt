@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
-use tpmt_pipeline::{Built, Change, ChangeKind, Target};
+use tpmt_pipeline::{Built, Change, ChangeKind, Project, Target};
 
 mod progress;
 
@@ -101,8 +101,7 @@ fn run(command: Command) -> Result<(), Error> {
             println!("unpacked {} into {}", iso.display(), project.display());
         }
         Command::Status { dir } => {
-            let root = project(dir.as_ref())?;
-            let changes = tpmt_pipeline::status(&root)?;
+            let changes = project(dir.as_ref())?.status()?;
             print_status(&changes);
         }
         Command::Build {
@@ -110,23 +109,20 @@ fn run(command: Command) -> Result<(), Error> {
             dir,
             output,
         } => {
-            let root = project(dir.as_ref())?;
-            let built = progress::show(|progress| {
-                tpmt_pipeline::build(&root, target, output.as_deref(), progress)
-            })?;
+            let project = project(dir.as_ref())?;
+            let built =
+                progress::show(|progress| project.build(target, output.as_deref(), progress))?;
             print_built(&built);
         }
     }
     Ok(())
 }
 
-/// The project a command works on: discovered by walking up from `dir` (or
-/// the current directory, if none was named), the way `git -C` starts its own
-/// search from wherever it is pointed rather than treating that spot as the
-/// root itself.
-fn project(dir: Option<&PathBuf>) -> Result<PathBuf, Error> {
+/// The project a command works on, discovered from `dir`, or the current
+/// directory if none was named.
+fn project(dir: Option<&PathBuf>) -> Result<Project, Error> {
     let start = dir.map_or_else(|| Path::new("."), PathBuf::as_path);
-    Ok(tpmt_pipeline::discover(start)?)
+    Ok(Project::discover(start)?)
 }
 
 /// Prints a status listing, colored yellow/green for modified and added when
