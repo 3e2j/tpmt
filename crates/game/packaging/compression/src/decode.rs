@@ -4,12 +4,12 @@ use crate::Header;
 use crate::token::backref::Backreference;
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT};
 use crate::{Error, Result};
-use tpmt_binary::{Layout, Reader};
+use tpmt_binary::{Reader, Record};
 
 /// Decompresses `input`, whose magic the caller has already checked.
 pub fn decompress(input: &[u8]) -> Result<Vec<u8>> {
     let mut reader = Reader::new(input);
-    let header: &Header = reader.view_at(0)?;
+    let header: &Header = reader.record_at(0)?;
     let decompressed_size = header.decompressed_size.get() as usize;
     reader.seek(Header::LEN);
 

@@ -14,11 +14,11 @@ use tpmt_binary::{Be32, Reader};
 
 use crate::{Entry, Error, Item, Result, Span};
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// One file table record. Its last two fields mean different things
     /// either side of the directory flag: a file's data offset and length, or
     /// a directory's parent index and the index its subtree ends at.
-    pub struct Record {
+    pub struct FstEntry {
         /// Nonzero for a directory.
         pub flags: u8,
         /// The name's pool offset, a 24-bit big-endian number.
@@ -28,7 +28,7 @@ tpmt_binary::layout! {
     }
 }
 
-impl Record {
+impl FstEntry {
     const fn is_directory(&self) -> bool {
         self.flags != 0
     }
@@ -61,12 +61,12 @@ pub fn walk(fst: &[u8]) -> Result<Vec<Entry>> {
 
     // The root entry is a directory covering everything, so its end index is the
     // number of entries in the table.
-    let root: &Record = fst.view_at(0)?;
+    let root: &FstEntry = fst.record_at(0)?;
     if !root.is_directory() {
         return Err(Error::CorruptFileTable("the root is not a directory"));
     }
     let total = root.end_or_size.get() as usize;
-    let records: &[Record] = fst.slice_of(0, total)?;
+    let records: &[FstEntry] = fst.records_at(0, total)?;
     let names = size_of_val(records);
 
     let mut entries = Vec::new();
@@ -130,7 +130,7 @@ fn name_of(raw: &[u8]) -> Result<String> {
 pub struct Table {
     /// One per entry, the root first. Every file's data offset is still zero,
     /// since the layout is worked out from how long the table came to.
-    pub(crate) records: Box<[Record]>,
+    pub(crate) records: Box<[FstEntry]>,
     /// Every name but the root's, null terminated, in record order.
     pub(crate) names: Box<[u8]>,
     /// What each record past the root holds, in the same order.
@@ -240,7 +240,7 @@ fn emit(nodes: Vec<Node<'_>>) -> Table {
     for (index, node) in nodes.into_iter().enumerate() {
         let slot = match node.kind {
             Kind::Directory { parent, end } => {
-                records.push(Record {
+                records.push(FstEntry {
                     flags: DIRECTORY_TYPE,
                     name: node.name_field,
                     offset_or_parent: Be32::new(parent),
@@ -249,7 +249,7 @@ fn emit(nodes: Vec<Node<'_>>) -> Table {
                 Slot::Directory { path: node.path }
             }
             Kind::File { size } => {
-                records.push(Record {
+                records.push(FstEntry {
                     flags: 0,
                     name: node.name_field,
                     offset_or_parent: Be32::new(0),

@@ -1,7 +1,7 @@
 //! The read path: turns a message file's bytes into a [`Bmg`], nothing
 //! copied out of the input.
 
-use tpmt_binary::{Layout, Reader};
+use tpmt_binary::{Reader, Record};
 
 use crate::Header;
 use crate::sections::{self, flow, message};
@@ -30,7 +30,7 @@ struct Sections<'a> {
 #[allow(clippy::similar_names)]
 fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let reader = Reader::new(data);
-    let header: &Header = reader.view_at(0)?;
+    let header: &Header = reader.record_at(0)?;
     if header.kind != Header::KIND {
         return Err(Error::UnknownKind(header.kind));
     }
@@ -49,7 +49,7 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
     let mut fli1 = None;
 
     for _ in 0..count {
-        let section: &sections::Header = reader.view_at(at)?;
+        let section: &sections::Header = reader.record_at(at)?;
         let magic = section.magic;
         let size = section.size.get() as usize;
         if size < sections::Header::LEN {
@@ -60,7 +60,7 @@ fn split(data: &[u8]) -> Result<(Encoding, Sections<'_>)> {
         // with the padding its stated size counts left off the end.
         let body_at = at + sections::Header::LEN;
         let len = (size - sections::Header::LEN).min(data.len() - body_at);
-        let body = reader.slice_at(body_at, len)?;
+        let body = reader.bytes_at(body_at, len)?;
 
         match magic {
             sections::INF1 => inf1 = Some(body),
@@ -136,7 +136,7 @@ fn read_strings(str1: &[u8]) -> Vec<Box<[u8]>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_binary::{Be32, Layout, Writer};
+    use tpmt_binary::{Be32, Record, Writer};
 
     use super::*;
     use crate::FileKind;

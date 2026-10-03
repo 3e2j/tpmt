@@ -1,4 +1,4 @@
-use crate::Layout;
+use crate::Record;
 
 /// A buffer being built up, append only.
 ///
@@ -54,7 +54,7 @@ impl Writer {
     }
 
     /// Appends a whole record, fields in declaration order.
-    pub fn record<T: Layout>(&mut self, record: &T) {
+    pub fn record<T: Record>(&mut self, record: &T) {
         self.bytes(record.as_bytes());
     }
 
@@ -79,7 +79,8 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Be16, Be32, Record};
+    use crate::record::Sample;
+    use crate::{Be16, Be32};
 
     #[test]
     fn writes_go_out_big_endian() {
@@ -94,7 +95,7 @@ mod tests {
     fn a_written_record_reads_back() {
         let mut writer = Writer::new();
         writer.u8(0xFF);
-        writer.record(&Record {
+        writer.record(&Sample {
             tag: 0x0D,
             wide: Be32::new(0x0001_0203),
             narrow: Be16::new(0xACED),

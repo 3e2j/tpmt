@@ -1,6 +1,6 @@
 //! The write path: turns a [`Bmg`] back into bytes.
 
-use tpmt_binary::{Be32, Layout, Writer};
+use tpmt_binary::{Be32, Record, Writer};
 
 use crate::Header;
 use crate::sections::{self, flow, message, positions};
@@ -82,7 +82,7 @@ fn write_strings(strings: &[Box<[u8]>]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_binary::{Layout, Reader};
+    use tpmt_binary::{Reader, Record};
 
     use super::*;
     use crate::sections::Header as SectionHeader;
@@ -126,7 +126,7 @@ mod tests {
         let data = pack(&sample()).unwrap();
         let reader = Reader::new(&data);
 
-        let top: &Header = reader.view_at(0).unwrap();
+        let top: &Header = reader.record_at(0).unwrap();
         assert_eq!(top.magic, FileKind::Mesg.magic());
         assert_eq!(top.kind, Header::KIND);
         assert_eq!(top.size.get(), 0x80);
@@ -142,7 +142,7 @@ mod tests {
             (0x80, b"FLW1"),
             (0xA0, b"FLI1"),
         ] {
-            let section: &SectionHeader = reader.view_at(at).unwrap();
+            let section: &SectionHeader = reader.record_at(at).unwrap();
             assert_eq!((&section.magic, section.size.get()), (magic, 0x20));
         }
         // Header, count, and one 8 byte root: the padding is left off.
@@ -158,7 +158,7 @@ mod tests {
             ..sample()
         };
         let data = pack(&bmg).unwrap();
-        let top: &Header = Reader::new(&data).view_at(0).unwrap();
+        let top: &Header = Reader::new(&data).record_at(0).unwrap();
         assert_eq!(top.size.get(), 0x80);
         assert_eq!(top.section_count.get(), 3);
         // MID1 unpadded: the section header, its own header, and one id.

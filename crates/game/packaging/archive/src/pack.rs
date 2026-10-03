@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use tpmt_binary::{Be16, Be32, Flag, Layout, Writer};
+use tpmt_binary::{Be16, Be32, Flag, Record, Writer};
 
 use crate::{
     Archive, DataHeader, Entry, Error, FileKind, Node, Preload, Result, TopHeader, name_field,
@@ -619,7 +619,7 @@ pub mod tests {
         let r = Reader::new(&data);
         assert_eq!(data.len(), 0x160);
 
-        let top: &TopHeader = r.view_at(0).unwrap();
+        let top: &TopHeader = r.record_at(0).unwrap();
         assert_eq!(&top.magic, b"RARC");
         assert_eq!(top.file_size.get(), 0x160);
         assert_eq!(top.data_header_ptr.get(), 0x20);
@@ -630,7 +630,7 @@ pub mod tests {
         // The unnamed tail of the top header, zero here as on the discs.
         assert_eq!(top.unnamed, [0; 4]);
 
-        let header: &DataHeader = r.view_at(DataHeader::AT).unwrap();
+        let header: &DataHeader = r.record_at(DataHeader::AT).unwrap();
         assert_eq!(header.node_count.get(), 2);
         assert_eq!(header.node_list_ptr.get(), 0x20);
         assert_eq!(header.entry_count.get(), 7);
@@ -641,13 +641,13 @@ pub mod tests {
         assert!(!header.synced_ids.get());
 
         // The root is `ROOT` whatever its name; other nodes uppercase theirs.
-        let root: &Node = r.view_at(NODES).unwrap();
+        let root: &Node = r.record_at(NODES).unwrap();
         assert_eq!(&root.tag, b"ROOT");
         assert_eq!(root.name.get(), 5);
         assert_eq!(root.name_hash.get(), name_hash(b"root"));
         assert_eq!(root.entry_count.get(), 4);
         assert_eq!(root.first_entry.get(), 0);
-        let sub: &Node = r.view_at(NODES + Node::LEN).unwrap();
+        let sub: &Node = r.record_at(NODES + Node::LEN).unwrap();
         assert_eq!(&sub.tag, b"SUB ");
         assert_eq!(sub.name.get(), 16);
         assert_eq!(sub.entry_count.get(), 3);
@@ -659,7 +659,7 @@ pub mod tests {
         // lowest first as files are met, not by entry index: a.bin claims 0,
         // and b.bin claims 1 rather than the 4 its entry sits at.
         let entry = |index: usize| {
-            let record: &Entry = r.view_at(ENTRIES + index * Entry::LEN).unwrap();
+            let record: &Entry = r.record_at(ENTRIES + index * Entry::LEN).unwrap();
             (
                 record.id.get(),
                 record.flags,
@@ -675,7 +675,7 @@ pub mod tests {
         assert_eq!(entry(4), (1, 0x11, 0x14, 0x20, 3));
         assert_eq!(entry(5), (0xFFFF, 0x02, 0, 1, 0x10));
         assert_eq!(entry(6), (0xFFFF, 0x02, 2, 0, 0x10));
-        let a: &Entry = r.view_at(ENTRIES).unwrap();
+        let a: &Entry = r.record_at(ENTRIES).unwrap();
         assert_eq!(a.name_hash.get(), name_hash(b"a.bin"));
 
         // The pool: dots once up front, then each directory's name followed by
@@ -731,7 +731,7 @@ pub mod tests {
         })
         .unwrap();
         let r = Reader::new(&data);
-        let header: &DataHeader = r.view_at(DataHeader::AT).unwrap();
+        let header: &DataHeader = r.record_at(DataHeader::AT).unwrap();
 
         // Five directories, and the runs of entries they own: each node's
         // children, then its own `.` and `..`, laid out in node order.
@@ -740,7 +740,7 @@ pub mod tests {
 
         let nodes = DataHeader::AT + DataHeader::LEN;
         let node = |index: usize| {
-            let record: &Node = r.view_at(nodes + index * Node::LEN).unwrap();
+            let record: &Node = r.record_at(nodes + index * Node::LEN).unwrap();
             (
                 &record.tag,
                 record.entry_count.get(),
@@ -757,7 +757,7 @@ pub mod tests {
         // it is the last entry of its run, and both `sub` nodes have one.
         let entries = DataHeader::AT + header.entry_list_ptr.get() as usize;
         let parent_of = |index: usize| {
-            let record: &Entry = r.view_at(entries + index * Entry::LEN).unwrap();
+            let record: &Entry = r.record_at(entries + index * Entry::LEN).unwrap();
             record.data_or_node.get()
         };
         assert_eq!(parent_of(10), 1);
@@ -793,7 +793,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let header: &DataHeader = Reader::new(&data).view_at(DataHeader::AT).unwrap();
+        let header: &DataHeader = Reader::new(&data).record_at(DataHeader::AT).unwrap();
 
         assert!(header.synced_ids.get());
         // The two files, then the root's `.` and `..`.
@@ -818,7 +818,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let header: &DataHeader = Reader::new(&data).view_at(DataHeader::AT).unwrap();
+        let header: &DataHeader = Reader::new(&data).record_at(DataHeader::AT).unwrap();
         assert!(!header.synced_ids.get());
         assert_eq!(header.next_free_id.get(), 10);
         assert_eq!(unpack(&data).unwrap().files[1].id, Some(9));
@@ -855,7 +855,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let record: &Entry = Reader::new(&data).view_at(ENTRIES).unwrap();
+        let record: &Entry = Reader::new(&data).record_at(ENTRIES).unwrap();
         assert_eq!(record.flags, 0x95);
     }
 
@@ -872,7 +872,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let top: &TopHeader = Reader::new(&data).view_at(0).unwrap();
+        let top: &TopHeader = Reader::new(&data).record_at(0).unwrap();
         assert_eq!(top.mram_size.get(), 0x20);
         assert_eq!(top.aram_size.get(), 0x20);
         assert_eq!(unpack(&data).unwrap().files[1].preload, Preload::Aram);
@@ -921,7 +921,7 @@ pub mod tests {
             ..Default::default()
         })
         .unwrap();
-        let top: &TopHeader = Reader::new(&data).view_at(0).unwrap();
+        let top: &TopHeader = Reader::new(&data).record_at(0).unwrap();
         assert_eq!(top.mram_size.get(), 0x20);
         assert_eq!(top.aram_size.get(), 0x20);
     }

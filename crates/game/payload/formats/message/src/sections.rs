@@ -13,7 +13,7 @@ use crate::{Error, Result};
 pub mod flow;
 pub mod message;
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// What every section opens with.
     pub struct Header {
         /// One of the section names below, such as [`INF1`].

@@ -53,7 +53,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use tpmt_binary::{Be16, Be32, Flag, Layout};
+use tpmt_binary::{Be16, Be32, Flag, Record};
 
 pub mod editable;
 
@@ -211,7 +211,7 @@ impl<'a> Format<'a> for Archive<'a> {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The fixed 0x20 at the front of the archive. Everything else is found
     /// through it.
     struct TopHeader {
@@ -230,7 +230,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// What the top header points at. Every offset in it, and the file data
     /// offset above, is counted from where this header starts.
     struct DataHeader {
@@ -252,7 +252,7 @@ impl DataHeader {
     const AT: usize = TopHeader::LEN;
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// One directory's record, in the list the data header points at.
     struct Node {
         /// A four character tag.
@@ -265,7 +265,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// One file's or one directory's record. A directory's points at its node,
     /// a file's at its bytes.
     struct Entry {

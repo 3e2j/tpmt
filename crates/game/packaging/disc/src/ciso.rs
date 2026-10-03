@@ -39,7 +39,7 @@ impl Map {
 
         // The one little endian field anywhere near a GameCube disc. It is the
         // container's own, not the game's.
-        let field = reader.slice_at(BLOCK_SIZE_FIELD, 4)?;
+        let field = reader.bytes_at(BLOCK_SIZE_FIELD, 4)?;
         let block_size = u32::from_le_bytes([field[0], field[1], field[2], field[3]]);
         if block_size < MIN_BLOCK_SIZE || block_size % MIN_BLOCK_SIZE != 0 {
             return Err(Error::CorruptHeader("the block size is not a block size"));
@@ -49,7 +49,7 @@ impl Map {
         // One byte per block, saying only whether it is there.
         // The map is a fixed size whatever the image is, so the image ends after
         // the last block anybody stored.
-        let map = reader.slice_at(MAP_OFFSET, MAP_LEN)?;
+        let map = reader.bytes_at(MAP_OFFSET, MAP_LEN)?;
         let mut len = 0;
         for (end, &used) in (1..).zip(map) {
             match used {

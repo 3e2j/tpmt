@@ -1,6 +1,6 @@
 //! The write path: turns raw bytes into Yaz0 data.
 
-use tpmt_binary::{Be32, FileKind, Layout, Writer};
+use tpmt_binary::{Be32, FileKind, Record, Writer};
 
 use crate::Header;
 use crate::token::backref::{Backreference, MAX_DISTANCE, MAX_LENGTH, MIN_LENGTH};

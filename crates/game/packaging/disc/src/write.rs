@@ -17,7 +17,7 @@
 use std::io::Write;
 
 use sha1::{Digest, Sha1};
-use tpmt_binary::{Be32, Layout as _};
+use tpmt_binary::{Be32, Record as _};
 
 use crate::{Entry, Error, Item, Metadata, Result, Span, fst, sys};
 
@@ -28,7 +28,7 @@ pub struct Layout {
     /// the file table's records and names, which the disc stores back to back.
     boot: sys::BootBin,
     bi2: sys::Bi2Bin,
-    records: Box<[fst::Record]>,
+    records: Box<[fst::FstEntry]>,
     names: Box<[u8]>,
     fst_offset: u64,
     len: u64,

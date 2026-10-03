@@ -1,22 +1,24 @@
-//! What every binary format crate is built on: reading and writing a file's
-//! bytes, and telling which format a file is.
+//! What every binary format crate is built on.
 //!
-//! Everything on the disc is big-endian, and every format crate parses the same
-//! shape: read a header, follow an offset into a table, read records at
-//! computed positions. A [`Reader`] does that over a borrowed buffer, and a
-//! [`Writer`] builds one up. Both are bounds-checked.
+//! It does three things:
+//! - Read big-endian bytes at a cursor or absolute position via [`Reader`]
+//! - Appends big-endian bytes via [`Writer`]
+//! - host a [`Format`] trait for formats to implement.
 //!
-//! Each format crate implements [`Format`] on its decoded struct, and every
-//! file's opening magic lives in [`FileKind`].
+//! The format trait hosts all magics and lets them be checked/identified for handouts.
+//!
+//! Declaring structs with [`record!`] is shorthand for repr(C), letting it be
+//! read/written exactly how it was laid out in memory. The types its fields can
+//! be are listed on [`Record`].
 
 mod format;
-mod layout;
 mod reader;
+mod record;
 mod writer;
 
 pub use format::{Checked, FileKind, Format, WrongKind};
-pub use layout::{Be16, Be32, Flag, Layout, bytes_of, view_at_mut};
 pub use reader::Reader;
+pub use record::{Be16, Be32, Flag, Record, bytes_of, record_at_mut};
 pub use writer::Writer;
 
 /// A read that could not be satisfied from the buffer it was aimed at.
@@ -37,7 +39,7 @@ pub type Result<T> = std::result::Result<T, ByteError>;
 
 /// Borrows `len` bytes of `data` at `pos`, the one bounds check every read
 /// goes through.
-fn slice_at(data: &[u8], pos: usize, len: usize) -> Result<&[u8]> {
+fn bytes_at(data: &[u8], pos: usize, len: usize) -> Result<&[u8]> {
     let out_of_bounds = || ByteError::OutOfBounds {
         pos,
         len,
@@ -45,15 +47,4 @@ fn slice_at(data: &[u8], pos: usize, len: usize) -> Result<&[u8]> {
     };
     let end = pos.checked_add(len).ok_or_else(out_of_bounds)?;
     data.get(pos..end).ok_or_else(out_of_bounds)
-}
-
-#[cfg(test)]
-layout! {
-    /// Fields of every width, so a view at an odd position proves nothing
-    /// needed alignment.
-    struct Record {
-        tag: u8,
-        wide: Be32,
-        narrow: Be16,
-    }
 }

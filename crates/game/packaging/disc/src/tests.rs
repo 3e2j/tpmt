@@ -3,7 +3,7 @@
 
 use std::mem::offset_of;
 
-use tpmt_binary::{Be32, Layout as _, view_at_mut};
+use tpmt_binary::{Be32, Record as _, record_at_mut};
 
 use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, Span, ciso, fst, sys};
 
@@ -57,8 +57,8 @@ fn put32(data: &mut [u8], at: usize, value: u32) {
 /// Writes one file table record. The last two fields mean different things
 /// either side of the directory flag, so a caller sets them directly.
 fn put_fst(data: &mut [u8], entry: usize, dir: bool, name: u32, target: u32, end_or_size: u32) {
-    let at = FST_OFFSET as usize + entry * fst::Record::LEN;
-    *view_at_mut(data, at).unwrap() = fst::Record {
+    let at = FST_OFFSET as usize + entry * fst::FstEntry::LEN;
+    *record_at_mut(data, at).unwrap() = fst::FstEntry {
         flags: if dir { fst::DIRECTORY_TYPE } else { 0 },
         name: fst::name_field(name).unwrap(),
         offset_or_parent: Be32::new(target),
@@ -107,7 +107,7 @@ fn disc() -> Vec<u8> {
 
     put32(&mut data, offset_of!(sys::BootBin, dol_offset), DOL_OFFSET);
     put32(&mut data, offset_of!(sys::BootBin, fst_offset), FST_OFFSET);
-    let fst_len = ENTRY_COUNT as usize * fst::Record::LEN + NAME_POOL.len();
+    let fst_len = ENTRY_COUNT as usize * fst::FstEntry::LEN + NAME_POOL.len();
     assert_eq!(
         fst_len, FST_LEN as usize,
         "the derived values below assume this"
@@ -186,7 +186,7 @@ fn disc() -> Vec<u8> {
     put_fst(&mut data, 4, true, NAME_EMPTY, 0, 5);
     put_fst(&mut data, 5, false, NAME_C, DATA_OFFSET + 0x20, 6);
 
-    let pool = FST_OFFSET as usize + ENTRY_COUNT as usize * fst::Record::LEN;
+    let pool = FST_OFFSET as usize + ENTRY_COUNT as usize * fst::FstEntry::LEN;
     data[pool..pool + NAME_POOL.len()].copy_from_slice(NAME_POOL);
 
     data

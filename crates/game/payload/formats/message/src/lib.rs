@@ -68,7 +68,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     struct Header {
         magic: [u8; 4],
         /// The layout tag. Anything but [`Header::KIND`] is refused.

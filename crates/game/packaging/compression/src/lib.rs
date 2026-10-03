@@ -94,7 +94,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     struct Header {
         /// Always [`FileKind::Yaz0`](tpmt_binary::FileKind::Yaz0)'s magic.
         magic: [u8; 4],

@@ -13,7 +13,7 @@
 //! something else.
 
 use serde::{Deserialize, Serialize};
-use tpmt_binary::{Be32, Layout, Reader};
+use tpmt_binary::{Be32, Reader, Record};
 
 use crate::{Disc, Entry, Error, Result, Span};
 
@@ -25,7 +25,7 @@ pub const ID_LEN: usize = 4;
 pub const MAKER_LEN: usize = 2;
 pub const TITLE_LEN: usize = 0x40;
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The front of the boot header, where every value a project keeps sits.
     #[derive(Clone, Copy)]
     pub struct Authored {
@@ -44,7 +44,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The boot header. Past [`Authored`] it is all layout, worked out again
     /// by a build rather than kept. `DVDBB2` in the SDK covers the seven
     /// fields from `dol_offset` on.
@@ -87,7 +87,7 @@ pub const PREAMBLE_ALIGN: u64 = 0x100;
 pub const BI2_OFFSET: u64 = 0x440;
 pub const APPLOADER_OFFSET: u64 = 0x2440;
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The disc metadata: six fields and then eight kilobytes of nothing.
     pub struct Bi2Bin {
         pub debug_monitor_size: Be32,
@@ -105,7 +105,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// What the apploader opens with. It states its own length in two parts,
     /// neither of which counts this header.
     pub struct ApploaderHeader {
@@ -145,7 +145,7 @@ pub const BI2_PATH: &str = "sys/bi2.bin";
 // section reaches.
 pub const DOL_SECTIONS: usize = 18;
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The executable's header. Its section offsets, load addresses and
     /// lengths are three runs in step with each other, so a section that is
     /// not present reads as zero in all three.
@@ -209,7 +209,7 @@ pub struct Bi2 {
 /// Called before the rest of the preamble is read, so a file that is not a disc
 /// says so rather than failing on a short read somewhere inside it.
 pub fn identify(boot: &[u8]) -> Result<()> {
-    let authored: &Authored = Reader::new(boot).view_at(0)?;
+    let authored: &Authored = Reader::new(boot).record_at(0)?;
     if authored.magic.get() == MAGIC {
         return Ok(());
     }
@@ -228,7 +228,7 @@ pub fn identify(boot: &[u8]) -> Result<()> {
 /// The executable's and file table's offsets are taken as read, since a build
 /// picks fresh ones anyway.
 pub fn boot(bytes: &[u8], apploader_len: u64) -> Result<Boot> {
-    let header: &BootBin = Reader::new(bytes).view_at(0)?;
+    let header: &BootBin = Reader::new(bytes).record_at(0)?;
     let authored = &header.authored;
 
     // A 64 byte field, only terminated when the title is short enough to leave
@@ -279,7 +279,7 @@ pub fn user_position(fst_offset: u32, fst_len: u32) -> u32 {
 
 /// Reads the disc metadata.
 pub fn bi2(bytes: &[u8]) -> Result<Bi2> {
-    let header: &Bi2Bin = Reader::new(bytes).view_at(0)?;
+    let header: &Bi2Bin = Reader::new(bytes).record_at(0)?;
     let bi2 = Bi2 {
         simulated_memory_size: header.simulated_memory_size.get(),
         debug_flag: header.debug_flag.get(),
@@ -374,7 +374,7 @@ pub fn boot_bin_over(original: &[u8], boot: &Boot) -> Result<BootBin> {
         return Err(Error::Unwritable("a boot header is 0x440 bytes"));
     }
 
-    let original: &BootBin = Reader::new(original).view_at(0)?;
+    let original: &BootBin = Reader::new(original).record_at(0)?;
     Ok(BootBin {
         authored: authored(boot)?,
         ..*original
@@ -458,7 +458,7 @@ fn text(raw: &[u8], what: &'static str) -> Result<String> {
 
 /// Where the file table sits, out of the boot header.
 pub fn fst_range(boot: &[u8]) -> Result<Span> {
-    let header: &BootBin = Reader::new(boot).view_at(0)?;
+    let header: &BootBin = Reader::new(boot).record_at(0)?;
     Ok(Span {
         offset: header.fst_offset.get() as u64,
         size: header.fst_size.get() as u64,
@@ -468,7 +468,7 @@ pub fn fst_range(boot: &[u8]) -> Result<Span> {
 /// The apploader states its own length in two parts, neither of which counts
 /// its header.
 pub fn apploader_len(header: &[u8]) -> Result<u64> {
-    let header: &ApploaderHeader = Reader::new(header).view_at(0)?;
+    let header: &ApploaderHeader = Reader::new(header).record_at(0)?;
     Ok(ApploaderHeader::LEN as u64 + header.size.get() as u64 + header.trailer_size.get() as u64)
 }
 
@@ -479,7 +479,7 @@ pub fn apploader_len(header: &[u8]) -> Result<u64> {
 /// few values each, kept as `Metadata`. `fst` derives the file table.
 pub fn entries(disc: &Disc) -> Result<Vec<Entry>> {
     let boot = disc.read(BOOT)?;
-    let dol_offset = Reader::new(&boot).view_at::<BootBin>(0)?.dol_offset.get() as u64;
+    let dol_offset = Reader::new(&boot).record_at::<BootBin>(0)?.dol_offset.get() as u64;
     let fst_offset = fst_range(&boot)?.offset;
 
     // A game disc with nowhere to boot from is a header that did not survive
@@ -515,7 +515,7 @@ fn dol_len(disc: &Disc, offset: u64) -> Result<u64> {
         offset,
         size: DolHeader::LEN as u64,
     })?;
-    let header: &DolHeader = Reader::new(&header).view_at(0)?;
+    let header: &DolHeader = Reader::new(&header).record_at(0)?;
 
     Ok(header
         .section_offsets

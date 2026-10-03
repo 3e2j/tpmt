@@ -4,7 +4,7 @@
 //! record in INF1, the text that record points at in DAT1, and, when the
 //! file has one, the public-facing id sitting at the same position in MID1.
 
-use tpmt_binary::{Be16, Be32, Layout, Reader, Writer};
+use tpmt_binary::{Be16, Be32, Reader, Record, Writer};
 
 use crate::{Error, Result};
 
@@ -80,7 +80,7 @@ pub struct Mid1Header {
     pub shift_bytes: u8,
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The header in front of INF1's records: how many there are, and how
     /// wide one is. Its length is where the records start.
     struct Inf1Header {
@@ -96,7 +96,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The header in front of MID1's id array, as the file stores it. Its
     /// length is where the id array starts. [`Mid1Header`] is what it
     /// parses into.
@@ -155,7 +155,7 @@ pub fn read(
     mid1: Option<&[u8]>,
 ) -> Result<(Vec<Message>, u16, Option<Mid1Header>)> {
     let reader = Reader::new(inf1);
-    let header: &Inf1Header = reader.view_at(0)?;
+    let header: &Inf1Header = reader.record_at(0)?;
     let count = header.count.get() as usize;
     // Text offset into DAT1 + attribute bytes
     let record_len = header.record_len.get();
@@ -164,14 +164,14 @@ pub fn read(
         .ok_or(Error::Corrupt(
             "an INF1 record is narrower than its own text offset",
         ))?;
-    let records = reader.slice_at(Inf1Header::LEN, count * record_len as usize)?;
+    let records = reader.bytes_at(Inf1Header::LEN, count * record_len as usize)?;
 
     // `shift_bytes` is guaranteed zero by `read_mid1`, so a MID1 entry is
     // always the id whole; see `Mid1Header::shift_bytes`.
     let mid1 = mid1.map(Reader::new);
     let ids: Option<&[Be32]> = mid1
         .as_ref()
-        .map(|mid1| mid1.slice_of(RawMid1Header::LEN, count))
+        .map(|mid1| mid1.records_at(RawMid1Header::LEN, count))
         .transpose()?;
 
     let mut messages = Vec::with_capacity(count);
@@ -258,7 +258,7 @@ fn read_text(dat1: &[u8], start: usize) -> Result<Vec<TextSegment>> {
 /// What MID1 says about its ids, as against the ids themselves, which are
 /// what the `ordered` bit is checked against.
 fn read_mid1(mid1: &Reader<'_>, messages: &[Message]) -> Result<Mid1Header> {
-    let header: &RawMid1Header = mid1.view_at(0)?;
+    let header: &RawMid1Header = mid1.record_at(0)?;
     let packed = OrderedForm(header.ordered_form);
     let shift_bytes = header.shift_bytes;
     if packed.ordered() && !sorted(messages) {

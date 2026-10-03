@@ -35,7 +35,7 @@ struct ArchiveReader<'a> {
 
 pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
     let reader = Reader::new(data);
-    let top: &TopHeader = reader.view_at(0)?;
+    let top: &TopHeader = reader.record_at(0)?;
     if top.file_size.get() as usize != data.len() {
         return Err(Error::Corrupt("the stated size is not the actual size"));
     }
@@ -47,11 +47,11 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
     let header = top.data_header_ptr.get() as usize;
     let relative = |field: Be32| header.saturating_add(field.get() as usize);
 
-    let data_header: &DataHeader = reader.view_at(header)?;
+    let data_header: &DataHeader = reader.record_at(header)?;
 
     // A bad count is refused before it can size an allocation or a walk.
     let nodes: &[Node] = reader
-        .slice_of(
+        .records_at(
             relative(data_header.node_list_ptr),
             data_header.node_count.get() as usize,
         )
@@ -60,7 +60,7 @@ pub fn unpack(data: &[u8]) -> Result<Archive<'_>> {
         return Err(Error::Corrupt("there is no root directory"));
     };
     let entries: &[Entry] = reader
-        .slice_of(
+        .records_at(
             relative(data_header.entry_list_ptr),
             data_header.entry_count.get() as usize,
         )
@@ -172,7 +172,7 @@ impl<'a> ArchiveReader<'a> {
                 synced &= usize::from(id) == index;
                 files.push(File {
                     path,
-                    data: self.reader.slice_at(self.file_data_at + target, size)?,
+                    data: self.reader.bytes_at(self.file_data_at + target, size)?,
                     id: Some(id),
                     preload,
                 });
@@ -229,7 +229,7 @@ impl<'a> ArchiveReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_binary::{Be16, Layout, view_at_mut};
+    use tpmt_binary::{Be16, Record, record_at_mut};
 
     use super::*;
     use crate::Format;
@@ -239,16 +239,16 @@ mod tests {
     };
 
     fn top_header(data: &mut [u8]) -> &mut TopHeader {
-        view_at_mut(data, 0).unwrap()
+        record_at_mut(data, 0).unwrap()
     }
 
     fn data_header(data: &mut [u8]) -> &mut DataHeader {
-        view_at_mut(data, DataHeader::AT).unwrap()
+        record_at_mut(data, DataHeader::AT).unwrap()
     }
 
     /// The fixture's entry at `index`: `a.bin` at 0, `sub` at 1.
     fn entry(data: &mut [u8], index: usize) -> &mut Entry {
-        view_at_mut(data, ENTRIES + index * Entry::LEN).unwrap()
+        record_at_mut(data, ENTRIES + index * Entry::LEN).unwrap()
     }
 
     /// The fidelity contract: what comes out goes back in and reproduces the
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn rejects_a_directory_claiming_missing_entries() {
         let mut data = archive();
-        view_at_mut::<Node>(&mut data, NODES).unwrap().entry_count = Be16::new(100);
+        record_at_mut::<Node>(&mut data, NODES).unwrap().entry_count = Be16::new(100);
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
     }
 

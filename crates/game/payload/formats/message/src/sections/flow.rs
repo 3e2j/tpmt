@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 
-use tpmt_binary::{Be16, Layout, Reader, Writer};
+use tpmt_binary::{Be16, Reader, Record, Writer};
 
 use crate::sections::positions;
 use crate::{Error, MessageId, Result};
@@ -119,7 +119,7 @@ pub struct Flow {
     pub roots: Vec<Root>,
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The header in front of FLW1's node table: how many records follow,
     /// and how many entries the indirection table past them holds.
     struct Flw1Header {
@@ -130,7 +130,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// A FLW1 node record before its type is known. Every type is this long,
     /// laid out differently from byte 1 on, and is read by casting this to it.
     struct NodeRecord {
@@ -140,7 +140,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// Doesn't need the indirection table, as its edge and that edge's
     /// mask byte both live in the record itself.
     struct TextNode {
@@ -160,7 +160,7 @@ impl TextNode {
     const KIND: u8 = 0x01;
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     struct BranchNode {
         kind: u8,
         child_count: u8,
@@ -174,7 +174,7 @@ impl BranchNode {
     const KIND: u8 = 0x02;
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     struct EventNode {
         kind: u8,
         event: u8,
@@ -187,7 +187,7 @@ impl EventNode {
     const KIND: u8 = 0x03;
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// The header in front of FLI1's root table.
     struct Fli1Header {
         count: Be16,
@@ -199,7 +199,7 @@ tpmt_binary::layout! {
     }
 }
 
-tpmt_binary::layout! {
+tpmt_binary::record! {
     /// One FLI1 entry: an id and the node position it starts at, each padded
     /// out to a u32 of its own.
     struct Fli1Entry {
@@ -247,20 +247,20 @@ const fn mask(entry: u16) -> u8 {
 #[allow(clippy::similar_names)]
 pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     let flw = Reader::new(flw1);
-    let header: &Flw1Header = flw.view_at(0)?;
+    let header: &Flw1Header = flw.record_at(0)?;
     let node_count = header.node_count.get() as usize;
     let table_count = header.table_count.get() as usize;
 
-    let records: &[NodeRecord] = flw.slice_of(Flw1Header::LEN, node_count)?;
+    let records: &[NodeRecord] = flw.records_at(Flw1Header::LEN, node_count)?;
     let table_at = Flw1Header::LEN + size_of_val(records);
-    let table: &[Be16] = flw.slice_of(table_at, table_count)?;
+    let table: &[Be16] = flw.records_at(table_at, table_count)?;
 
     // The mask is never dereferenced by the game, so nothing downstream
     // needs it, but every file has one. It is read and checked against the
     // table it shadows, since disagreement here is the one free corruption
     // check this section offers.
     let masks = flw
-        .slice_at(table_at + size_of_val(table), table_count)
+        .bytes_at(table_at + size_of_val(table), table_count)
         .map_err(|_| Error::Corrupt("a flow indirection table has no mask table trailing it"))?;
     if table
         .iter()
@@ -333,8 +333,8 @@ pub fn read(flw1: &[u8], fli1: &[u8]) -> Result<Flow> {
     }
 
     let fli = Reader::new(fli1);
-    let header: &Fli1Header = fli.view_at(0)?;
-    let entries: &[Fli1Entry] = fli.slice_of(Fli1Header::LEN, header.count.get() as usize)?;
+    let header: &Fli1Header = fli.record_at(0)?;
+    let entries: &[Fli1Entry] = fli.records_at(Fli1Header::LEN, header.count.get() as usize)?;
     let roots = entries
         .iter()
         .map(|entry| Root {
