@@ -6,6 +6,7 @@ use std::path::Path;
 
 use rayon::prelude::*;
 use tpmt_disc::{Disc, Entry};
+use tpmt_report::Report;
 
 use crate::progress::{Progress, Step};
 use crate::project::metadata::{Digests, Formats};
@@ -14,8 +15,8 @@ use crate::{FileKind, Result, fs, project};
 pub mod explode;
 
 /// Unpacks a disc into `base/`, records the store under `.tpmt/`, and
-/// scaffolds a `mod/` folder.
-pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
+/// scaffolds a `mod/` folder. Returns the unpack's reports.
+pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<Vec<Report>> {
     project::refuse_foreign(project)?;
     let disc = Disc::open(iso)?;
 
@@ -24,6 +25,7 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
         yaz0_compressed,
         digests,
         formats,
+        reports,
     } = unpack_disc(&disc, staging.dir(), progress)?;
 
     progress.begin(Step::Save, 0);
@@ -32,7 +34,8 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<()> {
 
     project::metadata::write_store(project, iso, &disc.metadata().boot, &digests, &formats)?;
 
-    project::scaffold_mod(project)
+    project::scaffold_mod(project)?;
+    Ok(reports)
 }
 
 /// What one read of the disc leaves for the project to record.
@@ -43,6 +46,8 @@ struct Unpacked {
     digests: Digests,
     /// Which project files hold a known leaf format, for `.tpmt/formats`.
     formats: Formats,
+    /// Every file's reports, in disc order.
+    reports: Vec<Report>,
 }
 
 /// Unpacks one disc's worth of files into `base`, reading the disc once, in
@@ -81,8 +86,10 @@ fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked
 
     let mut digests = Digests::new();
     let mut formats = Formats::new();
+    let mut reports = Vec::new();
     for file in unpacked_files {
         digests.extend(file.digests);
+        reports.extend(file.reports);
         for (kind, path) in file.kinds {
             formats.entry(kind).or_default().insert(path);
         }
@@ -92,6 +99,7 @@ fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked
         yaz0_compressed,
         digests,
         formats,
+        reports,
     })
 }
 
@@ -106,6 +114,7 @@ struct UnpackedFile {
     digests: Vec<(String, u128)>,
     /// The project files it became that hold a known leaf format.
     kinds: Vec<(FileKind, String)>,
+    reports: Vec<Report>,
 }
 
 /// Explodes one disc file into `base/`, hashing and identifying each project
@@ -113,19 +122,26 @@ struct UnpackedFile {
 fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
     let mut digests = Vec::new();
     let mut kinds = Vec::new();
-    let yaz0_compressed = explode::file(path, data, &mut |path, data| {
-        fs::write(&base.join(path), data)?;
-        digests.push((path.to_string(), project::metadata::digest(data)));
-        if let Some(kind) = FileKind::identify(data) {
-            kinds.push((kind, path.to_string()));
-        }
-        Ok(())
-    })?;
+    let mut reports = Vec::new();
+    let yaz0_compressed = explode::file(
+        path,
+        data,
+        &mut |path, data| {
+            fs::write(&base.join(path), data)?;
+            digests.push((path.to_string(), project::metadata::digest(data)));
+            if let Some(kind) = FileKind::identify(data) {
+                kinds.push((kind, path.to_string()));
+            }
+            Ok(())
+        },
+        &mut reports,
+    )?;
 
     Ok(UnpackedFile {
         path: path.to_string(),
         yaz0_compressed,
         digests,
         kinds,
+        reports,
     })
 }

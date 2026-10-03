@@ -37,6 +37,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use tpmt_report::Report;
+
 mod build;
 mod fs;
 mod leaf;
@@ -148,7 +150,8 @@ pub enum ChangeKind {
 /// written, so a failure part way through leaves no half-made project.
 ///
 /// Reads the disc once, front to back. Reports [`Step::Unpack`] across the
-/// whole image, then [`Step::Save`], through `progress`.
+/// whole image, then [`Step::Save`], through `progress`. Returns whatever it
+/// has to tell the user besides the project as [`Report`]s, in disc order.
 ///
 /// # Errors
 ///
@@ -156,9 +159,13 @@ pub enum ChangeKind {
 /// - [`Error::Disc`] if the ISO can't be opened or read
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
 /// - [`Error::Io`] on any write
-pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<Project, Error> {
-    unpack::run(iso, project, progress)?;
-    Project::discover(project)
+pub fn unpack(
+    iso: &Path,
+    project: &Path,
+    progress: &Progress,
+) -> Result<(Project, Vec<Report>), Error> {
+    let reports = unpack::run(iso, project, progress)?;
+    Ok((Project::discover(project)?, reports))
 }
 
 /// A finished unpack, by its canonical root.

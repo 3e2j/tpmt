@@ -9,6 +9,7 @@ use std::process::ExitCode;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
 use tpmt_pipeline::{Built, Change, ChangeKind, Project, Target};
+use tpmt_report::{Level, Report};
 
 mod progress;
 
@@ -97,7 +98,9 @@ fn run(command: Command) -> Result<(), Error> {
                 }
             }
 
-            progress::show(|progress| tpmt_pipeline::unpack(&iso, &project, progress))?;
+            let (_, reports) =
+                progress::show(|progress| tpmt_pipeline::unpack(&iso, &project, progress))?;
+            reports.iter().for_each(print_report);
             println!("unpacked {} into {}", iso.display(), project.display());
         }
         Command::Status { dir } => {
@@ -144,6 +147,15 @@ fn print_status(changes: &[Change]) {
         } else {
             println!("{tag} {}", change.path);
         }
+    }
+}
+
+/// Prints a report to standard output, or to standard error with its level if
+/// something went wrong.
+fn print_report(report: &Report) {
+    match report.level {
+        Level::Info | Level::Ok => println!("{report}"),
+        Level::Warn | Level::Error => eprintln!("tpmt: {}: {report}", report.level.name()),
     }
 }
 

@@ -14,7 +14,11 @@
 //! or when the OS clears the directory. Delete `<disc>.stamp` in
 //! `tpmt-retail-tests/` in the temp directory to force it after changing what
 //! an unpack writes. See [`unpacked`].
+//!
+//! A check that reads from the image walks into archives and compressed
+//! streams with [`nested`].
 
+use std::borrow::Cow;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -22,6 +26,9 @@ use std::process::ExitCode;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
+use tpmt_archive::Archive;
+use tpmt_binary::{Compression, Format};
+use tpmt_compression::Yaz0;
 use tpmt_disc::{Boot, Disc};
 use tpmt_pipeline::{FileKind, Progress, Project};
 use tpmt_tables::Version;
@@ -43,7 +50,7 @@ pub enum Source {
     /// [`tpmt_pipeline::Project::formats`], not by name.
     Unpack(FileKind),
     /// Every file as the image holds it, by its path on the disc, for what an
-    /// unpack doesn't keep, like the bytes of a Yaz0 stream.
+    /// unpack doesn't keep, like the bytes of a compressed stream.
     Image,
 }
 
@@ -175,6 +182,44 @@ pub fn differs(original: &[u8], rebuilt: &[u8]) -> Option<String> {
     })
 }
 
+/// Every problem found in the compressed streams and archives inside `data`.
+///
+/// Walks any depth of nesting. `on_compressed` and `on_archive` each get the
+/// bytes one was decoded from and what they decoded to. A member's problems
+/// are led by its path.
+pub fn nested(
+    data: &[u8],
+    on_compressed: fn(&[u8], &Yaz0) -> Option<String>,
+    on_archive: fn(&[u8], &Archive) -> Option<String>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let bare = match Compression::of(data) {
+        Some(Compression::Yaz0) => match Yaz0::decode(data) {
+            Ok(yaz0) => {
+                problems.extend(on_compressed(data, &yaz0));
+                yaz0.data
+            }
+            Err(error) => return vec![format!("Yaz0 decode failed: {error}")],
+        },
+        Some(Compression::Yay0) => return vec!["Yay0 isn't supported".to_string()],
+        None => Cow::Borrowed(data),
+    };
+
+    if FileKind::identify(&bare) == Some(FileKind::Rarc) {
+        match Archive::decode(&bare) {
+            Ok(archive) => {
+                problems.extend(on_archive(&bare, &archive));
+                for member in &archive.files {
+                    let inner = nested(member.data, on_compressed, on_archive).into_iter();
+                    problems.extend(inner.map(|problem| format!("`{}`: {problem}", member.path)));
+                }
+            }
+            Err(error) => problems.push(format!("archive decode failed: {error}")),
+        }
+    }
+    problems
+}
+
 /// The first offset the two disagree at, counting one running out early as a
 /// disagreement.
 fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
@@ -242,7 +287,7 @@ fn unpacked(iso: &Path) -> Result<Project, Failed> {
     }
 
     file.set_len(0)?;
-    let project = tpmt_pipeline::unpack(iso, &project, &Progress::default())?;
+    let (project, _) = tpmt_pipeline::unpack(iso, &project, &Progress::default())?;
     file.rewind()?;
     file.write_all(stamp.as_bytes())?;
     Ok(project)

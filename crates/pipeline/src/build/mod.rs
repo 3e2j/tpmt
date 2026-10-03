@@ -224,10 +224,15 @@ mod tests {
             .expect("the disc held this one wrapped");
 
         let mut outputs = BTreeMap::new();
-        explode::file(path, &data, &mut |at, bytes| {
-            outputs.insert(at.to_string(), bytes.to_vec());
-            Ok(())
-        })
+        explode::file(
+            path,
+            &data,
+            &mut |at, bytes| {
+                outputs.insert(at.to_string(), bytes.to_vec());
+                Ok(())
+            },
+            &mut Vec::new(),
+        )
         .unwrap();
         outputs
     }

@@ -1,0 +1,10 @@
+[package]
+name = "tpmt-report"
+description = "What a call has to tell the user besides its result, at a level the caller decides how to show."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

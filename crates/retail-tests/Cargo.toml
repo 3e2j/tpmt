@@ -8,6 +8,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+tpmt-archive.workspace = true
+tpmt-binary.workspace = true
+tpmt-compression.workspace = true
 tpmt-disc.workspace = true
 tpmt-tables.workspace = true
 tpmt-pipeline.workspace = true
@@ -16,9 +19,6 @@ libtest-mimic.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
-tpmt-binary.workspace = true
-tpmt-archive.workspace = true
-tpmt-compression.workspace = true
 tpmt-message.workspace = true
 
 # Its own `main`, so it can make one trial per check and image in
@@ -27,9 +27,16 @@ tpmt-message.workspace = true
 name = "formats"
 harness = false
 
-# Every Yaz0 stream on the disc, read from the image since an unpack keeps none.
+# Every compressed stream on the disc, read from the image since an unpack
+# keeps none.
 [[test]]
-name = "yaz0"
+name = "compression"
+harness = false
+
+# Every archive entry's flags against its member's bytes, and every
+# archive re-encoded byte for byte.
+[[test]]
+name = "archive"
 harness = false
 
 # What the game makes of retail files, as `tpmt-tables`'s tables claim it.

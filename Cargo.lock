@@ -452,6 +452,7 @@ dependencies = [
  "clap",
  "thiserror",
  "tpmt-pipeline",
+ "tpmt-report",
 ]
 
 [[package]]
@@ -522,8 +523,13 @@ dependencies = [
  "tpmt-binary",
  "tpmt-compression",
  "tpmt-disc",
+ "tpmt-report",
  "xxhash-rust",
 ]
+
+[[package]]
+name = "tpmt-report"
+version = "0.1.0"
 
 [[package]]
 name = "tpmt-retail-tests"

@@ -12,15 +12,25 @@
 //! whether a wrapper came off, since the record of it belongs to whatever
 //! holds the file. An archive writes it on the member's sidecar entry, the
 //! disc on `yaz0.toml`. A file never records its own.
+//!
+//! An archive entry also states its member's compression in its flags. The
+//! magic still decides what gets peeled, and a flag that disagrees with it
+//! becomes a warning [`Report`]. A build writes the flags from the bytes, so
+//! the rebuilt entry won't match the original.
 
 use std::borrow::Cow;
 
 use tpmt_archive::Archive;
 use tpmt_archive::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_binary::{FileKind, Format};
+use tpmt_binary::{Compression, FileKind, Format};
 use tpmt_compression::Yaz0;
+use tpmt_report::Report;
 
 use crate::{Error, Result};
+
+fn describe(compression: Option<Compression>) -> &'static str {
+    compression.map_or("uncompressed", Compression::name)
+}
 
 /// What went wrong decoding one file, without where.
 ///
@@ -41,7 +51,8 @@ pub enum DecodeError {
 /// Calls `sink` with every `(project path, bytes)` that comes out: once
 /// for a plain file, once per member plus once for the sidecar of an
 /// archive. Returns whether a Yaz0 wrapper came off `data` first, for the
-/// caller to record.
+/// caller to record. Pushes a warning to `reports` for every member whose
+/// entry misstates its compression.
 ///
 /// Each format's magic picks it before its decoder runs, so an error out of
 /// a decoder always means "this format, but broken", never "not this
@@ -56,6 +67,7 @@ pub fn file(
     path: &str,
     data: &[u8],
     sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+    reports: &mut Vec<Report>,
 ) -> Result<bool> {
     // On this disc the wrapper is a convention of where a file sits, not
     // something the file itself declares, so the caller records it.
@@ -67,7 +79,8 @@ pub fn file(
 
     match FileKind::identify(&bare) {
         Some(FileKind::Rarc) => {
-            archive(path, Archive::decode(&bare).map_err(at(path))?, sink)?;
+            let decoded = Archive::decode(&bare).map_err(at(path))?;
+            archive(path, decoded, sink, reports)?;
         }
         // Leaf formats pass through as raw bytes. Decoding one is a separate,
         // on-demand call.
@@ -83,11 +96,21 @@ fn archive(
     path: &str,
     archive: Archive<'_>,
     sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+    reports: &mut Vec<Report>,
 ) -> Result<()> {
     let mut members = Vec::with_capacity(archive.files.len());
 
     for member in &archive.files {
-        let yaz0_compressed = file(&format!("{path}/{}", member.path), member.data, sink)?;
+        let member_path = format!("{path}/{}", member.path);
+        let found = Compression::of(member.data);
+        if member.compression != found {
+            reports.push(Report::warn(format_args!(
+                "`{member_path}`: its archive entry says {} but its bytes are {}, so a build will rewrite the entry",
+                describe(member.compression),
+                describe(found)
+            )));
+        }
+        let yaz0_compressed = file(&member_path, member.data, sink, reports)?;
         members.push(Member {
             path: member.path.clone(),
             preload: member.preload,
@@ -147,15 +170,32 @@ mod tests {
         }
     }
 
-    /// Everything `data` explodes into, keyed by project path, plus whether
-    /// it arrived wrapped.
-    fn explode(path: &str, data: &[u8]) -> Result<(BTreeMap<String, Vec<u8>>, bool)> {
+    /// What one call to [`super::file`] made of a file.
+    #[derive(Debug)]
+    struct Exploded {
+        /// Everything it became, keyed by project path.
+        outputs: BTreeMap<String, Vec<u8>>,
+        yaz0_compressed: bool,
+        reports: Vec<Report>,
+    }
+
+    fn explode(path: &str, data: &[u8]) -> Result<Exploded> {
         let mut outputs = BTreeMap::new();
-        let yaz0_compressed = super::file(path, data, &mut |path, data| {
-            outputs.insert(path.to_string(), data.to_vec());
-            Ok(())
-        })?;
-        Ok((outputs, yaz0_compressed))
+        let mut reports = Vec::new();
+        let yaz0_compressed = super::file(
+            path,
+            data,
+            &mut |path, data| {
+                outputs.insert(path.to_string(), data.to_vec());
+                Ok(())
+            },
+            &mut reports,
+        )?;
+        Ok(Exploded {
+            outputs,
+            yaz0_compressed,
+            reports,
+        })
     }
 
     fn sidecar(outputs: &BTreeMap<String, Vec<u8>>, dir: &str) -> Sidecar {
@@ -167,8 +207,11 @@ mod tests {
     /// came off it is reported for the caller to record.
     #[test]
     fn unrecognised_bytes_pass_through_unwrapped() {
-        let (outputs, yaz0_compressed) =
-            explode("files/thing.bin", &wrap(b"not a format")).unwrap();
+        let Exploded {
+            outputs,
+            yaz0_compressed,
+            ..
+        } = explode("files/thing.bin", &wrap(b"not a format")).unwrap();
         assert!(yaz0_compressed);
         assert_eq!(
             outputs,
@@ -192,11 +235,16 @@ mod tests {
             ],
         ));
 
-        let (outputs, yaz0_compressed) = explode("files/outer.arc", &outer).unwrap();
+        let Exploded {
+            outputs,
+            yaz0_compressed,
+            reports,
+        } = explode("files/outer.arc", &outer).unwrap();
         assert!(
             yaz0_compressed,
             "the disc file's wrapper goes up to the caller, not to disk"
         );
+        assert_eq!(reports, [], "a packed archive states what its bytes are");
 
         assert_eq!(
             outputs.keys().collect::<Vec<_>>(),
@@ -224,6 +272,31 @@ mod tests {
                 ("wrapped.bin", true),
                 ("plain.bin", false)
             ]
+        );
+    }
+
+    /// An entry that calls a wrapped member uncompressed is warned about, and
+    /// the magic still decides that the wrapper comes off.
+    #[test]
+    fn misstated_compression_is_warned_about() {
+        let member = wrap(b"member");
+        let mut outer = archive("outer", vec![file("wrapped.bin", &member)]);
+
+        // The entry list's offset sits 0xC into the data header at 0x20, and
+        // counts from it. The lone file is the first entry, its flags 4 in.
+        let at = 0x20 + 0xC;
+        let entries = u32::from_be_bytes(outer[at..at + 4].try_into().unwrap()) as usize;
+        outer[0x20 + entries + 4] &= !(0x04 | 0x80);
+
+        let Exploded {
+            outputs, reports, ..
+        } = explode("files/outer.arc", &outer).unwrap();
+        assert_eq!(outputs["files/outer.arc/wrapped.bin"], b"member");
+        assert_eq!(
+            reports,
+            [Report::warn(
+                "`files/outer.arc/wrapped.bin`: its archive entry says uncompressed but its bytes are Yaz0, so a build will rewrite the entry"
+            )]
         );
     }
 

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/tpmt",
     "crates/pipeline",
+    "crates/report",
     "crates/retail-tests",
     "crates/game/binary",
     "crates/game/packaging/*",
@@ -32,6 +33,9 @@ tpmt-tables = { path = "crates/game/payload/tables", version = "0.1.0" }
 tpmt-documents = { path = "crates/game/payload/documents", version = "0.1.0" }
 
 tpmt-pipeline = { path = "crates/pipeline", version = "0.1.0" }
+
+# Common reporting levels
+tpmt-report = { path = "crates/report", version = "0.1.0" }
 
 thiserror = "2"
 rayon = "1"
