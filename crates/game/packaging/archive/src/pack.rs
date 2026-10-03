@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use tpmt_binary::{Be16, Be32, Flag, Record, Writer};
 
 use crate::{
-    Archive, DataHeader, Entry, Error, FileKind, Node, Preload, Result, TopHeader, name_field,
-    name_hash, next_free_id,
+    Archive, Compression, DataHeader, Entry, Error, FileKind, Node, Preload, Result, TopHeader,
+    name_field, name_hash, next_free_id,
 };
 
 // The string pool opens with `.` and `..`, in that order, so the offset
@@ -535,11 +535,7 @@ fn file_entry(out: &mut Writer, entry: &StoredEntry, preload: Preload, data: &[u
             Preload::Aram => Entry::FLAG_ARAM,
             Preload::Disc => Entry::FLAG_DISC,
         }
-        | if FileKind::Yaz0.matches(data) {
-            Entry::FLAG_COMPRESSED | Entry::FLAG_YAZ0
-        } else {
-            0
-        };
+        | Entry::compression_flags(Compression::of(data));
 
     out.record(&Entry {
         id: Be16::new(entry.id),
@@ -580,12 +576,14 @@ pub mod tests {
                 data: b"AAAAA",
                 id: None,
                 preload: Preload::Mram,
+                compression: None,
             },
             File {
                 path: "sub/b.bin".into(),
                 data: b"BBB",
                 id: None,
                 preload: Preload::Mram,
+                compression: None,
             },
         ]
     }
@@ -934,6 +932,7 @@ pub mod tests {
                 data: b"",
                 id: None,
                 preload: Preload::Mram,
+                compression: None,
             }];
             let result = pack(&Archive {
                 root: "root".into(),

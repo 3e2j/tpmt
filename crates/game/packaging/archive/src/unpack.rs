@@ -175,6 +175,7 @@ impl<'a> ArchiveReader<'a> {
                     data: self.reader.bytes_at(self.file_data_at + target, size)?,
                     id: Some(id),
                     preload,
+                    compression: record.compression(),
                 });
             }
         }
@@ -232,11 +233,11 @@ mod tests {
     use tpmt_binary::{Be16, Record, record_at_mut};
 
     use super::*;
-    use crate::Format;
     use crate::pack::{
         self,
         tests::{ENTRIES, NAME_A, NODES, STRINGS, archive},
     };
+    use crate::{Compression, Format};
 
     fn top_header(data: &mut [u8]) -> &mut TopHeader {
         record_at_mut(data, 0).unwrap()
@@ -431,6 +432,29 @@ mod tests {
         let mut data = archive();
         entry(&mut data, 0).flags = Entry::FLAG_FILE;
         assert!(matches!(unpack(&data), Err(Error::Corrupt(_))));
+    }
+
+    /// The compression bits come out as the entry states them, whatever the
+    /// bytes say, and a pack sets them from the bytes again.
+    #[test]
+    fn reads_compression_as_stated() {
+        let mut data = archive();
+        let mram = Entry::FLAG_FILE | Entry::FLAG_MRAM;
+        let stated = [
+            (0, None),
+            (Entry::FLAG_YAZ0, None),
+            (Entry::FLAG_COMPRESSED, Some(Compression::Yay0)),
+            (
+                Entry::FLAG_COMPRESSED | Entry::FLAG_YAZ0,
+                Some(Compression::Yaz0),
+            ),
+        ];
+        for (flags, compression) in stated {
+            entry(&mut data, 0).flags = mram | flags;
+            let opened = unpack(&data).unwrap();
+            assert_eq!(opened.files[0].compression, compression);
+            assert_eq!(pack::pack(&opened).unwrap(), archive());
+        }
     }
 
     #[test]

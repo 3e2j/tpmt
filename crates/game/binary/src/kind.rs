@@ -3,6 +3,8 @@
 //!
 //! Every file's opening magic lives in [`FileKind`] and is checked only here.
 //! Magics inside a file, like section tags, belong to that format's crate.
+//!
+//! [`Compression`] groups the kinds that wrap another file.
 
 /// Data handed to a decoder that doesn't open with its magic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,5 +86,41 @@ impl FileKind {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
+    /// The compression wrapper this kind is, if it is one.
+    #[must_use]
+    pub const fn compression(self) -> Option<Compression> {
+        match self {
+            Self::Yaz0 => Some(Compression::Yaz0),
+            // Yay0 has no FileKind yet. Once it does, its arm is
+            // Compression::Yay0.
+            _ => None,
+        }
+    }
+}
+
+/// A compression wrapper, the subset of formats a container can say its
+/// contents are in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Compression {
+    Yaz0,
+    /// No retail archive marks a file with it.
+    Yay0,
+}
+
+impl Compression {
+    /// The wrapper `data` opens with, told by its magic.
+    #[must_use]
+    pub fn of(data: &[u8]) -> Option<Self> {
+        FileKind::identify(data).and_then(FileKind::compression)
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Yaz0 => "Yaz0",
+            Self::Yay0 => "Yay0",
+        }
     }
 }

@@ -94,6 +94,7 @@ fn archive(tree: &Tree, path: &str) -> Result<Vec<u8>> {
             data,
             id: member.id,
             preload: member.preload,
+            ..Default::default()
         })
         .collect();
 

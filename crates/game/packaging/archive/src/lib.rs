@@ -60,7 +60,7 @@ pub mod editable;
 mod pack;
 mod unpack;
 
-pub use tpmt_binary::{FileKind, Format};
+pub use tpmt_binary::{Compression, FileKind, Format};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -118,7 +118,8 @@ pub enum Preload {
 /// `id` and `preload` are the only things an entry records about a file that
 /// its path and bytes do not say. They ride along so that a file handed from
 /// [`Archive::decode`] to [`Archive::encode`] comes back exactly as stored; a newly minted file
-/// takes both from `..Default::default()`.
+/// takes both from `..Default::default()`. `compression` is read but never
+/// written back.
 #[derive(Debug, Clone, Default)]
 pub struct File<'a> {
     pub path: String,
@@ -131,6 +132,10 @@ pub struct File<'a> {
     // TODO: derive ids from the referencing resources once there is a linker.
     pub id: Option<u16>,
     pub preload: Preload,
+    /// The compression the entry's flags claimed for `data`, so a caller can
+    /// check the claim against the bytes. [`Archive::encode`] ignores it and
+    /// sets the flags from the bytes' magic instead.
+    pub compression: Option<Compression>,
 }
 
 /// An archive taken apart: the root directory's name, and every file under it.
@@ -160,8 +165,8 @@ impl<'a> Format<'a> for Archive<'a> {
     /// The files come back in the archive's own order, which is the order
     /// [`encode`](Self::encode) rebuilds the tree from, so a round trip keeps it.
     ///
-    /// Compression flags are dropped, since `encode` recomputes them from the
-    /// file's bytes.
+    /// Each file's compression flags land in [`File::compression`] as stated,
+    /// unchecked against its bytes.
     ///
     /// # Errors
     ///
@@ -298,6 +303,27 @@ impl Entry {
     const DIRECTORY_SIZE: u32 = 0x10;
     /// Directories share one id, which is no id at all.
     const NO_ID: u16 = 0xFFFF;
+
+    /// The compression these flags claim. `FLAG_YAZ0` without `FLAG_COMPRESSED`
+    /// claims none.
+    const fn compression(&self) -> Option<Compression> {
+        if self.flags & Self::FLAG_COMPRESSED == 0 {
+            None
+        } else if self.flags & Self::FLAG_YAZ0 != 0 {
+            Some(Compression::Yaz0)
+        } else {
+            Some(Compression::Yay0)
+        }
+    }
+
+    /// The flags that claim `compression`.
+    const fn compression_flags(compression: Option<Compression>) -> u8 {
+        match compression {
+            Some(Compression::Yaz0) => Self::FLAG_COMPRESSED | Self::FLAG_YAZ0,
+            Some(Compression::Yay0) => Self::FLAG_COMPRESSED,
+            None => 0,
+        }
+    }
 
     /// Where the name starts in the string pool.
     const fn name_offset(&self) -> u32 {
