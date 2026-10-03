@@ -126,10 +126,14 @@ fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
     let yaz0_compressed = explode::file(
         path,
         data,
-        &mut |path, data| {
-            fs::write(&base.join(path), data)?;
-            digests.push((path.to_string(), project::metadata::digest(data)));
-            if let Some(kind) = FileKind::identify(data) {
+        &mut |layer| {
+            if !layer.leaf {
+                return Ok(());
+            }
+            let path = layer.path;
+            fs::write(&base.join(path), layer.bytes)?;
+            digests.push((path.to_string(), project::metadata::digest(layer.bytes)));
+            if let Some(kind) = layer.kind {
                 kinds.push((kind, path.to_string()));
             }
             Ok(())

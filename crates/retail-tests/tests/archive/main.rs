@@ -30,7 +30,7 @@ fn main() -> ExitCode {
 /// Every warning exploding the file raises, or why it would not explode.
 fn unwarned(_: Version, path: &str, data: &[u8]) -> Vec<String> {
     let mut reports = Vec::new();
-    match tpmt_pipeline::explode(path, data, &mut |_, _| Ok(()), &mut reports) {
+    match tpmt_pipeline::explode(path, data, &mut |_| Ok(()), &mut reports) {
         Ok(_) => reports.iter().map(ToString::to_string).collect(),
         Err(error) => vec![format!("explode failed: {error}")],
     }

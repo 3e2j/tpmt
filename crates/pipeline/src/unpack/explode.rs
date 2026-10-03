@@ -17,6 +17,9 @@
 //! magic still decides what gets peeled, and a flag that disagrees with it
 //! becomes a warning [`Report`]. A build writes the flags from the bytes, so
 //! the rebuilt entry won't match the original.
+//!
+//! The sink sees every [`Layer`] on the way down, not only what lands in the
+//! project, so a caller can read a wrapper or an archive as the disc holds it.
 
 use std::borrow::Cow;
 
@@ -46,12 +49,27 @@ pub enum DecodeError {
     Compress(#[from] tpmt_compression::Error),
 }
 
+/// One step on the way from a disc file to the project files it becomes.
+///
+/// A Yaz0 wrapper and the bytes it holds share a path, told apart by `kind`.
+#[derive(Debug, Clone, Copy)]
+pub struct Layer<'a> {
+    /// Its project path.
+    pub path: &'a str,
+    /// What its magic says it is, if anything.
+    pub kind: Option<FileKind>,
+    pub bytes: &'a [u8],
+    /// Whether the project stores it. A wrapper and an archive aren't
+    /// stored, only what they hold and an archive's sidecar.
+    pub leaf: bool,
+}
+
 /// Peels `data`, then hands it to whichever format's magic it opens with.
 ///
-/// Calls `sink` with every `(project path, bytes)` that comes out: once
-/// for a plain file, once per member plus once for the sidecar of an
-/// archive. Returns whether a Yaz0 wrapper came off `data` first, for the
-/// caller to record. Pushes a warning to `reports` for every member whose
+/// Calls `sink` with every [`Layer`], outermost first: the wrapper if there
+/// is one, then a plain file, or an archive followed by each member's layers
+/// and its sidecar. Returns whether a Yaz0 wrapper came off `data` first, for
+/// the caller to record. Pushes a warning to `reports` for every member whose
 /// entry misstates its compression.
 ///
 /// Each format's magic picks it before its decoder runs, so an error out of
@@ -66,25 +84,38 @@ pub enum DecodeError {
 pub fn file(
     path: &str,
     data: &[u8],
-    sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+    sink: &mut impl FnMut(Layer<'_>) -> Result<()>,
     reports: &mut Vec<Report>,
 ) -> Result<bool> {
     // On this disc the wrapper is a convention of where a file sits, not
     // something the file itself declares, so the caller records it.
     let kind = FileKind::identify(data);
     let bare = match kind {
-        Some(FileKind::Yaz0) => Yaz0::decode(data).map_err(at(path))?.data,
+        Some(FileKind::Yaz0) => {
+            sink(Layer {
+                path,
+                kind,
+                bytes: data,
+                leaf: false,
+            })?;
+            Yaz0::decode(data).map_err(at(path))?.data
+        }
         _ => Cow::Borrowed(data),
     };
 
-    match FileKind::identify(&bare) {
-        Some(FileKind::Rarc) => {
-            let decoded = Archive::decode(&bare).map_err(at(path))?;
-            archive(path, decoded, sink, reports)?;
-        }
-        // Leaf formats pass through as raw bytes. Decoding one is a separate,
-        // on-demand call.
-        _ => sink(path, &bare)?,
+    let inner = FileKind::identify(&bare);
+    let is_archive = inner == Some(FileKind::Rarc);
+    // Leaf formats pass through as raw bytes. Decoding one is a separate,
+    // on-demand call.
+    sink(Layer {
+        path,
+        kind: inner,
+        bytes: &bare,
+        leaf: !is_archive,
+    })?;
+    if is_archive {
+        let decoded = Archive::decode(&bare).map_err(at(path))?;
+        archive(path, decoded, sink, reports)?;
     }
 
     Ok(kind == Some(FileKind::Yaz0))
@@ -95,7 +126,7 @@ pub fn file(
 fn archive(
     path: &str,
     archive: Archive<'_>,
-    sink: &mut impl FnMut(&str, &[u8]) -> Result<()>,
+    sink: &mut impl FnMut(Layer<'_>) -> Result<()>,
     reports: &mut Vec<Report>,
 ) -> Result<()> {
     let mut members = Vec::with_capacity(archive.files.len());
@@ -122,7 +153,12 @@ fn archive(
     let toml = Sidecar::new(archive.root, members)
         .to_toml()
         .map_err(at(path))?;
-    sink(&format!("{path}/{SIDECAR}"), toml.as_bytes())
+    sink(Layer {
+        path: &format!("{path}/{SIDECAR}"),
+        kind: None,
+        bytes: toml.as_bytes(),
+        leaf: true,
+    })
 }
 
 fn at<E: Into<DecodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {
@@ -185,8 +221,10 @@ mod tests {
         let yaz0_compressed = super::file(
             path,
             data,
-            &mut |path, data| {
-                outputs.insert(path.to_string(), data.to_vec());
+            &mut |layer| {
+                if layer.leaf {
+                    outputs.insert(layer.path.to_string(), layer.bytes.to_vec());
+                }
                 Ok(())
             },
             &mut reports,
@@ -271,6 +309,38 @@ mod tests {
                 ("inner.arc", true),
                 ("wrapped.bin", true),
                 ("plain.bin", false)
+            ]
+        );
+    }
+
+    /// The sink sees every wrapper and archive on the way down, outermost
+    /// first, with only what the project stores marked as a leaf.
+    #[test]
+    fn every_layer_reaches_the_sink() {
+        let member = wrap(b"member");
+        let outer = wrap(&archive("outer", vec![file("wrapped.bin", &member)]));
+
+        let mut layers = Vec::new();
+        super::file(
+            "files/outer.arc",
+            &outer,
+            &mut |layer| {
+                layers.push((layer.path.to_string(), layer.kind, layer.leaf));
+                Ok(())
+            },
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let layer = |path: &str, kind, leaf| (path.to_string(), kind, leaf);
+        assert_eq!(
+            layers,
+            [
+                layer("files/outer.arc", Some(FileKind::Yaz0), false),
+                layer("files/outer.arc", Some(FileKind::Rarc), false),
+                layer("files/outer.arc/wrapped.bin", Some(FileKind::Yaz0), false),
+                layer("files/outer.arc/wrapped.bin", None, true),
+                layer("files/outer.arc/.tpmt-arc.toml", None, true),
             ]
         );
     }

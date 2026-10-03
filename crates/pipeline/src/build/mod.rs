@@ -227,8 +227,10 @@ mod tests {
         explode::file(
             path,
             &data,
-            &mut |at, bytes| {
-                outputs.insert(at.to_string(), bytes.to_vec());
+            &mut |layer| {
+                if layer.leaf {
+                    outputs.insert(layer.path.to_string(), layer.bytes.to_vec());
+                }
                 Ok(())
             },
             &mut Vec::new(),

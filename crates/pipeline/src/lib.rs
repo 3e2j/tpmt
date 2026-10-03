@@ -53,7 +53,7 @@ pub use build::{Built, EncodeError, Target};
 pub use progress::{Progress, Snapshot, Step, Unit};
 pub use project::is_project;
 pub use tpmt_binary::FileKind;
-pub use unpack::explode::{DecodeError, file as explode};
+pub use unpack::explode::{DecodeError, Layer, file as explode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
