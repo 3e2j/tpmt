@@ -5,18 +5,20 @@
 //! - Appends big-endian bytes via [`Writer`]
 //! - host a [`Format`] trait for formats to implement.
 //!
-//! The format trait hosts all magics and lets them be checked/identified for handouts.
+//! Every opening magic lives in [`FileKind`], which checks and identifies them.
 //!
 //! Declaring structs with [`record!`] is shorthand for repr(C), letting it be
 //! read/written exactly how it was laid out in memory. The types its fields can
 //! be are listed on [`Record`].
 
 mod format;
+mod kind;
 mod reader;
 mod record;
 mod writer;
 
-pub use format::{Checked, FileKind, Format, WrongKind};
+pub use format::{Checked, Format};
+pub use kind::{FileKind, WrongKind};
 pub use reader::Reader;
 pub use record::{Be16, Be32, Flag, Record, bytes_of, record_at_mut};
 pub use writer::Writer;

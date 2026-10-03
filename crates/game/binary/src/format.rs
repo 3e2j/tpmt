@@ -5,12 +5,11 @@
 //! `Archive::decode(bytes)` and `archive.encode()` read the same everywhere.
 //! Knows nothing about projects or pipelines.
 //!
-//! Every file's opening magic lives in [`FileKind`] and is checked only here.
-//! Magics inside a file, like section tags, belong to that format's crate.
-//!
 //! Formats are true to the file, not to the game's logic, so they hold
 //! whatever a mod puts in them. A mod that changes the game past what a
 //! format can express is outside what these crates can support.
+
+use crate::{FileKind, WrongKind};
 
 /// A file format: bytes in, `Self` out, and back again.
 ///
@@ -63,88 +62,5 @@ impl<'a> Checked<'a> {
     #[must_use]
     pub const fn bytes(self) -> &'a [u8] {
         self.0
-    }
-}
-
-/// Data handed to a decoder that doesn't open with its magic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WrongKind {
-    pub expected: FileKind,
-}
-
-impl std::fmt::Display for WrongKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "not a {} file", self.expected.name())
-    }
-}
-
-impl std::error::Error for WrongKind {}
-
-/// A format the toolkit reads, told apart by the magic it opens with.
-///
-/// Every opening magic is defined here and nowhere else, so something that
-/// only needs to tell formats apart, like an unpack sorting files, depends on this crate
-/// alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum FileKind {
-    /// An archive, owned by `JKernel` and decoded by `tpmt-archive`.
-    Rarc,
-    /// A compression wrapper, owned by `JKernel` and decoded by
-    /// `tpmt-compression`.
-    Yaz0,
-    /// A message file, owned by `JMessage` and decoded by `tpmt-message`.
-    Mesg,
-}
-
-impl FileKind {
-    pub const ALL: [Self; 3] = [Self::Rarc, Self::Yaz0, Self::Mesg];
-
-    /// The kind whose magic `data` opens with, if any.
-    #[must_use]
-    pub fn identify(data: &[u8]) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.matches(data))
-    }
-
-    /// Whether `data` opens with this kind's magic.
-    #[must_use]
-    pub fn matches(self, data: &[u8]) -> bool {
-        data.starts_with(&self.magic())
-    }
-
-    /// Checks that `data` opens with this kind's magic, for a decoder to
-    /// open with.
-    ///
-    /// # Errors
-    ///
-    /// [`WrongKind`] when it doesn't.
-    pub fn check(self, data: &[u8]) -> Result<(), WrongKind> {
-        self.matches(data)
-            .then_some(())
-            .ok_or(WrongKind { expected: self })
-    }
-
-    #[must_use]
-    pub const fn magic(self) -> [u8; 4] {
-        match self {
-            Self::Rarc => *b"RARC",
-            Self::Yaz0 => *b"Yaz0",
-            Self::Mesg => *b"MESG",
-        }
-    }
-
-    /// A stable lowercase name, for a file that records kinds.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Rarc => "rarc",
-            Self::Yaz0 => "yaz0",
-            Self::Mesg => "mesg",
-        }
-    }
-
-    /// The kind [`name`](Self::name) gave, if any.
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 }
