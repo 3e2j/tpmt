@@ -21,22 +21,12 @@ rayon.workspace = true
 [dev-dependencies]
 tpmt-message.workspace = true
 
-# Its own `main`, so it can make one trial per check and image in
-# `discs/`, or an ignored one per check when there are none.
-[[test]]
-name = "formats"
-harness = false
+# Each binary has its own `main`, so it can make one trial per check and
+# image in `discs/`, or an ignored one per check when there are none.
 
-# Every compressed stream on the disc, read from the image since an unpack
-# keeps none.
+# Every retail file of a format we encode, re-encoded byte for byte.
 [[test]]
-name = "compression"
-harness = false
-
-# Every archive entry's flags against its member's bytes, and every
-# archive re-encoded byte for byte.
-[[test]]
-name = "archive"
+name = "fidelity"
 harness = false
 
 # What the game makes of retail files, as `tpmt-tables`'s tables claim it.
