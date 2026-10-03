@@ -1,34 +1,29 @@
 //! What the tests against retail data share.
 //!
-//! A check runs over the files of each disc in `discs/`, read from its unpack
-//! or straight off the image (see [`Source`]), and gets the disc's [`Version`],
-//! for what the game makes of a file.
+//! A retail test checks our code against what the disc holds. A test whose
+//! expected value comes from our own code belongs in that code's crate.
+//!
+//! A [`Check::File`] sees every file of its kind at any depth, one at a time.
+//!
+//! A [`Check::Disc`] sees the whole disc at once, as a project unpacked from
+//! it, for what spans files.
 //!
 //! Each check gets one trial per `.iso` and `.ciso`, because each region
 //! ships different files. With no discs, one ignored trial per check stands
 //! in and a note says why, so a run without discs never looks like a pass.
 //!
-//! The unpacks go under the OS temp directory and are never deleted by the
-//! tests, so they outlive a run and the next run only reads them back. A disc
-//! is unpacked again when its image changes, when [`FileKind`] gains a kind,
-//! or when the OS clears the directory. Delete `<disc>.stamp` in
-//! `tpmt-retail-tests/` in the temp directory to force it after changing what
-//! an unpack writes. See [`unpacked`].
-//!
-//! A check that reads from the image walks into archives and compressed
-//! streams with [`nested`].
+//! Checks read an unpack of each disc, cached in the OS temp directory and
+//! kept between runs for faster test results. A check on a packaging kind
+//! (see [`FileKind::is_packaging`]) walks the image each run instead, since
+//! an unpack doesn't keep packaging.
 
-use std::borrow::Cow;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
-use tpmt_archive::Archive;
-use tpmt_binary::{Compression, Format};
-use tpmt_compression::Yaz0;
 use tpmt_disc::{Boot, Disc};
 use tpmt_pipeline::{FileKind, Progress, Project};
 use tpmt_tables::Version;
@@ -36,22 +31,65 @@ use tpmt_tables::Version;
 /// Reports past this many are counted but not printed.
 const REPORT_LIMIT: usize = 50;
 
-/// Checks one file, given the disc's version, the file's path and its bytes,
-/// and returns its problems, empty for a pass.
-pub type Check = fn(Version, &str, &[u8]) -> Vec<String>;
+/// One layer of a disc file, as the disc holds it.
+pub struct File<'a> {
+    /// What the game makes of a file can differ by release.
+    pub version: Version,
+    /// Its project path. A wrapper and the bytes inside it share one.
+    pub path: &'a str,
+    pub bytes: &'a [u8],
+}
 
-/// One check: its trial name, the files it reads, and the check itself.
-pub type Checks = &'static [(&'static str, Source, Check)];
-
-/// Where a check's files come from.
+/// What a check reads. Each returns its problems, empty for a pass.
 #[derive(Clone, Copy)]
-pub enum Source {
-    /// Every file of this kind in the unpack, by its path there. Found through
-    /// [`tpmt_pipeline::Project::formats`], not by name.
-    Unpack(FileKind),
-    /// Every file as the image holds it, by its path on the disc, for what an
-    /// unpack doesn't keep, like the bytes of a compressed stream.
-    Image,
+pub enum Check {
+    /// Every layer of this kind on the disc, one at a time.
+    File(FileKind, fn(&File) -> Vec<String>),
+    /// The whole disc, for what spans files.
+    Disc(fn(Version, &Project) -> Vec<String>),
+}
+
+/// One check per row, under its trial name.
+pub type Checks = &'static [(&'static str, Check)];
+
+/// A row checking that every layer of a format encodes back to the bytes it
+/// decoded from: `round_trip!("message::bmg", Bmg)`.
+///
+/// A macro, since a generic fn can't name a format that borrows from its
+/// input, like `Archive<'a>`, at every lifetime.
+#[macro_export]
+macro_rules! round_trip {
+    ($name:literal, $format:ident) => {
+        (
+            $name,
+            $crate::Check::File(<$format as ::tpmt_binary::Format>::KIND, |file| {
+                $crate::round_trip(file.bytes, |bytes| {
+                    let decoded = <$format as ::tpmt_binary::Format>::decode(bytes)
+                        .map_err(|error| format!("decode failed: {error}"))?;
+                    // TODO: once a format holds cross-references, stand in for
+                    // the linker here. Hand each id the decode gave out
+                    // straight back as its own resolution, so the encode
+                    // writes the retail id and this stays a test of the format
+                    // alone.
+                    ::tpmt_binary::Format::encode(&decoded)
+                        .map_err(|error| format!("encode failed: {error}"))
+                })
+            }),
+        )
+    };
+}
+
+/// What [`round_trip!`] runs, with `encode` decoding and encoding the bytes
+/// it's given.
+#[doc(hidden)]
+pub fn round_trip(
+    original: &[u8],
+    encode: impl FnOnce(&[u8]) -> Result<Vec<u8>, String>,
+) -> Vec<String> {
+    match encode(original) {
+        Ok(rebuilt) => differs(original, &rebuilt).into_iter().collect(),
+        Err(problem) => vec![problem],
+    }
 }
 
 /// A test binary's whole `main`.
@@ -68,12 +106,12 @@ pub fn run(checks: Checks) -> ExitCode {
             }
             checks
                 .iter()
-                .map(|(name, _, _)| Trial::test(*name, || Ok(())).with_ignored_flag(true))
+                .map(|(name, _)| Trial::test(*name, || Ok(())).with_ignored_flag(true))
                 .collect()
         }
         Ok(discs) => discs
             .iter()
-            .flat_map(|iso| checks.iter().map(|check| trial(*check, iso)))
+            .flat_map(|iso| checks.iter().map(|&(name, check)| trial(name, check, iso)))
             .collect(),
         Err(error) => vec![Trial::test("discs", move || Err(error.into()))],
     };
@@ -104,42 +142,93 @@ fn discs() -> io::Result<Vec<PathBuf>> {
 
 /// One check on one disc. Named `<check>::<image>` so a filter can pick out a
 /// check, a region, or both.
-fn trial((name, source, check): (&str, Source, Check), iso: &Path) -> Trial {
+fn trial(name: &str, check: Check, iso: &Path) -> Trial {
     let name = format!("{name}::{}", file_name(iso));
     let iso = iso.to_path_buf();
-    Trial::test(name, move || {
-        let tally = match source {
-            Source::Unpack(kind) => from_unpack(&iso, kind, check)?,
-            Source::Image => from_image(&iso, check)?,
-        };
-        report(&tally)
+    Trial::test(name, move || match check {
+        Check::File(kind, check) if kind.is_packaging() => report(walked(&iso, kind, check)?),
+        Check::File(kind, check) => report(stored(&iso, kind, check)?),
+        Check::Disc(check) => whole(&iso, check),
     })
 }
 
+/// `check` over the unpack of `iso` as a whole.
+fn whole(iso: &Path, check: fn(Version, &Project) -> Vec<String>) -> Result<(), Failed> {
+    let project = unpacked(iso)?;
+    let version = version(&project.boot()?)?;
+    let mut problems = check(version, &project);
+    problems.sort();
+    failed(&problems, "on the disc").map_or(Ok(()), Err)
+}
+
 /// `check` over every file of `kind` in the unpack of `iso`.
-fn from_unpack(iso: &Path, kind: FileKind, check: Check) -> Result<Tally, Failed> {
+fn stored(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
     let project = unpacked(iso)?;
     let version = version(&project.boot()?)?;
     let base = project.base();
     let paths = project.formats()?.remove(&kind).unwrap_or_default();
-    let files = paths.par_iter().map(|path| {
-        let mut bytes = Vec::new();
-        File::open(base.join(path))?.read_to_end(&mut bytes)?;
-        Ok((path.as_str(), bytes))
-    });
-    Ok(each::<io::Error>(version, files, check)?)
+    let tally = paths
+        .par_iter()
+        .map(|path| {
+            let mut bytes = Vec::new();
+            fs::File::open(base.join(path))?.read_to_end(&mut bytes)?;
+            let mut tally = Tally::default();
+            tally.check(
+                check,
+                &File {
+                    version,
+                    path,
+                    bytes: &bytes,
+                },
+            );
+            Ok(tally)
+        })
+        .try_reduce(Tally::default, |all, one| {
+            Ok::<_, io::Error>(all.merge(one))
+        })?;
+    Ok(tally)
 }
 
-/// `check` over every file on the image `iso`.
-fn from_image(iso: &Path, check: Check) -> Result<Tally, Failed> {
+/// `check` over every layer of `kind` on the image `iso`, walked with
+/// [`tpmt_pipeline::explode`], since the unpack never stores packaging.
+///
+/// Runs inside the walk's sink, so only one disc file's layers are held at a
+/// time.
+fn walked(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
     let disc = Disc::open(iso)?;
     let version = version(&disc.metadata().boot)?;
     let entries = disc.entries()?;
-    let files = entries
+    let tally = entries
         .par_iter()
         .filter_map(|entry| Some((entry.path(), entry.span()?)))
-        .map(|(path, span)| Ok((path, disc.read(span)?)));
-    Ok(each::<tpmt_disc::Error>(version, files, check)?)
+        .map(|(path, span)| {
+            let data = disc.read(span)?;
+            let mut tally = Tally::default();
+            let walked = tpmt_pipeline::explode(
+                path,
+                &data,
+                &mut |layer| {
+                    if layer.kind == Some(kind) {
+                        let file = File {
+                            version,
+                            path: layer.path,
+                            bytes: layer.bytes,
+                        };
+                        tally.check(check, &file);
+                    }
+                    Ok(())
+                },
+                &mut Vec::new(),
+            );
+            if let Err(error) = walked {
+                tally.failures.push(format!("walk failed at {error}"));
+            }
+            Ok(tally)
+        })
+        .try_reduce(Tally::default, |all, one| {
+            Ok::<_, tpmt_disc::Error>(all.merge(one))
+        })?;
+    Ok(tally)
 }
 
 fn version(boot: &Boot) -> Result<Version, Failed> {
@@ -182,44 +271,6 @@ pub fn differs(original: &[u8], rebuilt: &[u8]) -> Option<String> {
     })
 }
 
-/// Every problem found in the compressed streams and archives inside `data`.
-///
-/// Walks any depth of nesting. `on_compressed` and `on_archive` each get the
-/// bytes one was decoded from and what they decoded to. A member's problems
-/// are led by its path.
-pub fn nested(
-    data: &[u8],
-    on_compressed: fn(&[u8], &Yaz0) -> Option<String>,
-    on_archive: fn(&[u8], &Archive) -> Option<String>,
-) -> Vec<String> {
-    let mut problems = Vec::new();
-    let bare = match Compression::of(data) {
-        Some(Compression::Yaz0) => match Yaz0::decode(data) {
-            Ok(yaz0) => {
-                problems.extend(on_compressed(data, &yaz0));
-                yaz0.data
-            }
-            Err(error) => return vec![format!("Yaz0 decode failed: {error}")],
-        },
-        Some(Compression::Yay0) => return vec!["Yay0 isn't supported".to_string()],
-        None => Cow::Borrowed(data),
-    };
-
-    if FileKind::identify(&bare) == Some(FileKind::Rarc) {
-        match Archive::decode(&bare) {
-            Ok(archive) => {
-                problems.extend(on_archive(&bare, &archive));
-                for member in &archive.files {
-                    let inner = nested(member.data, on_compressed, on_archive).into_iter();
-                    problems.extend(inner.map(|problem| format!("`{}`: {problem}", member.path)));
-                }
-            }
-            Err(error) => problems.push(format!("archive decode failed: {error}")),
-        }
-    }
-    problems
-}
-
 /// The first offset the two disagree at, counting one running out early as a
 /// disagreement.
 fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
@@ -230,27 +281,58 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
 }
 
 /// What one check came to on one disc.
+#[derive(Default)]
 struct Tally {
-    /// Files the check read, passed or not.
+    /// Layers the check read, passed or not.
     checked: usize,
-    /// One line each, led by the file's path, sorted.
+    /// One line each, led by the layer's path.
     failures: Vec<String>,
 }
 
-fn report(Tally { checked, failures }: &Tally) -> Result<(), Failed> {
-    if !failures.is_empty() {
-        let mut report = format!("{} problems in {checked} files", failures.len());
-        for failure in failures.iter().take(REPORT_LIMIT) {
-            report.push_str("\n  ");
-            report.push_str(failure);
-        }
-        return Err(report.into());
+impl Tally {
+    fn check(&mut self, check: fn(&File) -> Vec<String>, file: &File) {
+        let problems = check(file).into_iter();
+        self.checked += 1;
+        self.failures
+            .extend(problems.map(|problem| format!("`{}`: {problem}", file.path)));
     }
-    if *checked == 0 {
+
+    fn merge(mut self, other: Self) -> Self {
+        self.checked += other.checked;
+        self.failures.extend(other.failures);
+        self
+    }
+}
+
+fn report(
+    Tally {
+        checked,
+        mut failures,
+    }: Tally,
+) -> Result<(), Failed> {
+    failures.sort();
+    if let Some(failed) = failed(&failures, &format!("in {checked} files")) {
+        return Err(failed);
+    }
+    if checked == 0 {
         return Err("no file on the disc was checked".into());
     }
     println!("{checked} files checked");
     Ok(())
+}
+
+/// The first [`REPORT_LIMIT`] of `problems` under a count, or `None` for
+/// none.
+fn failed(problems: &[String], scope: &str) -> Option<Failed> {
+    if problems.is_empty() {
+        return None;
+    }
+    let mut report = format!("{} problems {scope}", problems.len());
+    for problem in problems.iter().take(REPORT_LIMIT) {
+        report.push_str("\n  ");
+        report.push_str(problem);
+    }
+    Some(report.into())
 }
 
 /// The project `iso` unpacks to, unpacking it first unless the last unpack
@@ -261,6 +343,11 @@ fn report(Tally { checked, failures }: &Tally) -> Result<(), Failed> {
 /// locked from the read to the write, so a disc's trials, started together
 /// in their own processes, unpack it once between them. The stamp is written
 /// only after the unpack finishes, so one that fails part way is redone.
+///
+/// The project is redone when the image changes, when [`FileKind`] gains a
+/// kind, or when the OS clears the temp directory. Delete `<disc>.stamp` in
+/// `tpmt-retail-tests/` there to force it after changing what an unpack
+/// writes.
 fn unpacked(iso: &Path) -> Result<Project, Failed> {
     let root = std::env::temp_dir().join("tpmt-retail-tests");
     fs::create_dir_all(&root)?;
@@ -291,25 +378,4 @@ fn unpacked(iso: &Path) -> Result<Project, Failed> {
     file.rewind()?;
     file.write_all(stamp.as_bytes())?;
     Ok(project)
-}
-
-/// Every one of `files` through `check`.
-fn each<'a, E: Send>(
-    version: Version,
-    files: impl ParallelIterator<Item = Result<(&'a str, Vec<u8>), E>>,
-    check: Check,
-) -> Result<Tally, E> {
-    let failures = files
-        .map(|file| {
-            let (path, bytes) = file?;
-            Ok(check(version, path, &bytes)
-                .into_iter()
-                .map(|problem| format!("`{path}`: {problem}"))
-                .collect())
-        })
-        .collect::<Result<Vec<Vec<String>>, E>>()?;
-    let checked = failures.len();
-    let mut failures = failures.concat();
-    failures.sort();
-    Ok(Tally { checked, failures })
 }

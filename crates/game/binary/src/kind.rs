@@ -98,6 +98,15 @@ impl FileKind {
             _ => None,
         }
     }
+
+    /// Whether this kind packages other files, as a compression wrapper or an
+    /// archive does, and isn't a payload itself.
+    #[must_use]
+    pub const fn is_packaging(self) -> bool {
+        // disc crate excluded from here as it doesn't have a consistent magic
+        // nor does it implement the Format trait
+        self.compression().is_some() || matches!(self, Self::Rarc)
+    }
 }
 
 /// A compression wrapper, the subset of formats a container can say its

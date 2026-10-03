@@ -2,14 +2,16 @@
 
 use tpmt_binary::Format;
 use tpmt_message::{Bmg, Message, TEXT_OFFSET_LEN, TextSegment};
+use tpmt_retail_tests::File;
 use tpmt_tables::message::{self, Field, Layout, record, tag, unit};
 use tpmt_tables::{Edition, Version};
 
 /// The record width picks the layout the game reads the file with:
 /// [`unit::layout`] for `zel_unit.bmg`, [`record::LAYOUT`] for every other
 /// file.
-pub fn layout(version: Version, path: &str, bytes: &[u8]) -> Vec<String> {
-    let (edition, bmg) = match decode(version, bytes) {
+pub fn layout(file: &File) -> Vec<String> {
+    let File { version, path, .. } = *file;
+    let (edition, bmg) = match decode(version, file.bytes) {
         Ok(decoded) => decoded,
         Err(problem) => return vec![problem],
     };
@@ -25,8 +27,9 @@ pub fn layout(version: Version, path: &str, bytes: &[u8]) -> Vec<String> {
 }
 
 /// In a file with MID1, each record's id field is its message's MID1 id.
-pub fn id(version: Version, path: &str, bytes: &[u8]) -> Vec<String> {
-    let (edition, bmg) = match decode(version, bytes) {
+pub fn id(file: &File) -> Vec<String> {
+    let File { version, path, .. } = *file;
+    let (edition, bmg) = match decode(version, file.bytes) {
         Ok(decoded) => decoded,
         Err(problem) => return vec![problem],
     };
@@ -51,8 +54,9 @@ pub fn id(version: Version, path: &str, bytes: &[u8]) -> Vec<String> {
 }
 
 /// Every padding field is 0.
-pub fn padding(version: Version, path: &str, bytes: &[u8]) -> Vec<String> {
-    let (edition, bmg) = match decode(version, bytes) {
+pub fn padding(file: &File) -> Vec<String> {
+    let File { version, path, .. } = *file;
+    let (edition, bmg) = match decode(version, file.bytes) {
         Ok(decoded) => decoded,
         Err(problem) => return vec![problem],
     };
@@ -76,8 +80,8 @@ pub fn padding(version: Version, path: &str, bytes: &[u8]) -> Vec<String> {
 
 /// Each tag the table names carries the argument bytes its [`tag::Args`]
 /// gives.
-pub fn tags(version: Version, _: &str, bytes: &[u8]) -> Vec<String> {
-    let (edition, bmg) = match decode(version, bytes) {
+pub fn tags(file: &File) -> Vec<String> {
+    let (edition, bmg) = match decode(file.version, file.bytes) {
         Ok(decoded) => decoded,
         Err(problem) => return vec![problem],
     };

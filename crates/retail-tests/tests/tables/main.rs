@@ -11,17 +11,17 @@ mod message;
 
 use std::process::ExitCode;
 
-use tpmt_pipeline::FileKind;
+use tpmt_pipeline::FileKind::Mesg;
+use tpmt_retail_tests::Check::File;
 use tpmt_retail_tests::Checks;
-use tpmt_retail_tests::Source::Unpack;
 
 /// One row per claim, so a failing trial names the claim.
 #[rustfmt::skip]
 static CHECKS: Checks = &[
-    ("message::layout",  Unpack(FileKind::Mesg), message::layout),
-    ("message::id",      Unpack(FileKind::Mesg), message::id),
-    ("message::padding", Unpack(FileKind::Mesg), message::padding),
-    ("message::tags",    Unpack(FileKind::Mesg), message::tags),
+    ("message::layout",  File(Mesg, message::layout)),
+    ("message::id",      File(Mesg, message::id)),
+    ("message::padding", File(Mesg, message::padding)),
+    ("message::tags",    File(Mesg, message::tags)),
 ];
 
 fn main() -> ExitCode {
