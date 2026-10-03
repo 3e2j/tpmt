@@ -73,7 +73,7 @@ pub mod backref {
             self.length
         }
 
-        pub fn read(reader: &mut tpmt_bytes::Reader) -> crate::Result<Self> {
+        pub fn read(reader: &mut tpmt_binary::Reader) -> crate::Result<Self> {
             let pair = reader.u16()?;
             // The stored distance is one short of the real one, so a distance
             // field of zero still means "the byte before this one".

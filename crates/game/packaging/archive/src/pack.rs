@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use tpmt_bytes::{Be16, Be32, Flag, Layout, Writer};
+use tpmt_binary::{Be16, Be32, Flag, Layout, Writer};
 
 use crate::{
     Archive, DataHeader, Entry, Error, FileKind, Node, Preload, Result, TopHeader, name_field,
@@ -567,7 +567,7 @@ fn encode(name: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 pub mod tests {
-    use tpmt_bytes::Reader;
+    use tpmt_binary::Reader;
 
     use super::*;
     use crate::File;

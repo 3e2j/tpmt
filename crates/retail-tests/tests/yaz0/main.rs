@@ -8,13 +8,13 @@
 use std::borrow::Cow;
 use std::process::ExitCode;
 
-use tpmt_format::{FileKind, Format};
-use tpmt_game::Version;
-use tpmt_jkernel_arc::Archive;
-use tpmt_jkernel_compress::Yaz0;
+use tpmt_archive::Archive;
+use tpmt_binary::{FileKind, Format};
+use tpmt_compression::Yaz0;
 use tpmt_retail_tests::{Checks, Source, differs};
+use tpmt_tables::Version;
 
-static CHECKS: Checks = &[("jsystem::jkernel::yaz0", Source::Image, round_trip)];
+static CHECKS: Checks = &[("compression::yaz0", Source::Image, round_trip)];
 
 fn main() -> ExitCode {
     tpmt_retail_tests::run(CHECKS)

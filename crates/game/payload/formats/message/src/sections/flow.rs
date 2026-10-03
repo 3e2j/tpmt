@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 
-use tpmt_bytes::{Be16, Layout, Reader, Writer};
+use tpmt_binary::{Be16, Layout, Reader, Writer};
 
 use crate::sections::positions;
 use crate::{Error, MessageId, Result};
@@ -119,7 +119,7 @@ pub struct Flow {
     pub roots: Vec<Root>,
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The header in front of FLW1's node table: how many records follow,
     /// and how many entries the indirection table past them holds.
     struct Flw1Header {
@@ -130,7 +130,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// A FLW1 node record before its type is known. Every type is this long,
     /// laid out differently from byte 1 on, and is read by casting this to it.
     struct NodeRecord {
@@ -140,7 +140,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// Doesn't need the indirection table, as its edge and that edge's
     /// mask byte both live in the record itself.
     struct TextNode {
@@ -160,7 +160,7 @@ impl TextNode {
     const KIND: u8 = 0x01;
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     struct BranchNode {
         kind: u8,
         child_count: u8,
@@ -174,7 +174,7 @@ impl BranchNode {
     const KIND: u8 = 0x02;
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     struct EventNode {
         kind: u8,
         event: u8,
@@ -187,7 +187,7 @@ impl EventNode {
     const KIND: u8 = 0x03;
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The header in front of FLI1's root table.
     struct Fli1Header {
         count: Be16,
@@ -199,7 +199,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// One FLI1 entry: an id and the node position it starts at, each padded
     /// out to a u32 of its own.
     struct Fli1Entry {

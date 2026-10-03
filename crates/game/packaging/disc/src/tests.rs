@@ -3,7 +3,7 @@
 
 use std::mem::offset_of;
 
-use tpmt_bytes::{Be32, Layout as _, view_at_mut};
+use tpmt_binary::{Be32, Layout as _, view_at_mut};
 
 use crate::{Disc, Entry, Error, Item, Layout, Metadata, Result, Span, ciso, fst, sys};
 

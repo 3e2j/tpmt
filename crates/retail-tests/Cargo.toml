@@ -9,17 +9,17 @@ publish = false
 
 [dependencies]
 tpmt-disc.workspace = true
-tpmt-game.workspace = true
+tpmt-tables.workspace = true
 tpmt-pipeline.workspace = true
 
 libtest-mimic.workspace = true
 rayon.workspace = true
 
 [dev-dependencies]
-tpmt-format.workspace = true
-tpmt-jkernel-arc.workspace = true
-tpmt-jkernel-compress.workspace = true
-tpmt-jmessage.workspace = true
+tpmt-binary.workspace = true
+tpmt-archive.workspace = true
+tpmt-compression.workspace = true
+tpmt-message.workspace = true
 
 # Its own `main`, so it can make one trial per check and image in
 # `discs/`, or an ignored one per check when there are none.
@@ -32,9 +32,9 @@ harness = false
 name = "yaz0"
 harness = false
 
-# What the game makes of retail files, as `tpmt-game`'s tables claim it.
+# What the game makes of retail files, as `tpmt-tables`'s tables claim it.
 [[test]]
-name = "game"
+name = "tables"
 harness = false
 
 [lints]

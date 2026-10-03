@@ -1,7 +1,7 @@
 //! Inline text tags: what each group and code does, and what arguments it
 //! takes.
 //!
-//! The group and code are the ones `tpmt_jmessage::TextSegment::Tag` holds.
+//! The group and code are the ones `tpmt_message::TextSegment::Tag` holds.
 
 use super::COLORS;
 use crate::{Edition, Entry, Versions};

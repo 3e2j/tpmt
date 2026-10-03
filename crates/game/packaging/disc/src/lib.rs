@@ -133,7 +133,7 @@ pub enum Error {
     Mismatch(&'static str),
 
     #[error(transparent)]
-    Bytes(#[from] tpmt_bytes::ByteError),
+    Bytes(#[from] tpmt_binary::ByteError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

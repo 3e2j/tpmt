@@ -1,6 +1,6 @@
 //! The write path: turns a [`Bmg`] back into bytes.
 
-use tpmt_bytes::{Be32, Layout, Writer};
+use tpmt_binary::{Be32, Layout, Writer};
 
 use crate::Header;
 use crate::sections::{self, flow, message, positions};
@@ -82,7 +82,7 @@ fn write_strings(strings: &[Box<[u8]>]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_bytes::{Layout, Reader};
+    use tpmt_binary::{Layout, Reader};
 
     use super::*;
     use crate::sections::Header as SectionHeader;

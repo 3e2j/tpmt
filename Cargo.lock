@@ -455,10 +455,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "tpmt-bytes"
+name = "tpmt-archive"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "serde",
+ "thiserror",
+ "toml",
+ "tpmt-binary",
+]
+
+[[package]]
+name = "tpmt-binary"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "tpmt-compression"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tpmt-binary",
 ]
 
 [[package]]
@@ -469,55 +488,25 @@ dependencies = [
  "serde",
  "sha1",
  "thiserror",
- "tpmt-bytes",
+ "tpmt-binary",
 ]
 
 [[package]]
-name = "tpmt-editor"
+name = "tpmt-documents"
 version = "0.1.0"
 dependencies = [
  "thiserror",
- "tpmt-format",
- "tpmt-game",
- "tpmt-jmessage",
+ "tpmt-binary",
+ "tpmt-message",
+ "tpmt-tables",
 ]
 
 [[package]]
-name = "tpmt-format"
-version = "0.1.0"
-
-[[package]]
-name = "tpmt-game"
-version = "0.1.0"
-
-[[package]]
-name = "tpmt-jkernel-arc"
-version = "0.1.0"
-dependencies = [
- "encoding_rs",
- "serde",
- "thiserror",
- "toml",
- "tpmt-bytes",
- "tpmt-format",
-]
-
-[[package]]
-name = "tpmt-jkernel-compress"
+name = "tpmt-message"
 version = "0.1.0"
 dependencies = [
  "thiserror",
- "tpmt-bytes",
- "tpmt-format",
-]
-
-[[package]]
-name = "tpmt-jmessage"
-version = "0.1.0"
-dependencies = [
- "thiserror",
- "tpmt-bytes",
- "tpmt-format",
+ "tpmt-binary",
 ]
 
 [[package]]
@@ -529,10 +518,10 @@ dependencies = [
  "serde_json",
  "thiserror",
  "toml",
+ "tpmt-archive",
+ "tpmt-binary",
+ "tpmt-compression",
  "tpmt-disc",
- "tpmt-format",
- "tpmt-jkernel-arc",
- "tpmt-jkernel-compress",
  "xxhash-rust",
 ]
 
@@ -542,14 +531,18 @@ version = "0.1.0"
 dependencies = [
  "libtest-mimic",
  "rayon",
+ "tpmt-archive",
+ "tpmt-binary",
+ "tpmt-compression",
  "tpmt-disc",
- "tpmt-format",
- "tpmt-game",
- "tpmt-jkernel-arc",
- "tpmt-jkernel-compress",
- "tpmt-jmessage",
+ "tpmt-message",
  "tpmt-pipeline",
+ "tpmt-tables",
 ]
+
+[[package]]
+name = "tpmt-tables"
+version = "0.1.0"
 
 [[package]]
 name = "typenum"

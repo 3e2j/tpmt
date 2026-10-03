@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
-use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
+use tpmt_archive::editable::sidecar::{Member, SIDECAR, Sidecar};
 
 use crate::project::metadata::{Digests, digest};
 use crate::{Error, Result, fs, project, status};

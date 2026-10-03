@@ -4,7 +4,7 @@ use crate::Header;
 use crate::token::backref::Backreference;
 use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT};
 use crate::{Error, Result};
-use tpmt_bytes::{Layout, Reader};
+use tpmt_binary::{Layout, Reader};
 
 /// Decompresses `input`, whose magic the caller has already checked.
 pub fn decompress(input: &[u8]) -> Result<Vec<u8>> {
@@ -61,7 +61,7 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_bytes::Be32;
+    use tpmt_binary::Be32;
 
     use super::*;
     use crate::{FileKind, Format, Yaz0};

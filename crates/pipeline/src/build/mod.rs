@@ -128,7 +128,7 @@ fn rebuild(job: &Job, into: &Path) -> Result<()> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tpmt_jkernel_arc::editable::sidecar::{Member, Sidecar};
+    use tpmt_archive::editable::sidecar::{Member, Sidecar};
 
     use super::*;
     use crate::project::metadata::digest;
@@ -159,13 +159,13 @@ mod tests {
             vec![
                 Member {
                     path: "plain.bin".to_string(),
-                    preload: tpmt_jkernel_arc::Preload::Mram,
+                    preload: tpmt_archive::Preload::Mram,
                     yaz0_compressed: false,
                     id: Some(0),
                 },
                 Member {
                     path: "wrapped.bin".to_string(),
-                    preload: tpmt_jkernel_arc::Preload::Mram,
+                    preload: tpmt_archive::Preload::Mram,
                     yaz0_compressed: true,
                     id: Some(1),
                 },

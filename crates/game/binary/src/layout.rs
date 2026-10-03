@@ -107,7 +107,7 @@ pub unsafe trait Layout: Sized {
     /// differs fails to compile.
     ///
     /// ```compile_fail
-    /// use tpmt_bytes::{Be16, Be32, Layout};
+    /// use tpmt_binary::{Be16, Be32, Layout};
     ///
     /// let wide = Be32::new(0);
     /// let narrow: &Be16 = wide.cast();
@@ -144,16 +144,16 @@ unsafe impl Layout for Flag {}
 /// compile.
 ///
 /// ```
-/// tpmt_bytes::layout! {
+/// tpmt_binary::layout! {
 ///     pub struct Header {
 ///         pub magic: [u8; 4],
-///         pub size: tpmt_bytes::Be32,
+///         pub size: tpmt_binary::Be32,
 ///     }
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// tpmt_bytes::layout! {
+/// tpmt_binary::layout! {
 ///     struct Flagged {
 ///         set: bool,
 ///     }

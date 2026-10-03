@@ -10,9 +10,9 @@
 use std::borrow::Cow;
 
 use rayon::prelude::*;
-use tpmt_jkernel_arc::editable::sidecar::Sidecar;
-use tpmt_jkernel_arc::{Archive, File, Format};
-use tpmt_jkernel_compress::{Strategy, Yaz0};
+use tpmt_archive::editable::sidecar::Sidecar;
+use tpmt_archive::{Archive, File, Format};
+use tpmt_compression::{Strategy, Yaz0};
 
 use super::tree::Tree;
 use crate::{Error, Result};
@@ -23,10 +23,10 @@ use crate::{Error, Result};
 #[derive(Debug, thiserror::Error)]
 pub enum EncodeError {
     #[error(transparent)]
-    Archive(#[from] tpmt_jkernel_arc::Error),
+    Archive(#[from] tpmt_archive::Error),
 
     #[error(transparent)]
-    Compress(#[from] tpmt_jkernel_compress::Error),
+    Compress(#[from] tpmt_compression::Error),
 }
 
 /// Assembles one disc file: everything under it, then the Yaz0 wrapper if the
@@ -78,7 +78,7 @@ fn archive(tree: &Tree, path: &str) -> Result<Vec<u8>> {
 
     // TODO: the linker goes here, where every member's bytes exist, the member
     // list is fixed, and the archive has not been encoded yet. Lands with its first user (`.stb`), as
-    // a trait in tpmt-jkernel-arc that a decoded file implements to hand out
+    // a trait in tpmt-archive that a decoded file implements to hand out
     // `&mut` to every reference it holds, each an enum of bare `Id(u16)` or
     // resolved `Path(String)`. Unpack turns `Id`s into `Path`s via the
     // archive's id -> path map (free from `Sidecar::members`). Build turns

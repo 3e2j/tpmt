@@ -1,14 +1,20 @@
-//! Bounds-checked big-endian byte cursors (read/write).
+//! What every binary format crate is built on: reading and writing a file's
+//! bytes, and telling which format a file is.
 //!
 //! Everything on the disc is big-endian, and every format crate parses the same
 //! shape: read a header, follow an offset into a table, read records at
-//! computed positions. A reader does that over a borrowed buffer, and a writer
-//! builds one up.
+//! computed positions. A [`Reader`] does that over a borrowed buffer, and a
+//! [`Writer`] builds one up. Both are bounds-checked.
+//!
+//! Each format crate implements [`Format`] on its decoded struct, and every
+//! file's opening magic lives in [`FileKind`].
 
+mod format;
 mod layout;
 mod reader;
 mod writer;
 
+pub use format::{Checked, FileKind, Format, WrongKind};
 pub use layout::{Be16, Be32, Flag, Layout, bytes_of, view_at_mut};
 pub use reader::Reader;
 pub use writer::Writer;

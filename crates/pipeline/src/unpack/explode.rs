@@ -15,10 +15,10 @@
 
 use std::borrow::Cow;
 
-use tpmt_format::{FileKind, Format};
-use tpmt_jkernel_arc::Archive;
-use tpmt_jkernel_arc::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_jkernel_compress::Yaz0;
+use tpmt_archive::Archive;
+use tpmt_archive::editable::sidecar::{Member, SIDECAR, Sidecar};
+use tpmt_binary::{FileKind, Format};
+use tpmt_compression::Yaz0;
 
 use crate::{Error, Result};
 
@@ -30,10 +30,10 @@ use crate::{Error, Result};
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     #[error(transparent)]
-    Archive(#[from] tpmt_jkernel_arc::Error),
+    Archive(#[from] tpmt_archive::Error),
 
     #[error(transparent)]
-    Compress(#[from] tpmt_jkernel_compress::Error),
+    Compress(#[from] tpmt_compression::Error),
 }
 
 /// Peels `data`, then hands it to whichever format's magic it opens with.
@@ -114,9 +114,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use std::borrow::Cow;
-    use tpmt_jkernel_arc::File;
+    use tpmt_archive::File;
 
-    use tpmt_jkernel_compress::Strategy;
+    use tpmt_compression::Strategy;
 
     use super::*;
 

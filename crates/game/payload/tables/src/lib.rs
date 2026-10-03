@@ -15,7 +15,7 @@
 //! Names and notes come from Dusklight and the decomp, they've not been manually
 //! tested/verified in game.
 
-pub mod jsystem;
+pub mod message;
 mod version;
 
 pub use version::{Edition, Language, Version, Versions};

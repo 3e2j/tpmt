@@ -1,4 +1,6 @@
 //! Message files: what the bytes inside a BMG mean to the game.
+//!
+//! From `JSystem/JMessage` in the decomp (`libs/JSystem/src/JMessage`).
 
 pub mod flow;
 pub mod record;

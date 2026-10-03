@@ -19,7 +19,7 @@ mod token;
 
 use std::borrow::Cow;
 
-pub use tpmt_format::{FileKind, Format};
+pub use tpmt_binary::{FileKind, Format};
 
 /// How the encoder searches for back-references.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl<'a> Format<'a> for Yaz0<'a> {
     /// - [`Error::SizeMismatch`] if the output doesn't match the header's
     ///   declared size.
     /// - [`Error::Bytes`] if the data is truncated.
-    fn decode_body(data: tpmt_format::Checked<'a>) -> Result<Self> {
+    fn decode_body(data: tpmt_binary::Checked<'a>) -> Result<Self> {
         Ok(Self {
             data: Cow::Owned(decode::decompress(data.bytes())?),
             strategy: Strategy::Parity,
@@ -77,7 +77,7 @@ impl<'a> Format<'a> for Yaz0<'a> {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    WrongKind(#[from] tpmt_format::WrongKind),
+    WrongKind(#[from] tpmt_binary::WrongKind),
 
     #[error("a back-reference reaches {distance} bytes back from offset {pos}")]
     BackReference { pos: usize, distance: usize },
@@ -89,16 +89,16 @@ pub enum Error {
     SizeMismatch { expected: usize, actual: usize },
 
     #[error(transparent)]
-    Bytes(#[from] tpmt_bytes::ByteError),
+    Bytes(#[from] tpmt_binary::ByteError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     struct Header {
-        /// Always [`FileKind::Yaz0`](tpmt_format::FileKind::Yaz0)'s magic.
+        /// Always [`FileKind::Yaz0`](tpmt_binary::FileKind::Yaz0)'s magic.
         magic: [u8; 4],
-        decompressed_size: tpmt_bytes::Be32,
+        decompressed_size: tpmt_binary::Be32,
         /// Padding, and zero.
         unnamed: [u8; 8],
     }

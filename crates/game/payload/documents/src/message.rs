@@ -1,6 +1,6 @@
 //! A BMG message file as an editable document.
 //!
-//! Text is kept as `jmessage`'s segments, so nothing is re-parsed on save.
+//! Text is kept as `tpmt-message`'s segments, so nothing is re-parsed on save.
 //!
 //! Edits are checked for what would leave the graph pointing at nothing: a
 //! removed message a text node still shows, a removed node an edge still
@@ -10,12 +10,12 @@
 use std::mem;
 use std::ops::Range;
 
-use tpmt_format::Format;
-use tpmt_game::Edition;
-use tpmt_game::jsystem::jmessage::{self, Field, Layout};
-use tpmt_jmessage::{
+use tpmt_binary::Format;
+use tpmt_message::{
     Bmg, Flow, Message, MessageId, Node, NodeId, Root, TEXT_OFFSET_LEN, TextSegment,
 };
+use tpmt_tables::Edition;
+use tpmt_tables::message::{self, Field, Layout};
 
 use crate::Document;
 
@@ -129,7 +129,7 @@ impl From<NodeEdit> for BmgEdit {
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
     #[error(transparent)]
-    Decode(#[from] tpmt_jmessage::Error),
+    Decode(#[from] tpmt_message::Error),
 
     /// The edits keep the two equal, so a file where they differ can't be
     /// edited without losing one of them.
@@ -236,7 +236,7 @@ impl BmgDocument {
     ///
     /// When the encoder refuses the file, such as a text run holding a tag
     /// opener. See [`Bmg::encode`].
-    pub fn save(&self) -> Result<Vec<u8>, tpmt_jmessage::Error> {
+    pub fn save(&self) -> Result<Vec<u8>, tpmt_message::Error> {
         self.bmg.encode()
     }
 
@@ -251,10 +251,10 @@ impl BmgDocument {
     }
 
     /// The layout of this file's records, or `None` when the document's
-    /// edition reads none as wide. See [`jmessage::layout`].
+    /// edition reads none as wide. See [`message::layout`].
     #[must_use]
     pub fn layout(&self) -> Option<&'static Layout> {
-        jmessage::layout(self.edition, self.bmg.record_len)
+        message::layout(self.edition, self.bmg.record_len)
     }
 
     /// An internal id no message holds yet, for [`MessageEdit::Insert`].
@@ -765,9 +765,9 @@ pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<(
 
 #[cfg(test)]
 mod tests {
-    use tpmt_game::Version;
-    use tpmt_game::jsystem::jmessage::{record, unit};
-    use tpmt_jmessage::{Encoding, Mid1Header};
+    use tpmt_message::{Encoding, Mid1Header};
+    use tpmt_tables::Version;
+    use tpmt_tables::message::{record, unit};
 
     use super::*;
     use crate::History;

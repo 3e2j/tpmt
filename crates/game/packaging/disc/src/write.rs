@@ -17,7 +17,7 @@
 use std::io::Write;
 
 use sha1::{Digest, Sha1};
-use tpmt_bytes::{Be32, Layout as _};
+use tpmt_binary::{Be32, Layout as _};
 
 use crate::{Entry, Error, Item, Metadata, Result, Span, fst, sys};
 
@@ -184,7 +184,7 @@ impl Layout {
     /// The pieces nobody hands over, each at the offset it goes to, in disc
     /// order.
     fn generated(&self) -> [(u64, &[u8]); 4] {
-        let records = tpmt_bytes::bytes_of(&self.records);
+        let records = tpmt_binary::bytes_of(&self.records);
         [
             (0, self.boot.as_bytes()),
             (sys::BI2_OFFSET, self.bi2.as_bytes()),

@@ -13,13 +13,13 @@ use crate::{Error, Result};
 pub mod flow;
 pub mod message;
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// What every section opens with.
     pub struct Header {
         /// One of the section names below, such as [`INF1`].
         pub magic: [u8; 4],
         /// The whole section, this header and trailing padding included.
-        pub size: tpmt_bytes::Be32,
+        pub size: tpmt_binary::Be32,
     }
 }
 

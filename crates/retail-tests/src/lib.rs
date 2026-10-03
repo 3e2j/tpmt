@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
 use tpmt_disc::{Boot, Disc};
-use tpmt_game::Version;
 use tpmt_pipeline::{FileKind, Progress, Project};
+use tpmt_tables::Version;
 
 /// Reports past this many are counted but not printed.
 const REPORT_LIMIT: usize = 50;

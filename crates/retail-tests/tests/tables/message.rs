@@ -1,9 +1,9 @@
-//! Message files, against `tpmt_game::jsystem::jmessage`.
+//! Message files, against `tpmt_tables::message`.
 
-use tpmt_format::Format;
-use tpmt_game::jsystem::jmessage::{self, Field, Layout, record, tag, unit};
-use tpmt_game::{Edition, Version};
-use tpmt_jmessage::{Bmg, Message, TEXT_OFFSET_LEN, TextSegment};
+use tpmt_binary::Format;
+use tpmt_message::{Bmg, Message, TEXT_OFFSET_LEN, TextSegment};
+use tpmt_tables::message::{self, Field, Layout, record, tag, unit};
+use tpmt_tables::{Edition, Version};
 
 /// The record width picks the layout the game reads the file with:
 /// [`unit::layout`] for `zel_unit.bmg`, [`record::LAYOUT`] for every other
@@ -14,7 +14,7 @@ pub fn layout(version: Version, path: &str, bytes: &[u8]) -> Vec<String> {
         Err(problem) => return vec![problem],
     };
     let expected = expected(edition, path);
-    match jmessage::layout(edition, bmg.record_len) {
+    match message::layout(edition, bmg.record_len) {
         Some(layout) if layout == expected => Vec::new(),
         Some(layout) => vec![format!(
             "{} byte records read as the {} byte layout, not the {} byte one",
@@ -109,7 +109,7 @@ fn expected(edition: Edition, path: &str) -> &'static Layout {
 /// other layout than the one the game reads the file with. [`layout`] reports
 /// that, so the checks that read fields skip the file.
 fn read_layout(edition: Edition, path: &str, bmg: &Bmg) -> Option<&'static Layout> {
-    jmessage::layout(edition, bmg.record_len).filter(|&layout| layout == expected(edition, path))
+    message::layout(edition, bmg.record_len).filter(|&layout| layout == expected(edition, path))
 }
 
 /// `field`'s value in `message`, or `None` when the record is too short to

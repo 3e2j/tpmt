@@ -6,13 +6,13 @@
 
 use std::process::ExitCode;
 
-use tpmt_format::Format;
-use tpmt_game::Version;
-use tpmt_jmessage::Bmg;
+use tpmt_binary::Format;
+use tpmt_message::Bmg;
 use tpmt_retail_tests::{Check, Checks, Source, differs};
+use tpmt_tables::Version;
 
 /// A new leaf format is one more row.
-static CHECKS: Checks = &[leaf::<Bmg>("jsystem::jmessage::bmg")];
+static CHECKS: Checks = &[leaf::<Bmg>("message::bmg")];
 
 fn main() -> ExitCode {
     tpmt_retail_tests::run(CHECKS)

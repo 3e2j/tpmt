@@ -1,7 +1,7 @@
 //! The read path: turns a message file's bytes into a [`Bmg`], nothing
 //! copied out of the input.
 
-use tpmt_bytes::{Layout, Reader};
+use tpmt_binary::{Layout, Reader};
 
 use crate::Header;
 use crate::sections::{self, flow, message};
@@ -136,7 +136,7 @@ fn read_strings(str1: &[u8]) -> Vec<Box<[u8]>> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_bytes::{Be32, Layout, Writer};
+    use tpmt_binary::{Be32, Layout, Writer};
 
     use super::*;
     use crate::FileKind;

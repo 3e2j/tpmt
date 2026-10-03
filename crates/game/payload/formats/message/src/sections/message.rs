@@ -4,7 +4,7 @@
 //! record in INF1, the text that record points at in DAT1, and, when the
 //! file has one, the public-facing id sitting at the same position in MID1.
 
-use tpmt_bytes::{Be16, Be32, Layout, Reader, Writer};
+use tpmt_binary::{Be16, Be32, Layout, Reader, Writer};
 
 use crate::{Error, Result};
 
@@ -80,7 +80,7 @@ pub struct Mid1Header {
     pub shift_bytes: u8,
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The header in front of INF1's records: how many there are, and how
     /// wide one is. Its length is where the records start.
     struct Inf1Header {
@@ -96,7 +96,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The header in front of MID1's id array, as the file stores it. Its
     /// length is where the id array starts. [`Mid1Header`] is what it
     /// parses into.

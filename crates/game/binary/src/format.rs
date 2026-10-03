@@ -87,12 +87,12 @@ impl std::error::Error for WrongKind {}
 /// alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileKind {
-    /// An archive, owned by `JKernel` and decoded by `tpmt-jkernel-arc`.
+    /// An archive, owned by `JKernel` and decoded by `tpmt-archive`.
     Rarc,
     /// A compression wrapper, owned by `JKernel` and decoded by
-    /// `tpmt-jkernel-compress`.
+    /// `tpmt-compression`.
     Yaz0,
-    /// A message file, owned by `JMessage` and decoded by `tpmt-jmessage`.
+    /// A message file, owned by `JMessage` and decoded by `tpmt-message`.
     Mesg,
 }
 

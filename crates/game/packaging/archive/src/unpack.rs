@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use tpmt_bytes::{Be32, Reader};
+use tpmt_binary::{Be32, Reader};
 
 use crate::{
     Archive, DataHeader, Entry, Error, File, Node, Preload, Result, TopHeader, name_hash,
@@ -229,7 +229,7 @@ impl<'a> ArchiveReader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use tpmt_bytes::{Be16, Layout, view_at_mut};
+    use tpmt_binary::{Be16, Layout, view_at_mut};
 
     use super::*;
     use crate::Format;

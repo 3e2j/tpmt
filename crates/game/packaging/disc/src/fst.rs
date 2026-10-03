@@ -10,11 +10,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use tpmt_bytes::{Be32, Reader};
+use tpmt_binary::{Be32, Reader};
 
 use crate::{Entry, Error, Item, Result, Span};
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// One file table record. Its last two fields mean different things
     /// either side of the directory flag: a file's data offset and length, or
     /// a directory's parent index and the index its subtree ends at.

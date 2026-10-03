@@ -32,7 +32,7 @@
 //! Replacing one file's bytes, which is the shape nearly every caller wants:
 //!
 //! ```
-//! use tpmt_jkernel_arc::{Archive, File, Format};
+//! use tpmt_archive::{Archive, File, Format};
 //!
 //! # let on_disc = Archive {
 //! #     root: "archive".into(),
@@ -49,23 +49,23 @@
 //! let rebuilt = opened.encode()?;
 //!
 //! assert_eq!(Archive::decode(&rebuilt)?.files[0].data, b"after");
-//! # Ok::<(), tpmt_jkernel_arc::Error>(())
+//! # Ok::<(), tpmt_archive::Error>(())
 //! ```
 
 use serde::{Deserialize, Serialize};
-use tpmt_bytes::{Be16, Be32, Flag, Layout};
+use tpmt_binary::{Be16, Be32, Flag, Layout};
 
 pub mod editable;
 
 mod pack;
 mod unpack;
 
-pub use tpmt_format::{FileKind, Format};
+pub use tpmt_binary::{FileKind, Format};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    WrongKind(#[from] tpmt_format::WrongKind),
+    WrongKind(#[from] tpmt_binary::WrongKind),
 
     #[error("the archive is corrupt: {0}")]
     Corrupt(&'static str),
@@ -84,7 +84,7 @@ pub enum Error {
     Ungrouped,
 
     #[error(transparent)]
-    Bytes(#[from] tpmt_bytes::ByteError),
+    Bytes(#[from] tpmt_binary::ByteError),
 
     #[error("the sidecar is not readable: {0}")]
     Sidecar(#[from] toml::de::Error),
@@ -171,7 +171,7 @@ impl<'a> Format<'a> for Archive<'a> {
     ///   would misplace or lose an entry (a wrong stated size, a missing root,
     ///   more entries than it claims to hold, a file with no memory tag, a
     ///   directory tree that loops, or similar).
-    fn decode_body(data: tpmt_format::Checked<'a>) -> Result<Self> {
+    fn decode_body(data: tpmt_binary::Checked<'a>) -> Result<Self> {
         unpack::unpack(data.bytes())
     }
 
@@ -211,7 +211,7 @@ impl<'a> Format<'a> for Archive<'a> {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The fixed 0x20 at the front of the archive. Everything else is found
     /// through it.
     struct TopHeader {
@@ -230,7 +230,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// What the top header points at. Every offset in it, and the file data
     /// offset above, is counted from where this header starts.
     struct DataHeader {
@@ -252,7 +252,7 @@ impl DataHeader {
     const AT: usize = TopHeader::LEN;
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// One directory's record, in the list the data header points at.
     struct Node {
         /// A four character tag.
@@ -265,7 +265,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// One file's or one directory's record. A directory's points at its node,
     /// a file's at its bytes.
     struct Entry {

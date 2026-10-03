@@ -13,7 +13,7 @@
 //! [`Project::formats`] lists every leaf by kind. [`Project::read`] returns
 //! one leaf's bytes, the `mod/overlay/` copy when there is one and the `base/`
 //! copy otherwise. [`Project::write`] puts new bytes in `mod/overlay/`. The
-//! caller hands the bytes to `tpmt-editor`, which decodes them.
+//! caller hands the bytes to `tpmt-documents`, which decodes them.
 //!
 //! This crate owns what it takes to get from a disc to a project and back:
 //! the disc image, archives, compression, and anything that spans files, like
@@ -50,7 +50,7 @@ mod unpack;
 pub use build::{Built, EncodeError, Target};
 pub use progress::{Progress, Snapshot, Step, Unit};
 pub use project::is_project;
-pub use tpmt_format::FileKind;
+pub use tpmt_binary::FileKind;
 pub use unpack::explode::{DecodeError, file as explode};
 
 #[derive(Debug, thiserror::Error)]
@@ -208,7 +208,7 @@ impl Project {
     }
 
     /// Who the unpacked disc says it is, from `base/disc.toml`. Its game id
-    /// and revision pick the version, through `tpmt_game::Version::from_disc`.
+    /// and revision pick the version, through `tpmt_tables::Version::from_disc`.
     ///
     /// # Errors
     ///

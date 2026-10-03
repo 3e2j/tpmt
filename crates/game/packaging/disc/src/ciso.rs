@@ -7,7 +7,7 @@
 //! its source is not public, but all it records is how to put the mastering fill
 //! back, which we drop anyway.
 
-use tpmt_bytes::Reader;
+use tpmt_binary::Reader;
 
 use crate::{Error, Result};
 

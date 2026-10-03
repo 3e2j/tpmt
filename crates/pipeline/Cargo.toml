@@ -10,10 +10,10 @@ license.workspace = true
 # Every format the toolkit understands. This crate is the conveyor belt: it
 # only moves files through unpack/build. Organising a format's editable
 # files, sidecars included, is that format crate's own call to make.
-tpmt-jkernel-arc.workspace = true
-tpmt-jkernel-compress.workspace = true
+tpmt-archive.workspace = true
+tpmt-compression.workspace = true
 tpmt-disc.workspace = true
-tpmt-format.workspace = true
+tpmt-binary.workspace = true
 
 thiserror.workspace = true
 rayon.workspace = true

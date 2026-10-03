@@ -13,7 +13,7 @@
 //! something else.
 
 use serde::{Deserialize, Serialize};
-use tpmt_bytes::{Be32, Layout, Reader};
+use tpmt_binary::{Be32, Layout, Reader};
 
 use crate::{Disc, Entry, Error, Result, Span};
 
@@ -25,7 +25,7 @@ pub const ID_LEN: usize = 4;
 pub const MAKER_LEN: usize = 2;
 pub const TITLE_LEN: usize = 0x40;
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The front of the boot header, where every value a project keeps sits.
     #[derive(Clone, Copy)]
     pub struct Authored {
@@ -44,7 +44,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The boot header. Past [`Authored`] it is all layout, worked out again
     /// by a build rather than kept. `DVDBB2` in the SDK covers the seven
     /// fields from `dol_offset` on.
@@ -87,7 +87,7 @@ pub const PREAMBLE_ALIGN: u64 = 0x100;
 pub const BI2_OFFSET: u64 = 0x440;
 pub const APPLOADER_OFFSET: u64 = 0x2440;
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The disc metadata: six fields and then eight kilobytes of nothing.
     pub struct Bi2Bin {
         pub debug_monitor_size: Be32,
@@ -105,7 +105,7 @@ tpmt_bytes::layout! {
     }
 }
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// What the apploader opens with. It states its own length in two parts,
     /// neither of which counts this header.
     pub struct ApploaderHeader {
@@ -145,7 +145,7 @@ pub const BI2_PATH: &str = "sys/bi2.bin";
 // section reaches.
 pub const DOL_SECTIONS: usize = 18;
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     /// The executable's header. Its section offsets, load addresses and
     /// lengths are three runs in step with each other, so a section that is
     /// not present reads as zero in all three.

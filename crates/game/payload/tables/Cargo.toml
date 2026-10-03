@@ -1,5 +1,5 @@
 [package]
-name = "tpmt-game"
+name = "tpmt-tables"
 description = "What the raw values and layouts in Twilight Princess's files mean, shared by every format that stores them."
 version.workspace = true
 edition.workspace = true

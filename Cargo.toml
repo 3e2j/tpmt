@@ -4,8 +4,7 @@ members = [
     "crates/tpmt",
     "crates/pipeline",
     "crates/retail-tests",
-    "crates/game/bytes",
-    "crates/game/format",
+    "crates/game/binary",
     "crates/game/packaging/*",
     "crates/game/payload/formats/*",
     "crates/game/payload/tables",
@@ -20,18 +19,17 @@ license = "CC0-1.0"
 
 [workspace.dependencies]
 # Shared by every format: byte cursors and the Format trait.
-tpmt-bytes = { path = "crates/game/bytes", version = "0.1.0" }
-tpmt-format = { path = "crates/game/format", version = "0.1.0" }
+tpmt-binary = { path = "crates/game/binary", version = "0.1.0" }
 
 # Packaging: what unpacking removes and building puts back.
 tpmt-disc = { path = "crates/game/packaging/disc", version = "0.1.0" }
-tpmt-jkernel-arc = { path = "crates/game/packaging/archive", version = "0.1.0" }
-tpmt-jkernel-compress = { path = "crates/game/packaging/compression", version = "0.1.0" }
+tpmt-archive = { path = "crates/game/packaging/archive", version = "0.1.0" }
+tpmt-compression = { path = "crates/game/packaging/compression", version = "0.1.0" }
 
 # Payload: the files left after unpacking, their values, and editing them.
-tpmt-jmessage = { path = "crates/game/payload/formats/message", version = "0.1.0" }
-tpmt-game = { path = "crates/game/payload/tables", version = "0.1.0" }
-tpmt-editor = { path = "crates/game/payload/documents", version = "0.1.0" }
+tpmt-message = { path = "crates/game/payload/formats/message", version = "0.1.0" }
+tpmt-tables = { path = "crates/game/payload/tables", version = "0.1.0" }
+tpmt-documents = { path = "crates/game/payload/documents", version = "0.1.0" }
 
 tpmt-pipeline = { path = "crates/pipeline", version = "0.1.0" }
 

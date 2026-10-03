@@ -1,5 +1,5 @@
 [package]
-name = "tpmt-jmessage"
+name = "tpmt-message"
 description = "JMessage: BMG binary message files."
 version.workspace = true
 edition.workspace = true
@@ -7,8 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-tpmt-bytes.workspace = true
-tpmt-format.workspace = true
+tpmt-binary.workspace = true
 thiserror.workspace = true
 
 [lints]

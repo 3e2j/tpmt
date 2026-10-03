@@ -43,12 +43,12 @@ mod unpack;
 
 pub use crate::sections::flow::{Flow, Node, NodeId, Root};
 pub use crate::sections::message::{Message, MessageId, Mid1Header, TEXT_OFFSET_LEN, TextSegment};
-pub use tpmt_format::{FileKind, Format};
+pub use tpmt_binary::{FileKind, Format};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    WrongKind(#[from] tpmt_format::WrongKind),
+    WrongKind(#[from] tpmt_binary::WrongKind),
 
     #[error("the message file is kind {0:?}, not bmg1")]
     UnknownKind([u8; 4]),
@@ -63,19 +63,19 @@ pub enum Error {
     Oversized,
 
     #[error(transparent)]
-    Bytes(#[from] tpmt_bytes::ByteError),
+    Bytes(#[from] tpmt_binary::ByteError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-tpmt_bytes::layout! {
+tpmt_binary::layout! {
     struct Header {
         magic: [u8; 4],
         /// The layout tag. Anything but [`Header::KIND`] is refused.
         kind: [u8; 4],
         /// The size of the file with the flow sections left out.
-        size: tpmt_bytes::Be32,
-        section_count: tpmt_bytes::Be32,
+        size: tpmt_binary::Be32,
+        section_count: tpmt_binary::Be32,
         /// An [`Encoding`] byte.
         encoding: u8,
         /// Unnamed, and zero.
@@ -175,7 +175,7 @@ impl Format<'_> for Bmg {
     ///   section: a size that doesn't fit its header, a stated file size that
     ///   doesn't match where the sections end, a required section missing, or a
     ///   flow graph with only one of its two sections.
-    fn decode_body(data: tpmt_format::Checked<'_>) -> Result<Self> {
+    fn decode_body(data: tpmt_binary::Checked<'_>) -> Result<Self> {
         unpack::unpack(data.bytes())
     }
 
