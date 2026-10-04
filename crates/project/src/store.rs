@@ -1,20 +1,14 @@
-//! The files tpmt writes into a project and reads back later, one type per
-//! file:
+//! `.tpmt/`: everything an unpack records about the project rather than for
+//! it, one type per file:
 //!
 //! ```text
-//! base/disc.toml      DiscMetadata   preamble values a build cannot derive
-//! base/yaz0.toml      Yaz0           which loose files arrived Yaz0 wrapped
-//! mod/mod.json        ModMetadata    id, name, version, author, ...
-//! .tpmt/source.toml   Source         where the ISO was last seen, and which game
-//! .tpmt/digests      Digests        vanilla digest of every base/ file
-//! .tpmt/formats      Formats        which base/ files hold a known leaf format
+//! source.toml      Source    where the ISO was last seen, and which game
+//! digests.xxh128   Digests   vanilla digest of every base/ file
+//! formats          Formats   which base/ files hold a known leaf format
 //! ```
 //!
-//! `disc.toml` and `mod.json` are safe to edit by hand. `.tpmt/` is not:
-//! every unpack rewrites it.
-//!
-//! Unpack writes all of these and build reads them back, so each type here
-//! goes both ways.
+//! None of it is safe to edit by hand: every unpack rewrites it. Its presence
+//! is what marks an unpack as finished, so it is always written last.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Write};
@@ -23,103 +17,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-use crate::fs::{self, io_at, parse_at, read_toml, write_json, write_toml};
-use crate::layout::{DIGESTS, DISC_TOML, FORMATS, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
+use crate::io::fs::{self, io_at, parse_at, read_toml, write_toml};
 use crate::{Error, FileKind, Result};
 
-/// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
-/// because a loose file never records its own wrapper (unlike containers).
-///
-/// A set rather than a list, since the only question anyone asks it is
-/// whether one path is in it.
-#[derive(Serialize, Deserialize)]
-struct Yaz0 {
-    compressed: BTreeSet<String>,
-}
-
-/// Writes `base/`'s own metadata: `disc.toml` and `yaz0.toml`. The one call
-/// site for everything under `base/` that isn't a copied file, so nothing
-/// else reaches into `base/` to write a TOML of its own.
-///
-/// # Errors
-///
-/// - [`Error::Serialize`] if either will not serialize
-/// - [`Error::Io`] on either write
-pub fn write_base(
-    base: &Path,
-    metadata: &tpmt_disc::Metadata,
-    yaz0_compressed: BTreeSet<String>,
-) -> Result<()> {
-    write_toml(&base.join(DISC_TOML), metadata)?;
-    write_toml(
-        &base.join(YAZ0_TOML),
-        &Yaz0 {
-            compressed: yaz0_compressed,
-        },
-    )
-}
-
-/// What `base/` says about itself, which is everything a rebuild needs that
-/// the unpacked files do not carry.
-pub struct Base {
-    /// The preamble values a build cannot derive.
-    pub metadata: tpmt_disc::Metadata,
-    /// Which disc files arrived Yaz0 wrapped, so a rebuild puts the wrapper
-    /// back on the same ones.
-    pub yaz0_compressed: BTreeSet<String>,
-}
-
-/// Reads back what [`write_base`] wrote.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if either file is missing
-/// - [`Error::Parse`] if either is not what it was
-pub fn read_base(base: &Path) -> Result<Base> {
-    let metadata = read_toml(&base.join(DISC_TOML))?;
-    let yaz0: Yaz0 = read_toml(&base.join(YAZ0_TOML))?;
-    Ok(Base {
-        metadata,
-        yaz0_compressed: yaz0.compressed,
-    })
-}
-
-/// The disc's boot header from `disc.toml`, without reading `yaz0.toml`.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if `disc.toml` is missing
-/// - [`Error::Parse`] if it is not what it was
-pub fn read_boot(base: &Path) -> Result<tpmt_disc::Boot> {
-    let metadata: tpmt_disc::Metadata = read_toml(&base.join(DISC_TOML))?;
-    Ok(metadata.boot)
-}
-
-/// `mod.json`: what a mod says about itself.
-///
-/// Fields are the target-agnostic subset only. Dusklight reads a few more
-/// (`runtime`, pinning a mod to a specific host runtime service) that are
-/// specific to the `.dusk` export step.
-#[derive(Serialize)]
-pub struct ModMetadata<'a> {
-    pub id: &'a str,
-    pub name: &'a str,
-    pub version: &'a str,
-    pub author: &'a str,
-    pub description: &'a str,
-    pub icon: Option<&'a str>,
-    pub banner: Option<&'a str>,
-}
-
-/// Writes `mod.json` into `mod_dir`.
-///
-/// # Errors
-///
-/// - [`Error::Serialize`] if it will not serialize
-/// - [`Error::Io`] on the write
-pub fn write_mod(mod_dir: &Path, metadata: &ModMetadata<'_>) -> Result<()> {
-    write_json(&mod_dir.join(MOD_JSON), metadata)
-}
+pub(crate) const DIR: &str = ".tpmt";
+const FORMATS: &str = "formats";
+const DIGESTS: &str = "digests.xxh128";
+const SOURCE_TOML: &str = "source.toml";
 
 /// `source.toml`: where the ISO this project came from was last seen, and
 /// the game id and revision it held, so a build can tell if it moved or now
@@ -141,30 +45,25 @@ impl Source {
     }
 }
 
-/// Writes `.tpmt/`, which is what makes `project` a project. The caller
-/// runs this last, once every other file is in place.
-///
-/// Stores the ISO path canonicalized so later commands can read files off
-/// the original disc without asking the user where it is again.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if `iso` cannot be canonicalized, or on any write
-/// - [`Error::UnusablePath`] if a path would not read back from a line of its own
-/// - [`Error::Serialize`] if a file will not serialize
-pub fn write_store(
-    project: &Path,
+/// What `.tpmt/` holds: the disc this project came from, and what every file
+/// the unpack wrote hashed to.
+pub struct Store {
+    pub source: Source,
+    pub digests: Digests,
+}
+
+pub(crate) fn write(
+    dir: &Path,
     iso: &Path,
     boot: &tpmt_disc::Boot,
     digests: &Digests,
     formats: &Formats,
 ) -> Result<()> {
     let iso = iso.canonicalize().map_err(io_at(iso))?;
-    let store = project.join(STORE_DIR);
-    write_digests(&store.join(DIGESTS), digests)?;
-    write_formats(&store.join(FORMATS), formats)?;
+    write_digests(&dir.join(DIGESTS), digests)?;
+    write_formats(&dir.join(FORMATS), formats)?;
     write_toml(
-        &store.join(SOURCE_TOML),
+        &dir.join(SOURCE_TOML),
         &Source {
             iso,
             id: boot.id.clone(),
@@ -173,24 +72,10 @@ pub fn write_store(
     )
 }
 
-/// What `.tpmt/` holds: the disc this project came from, and what every file
-/// the unpack wrote hashed to.
-pub struct Store {
-    pub source: Source,
-    pub digests: Digests,
-}
-
-/// Reads back what [`write_store`] wrote.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if either file is missing
-/// - [`Error::Parse`] if either is not what it was
-pub fn read_store(project: &Path) -> Result<Store> {
-    let store = project.join(STORE_DIR);
+pub(crate) fn read(dir: &Path) -> Result<Store> {
     Ok(Store {
-        source: read_toml(&store.join(SOURCE_TOML))?,
-        digests: read_digests(&store.join(DIGESTS))?,
+        source: read_toml(&dir.join(SOURCE_TOML))?,
+        digests: read_digests(&dir.join(DIGESTS))?,
     })
 }
 
@@ -263,16 +148,10 @@ fn write_formats(path: &Path, formats: &Formats) -> Result<()> {
     fs::write(path, text.as_bytes())
 }
 
-/// Reads back the `formats` [`write_store`] wrote. Apart from
-/// [`read_store`], since a lookup by kind has no use for 27,000 digests.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if it is missing
-/// - [`Error::Parse`] if it is not what it was, or names a
-///   kind this build doesn't know
-pub fn read_formats(project: &Path) -> Result<Formats> {
-    let path = project.join(STORE_DIR).join(FORMATS);
+/// Reads `formats` alone, since a lookup by kind has no use for 27,000
+/// digests.
+pub(crate) fn read_formats(dir: &Path) -> Result<Formats> {
+    let path = dir.join(FORMATS);
     let mut formats = Formats::new();
     let mut files = None;
     for line in read_text(&path)?.lines() {
@@ -315,8 +194,8 @@ pub fn digest(data: &[u8]) -> u128 {
     xxh3_128(data)
 }
 
-/// [`digest`] of a file, streamed rather than read whole. Status hashes
-/// every file in the project, videos included.
+/// [`digest`] of a file, streamed rather than read whole. A diff hashes
+/// every overlay file, videos included.
 ///
 /// # Errors
 ///
@@ -332,10 +211,6 @@ pub fn digest_file(path: &Path) -> Result<u128> {
 mod tests {
     use super::*;
 
-    fn formats_path(project: &Path) -> PathBuf {
-        project.join(STORE_DIR).join(FORMATS)
-    }
-
     #[test]
     fn formats_read_back_as_written() {
         let scratch = tempfile::tempdir().unwrap();
@@ -346,7 +221,7 @@ mod tests {
             ),
             (FileKind::Rarc, BTreeSet::from(["files/d.arc".to_string()])),
         ]);
-        write_formats(&formats_path(scratch.path()), &formats).unwrap();
+        write_formats(&scratch.path().join(FORMATS), &formats).unwrap();
 
         assert_eq!(read_formats(scratch.path()).unwrap(), formats);
     }

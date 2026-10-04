@@ -5,19 +5,18 @@
 //! as changes, so only the disc files holding them get rebuilt.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use rayon::prelude::*;
 use tpmt_archive::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_project::metadata::{Digests, digest};
-use tpmt_project::{diff, fs, layout};
+use tpmt_project::io::fs;
+use tpmt_project::store::{Digests, digest};
+use tpmt_project::{Comparison, Layer, Layers, Project};
 
 use crate::{Error, Result};
 
 /// The two layers a build reads, in the order it reads them.
 pub struct Tree {
-    base: PathBuf,
-    overlay: PathBuf,
+    layers: Layers,
     /// The vanilla digest of every file the unpack wrote, keyed by project path.
     digests: Digests,
     /// Every file under `mod/overlay/` that differs from vanilla, as sorted
@@ -36,25 +35,16 @@ impl Tree {
     ///
     /// - [`tpmt_project::Error::Io`] if the overlay cannot be walked or read
     /// - [`tpmt_project::Error::UnusablePath`] if a name in it is not UTF-8
-    pub fn open(project: &Path, digests: Digests) -> Result<(Self, Vec<String>)> {
-        let overlay = layout::overlay(project);
-        let overlaid = fs::files(&overlay)?;
-
-        let flagged = overlaid
-            .into_par_iter()
-            .map(|path| Ok((diff::file(&overlay, &path, &digests)?.is_none(), path)))
-            .collect::<Result<Vec<_>>>()?;
-        let (identical, edits): (Vec<_>, Vec<_>) = flagged.into_iter().partition(|(same, _)| *same);
-        let paths =
-            |flagged: Vec<(bool, String)>| flagged.into_iter().map(|(_, path)| path).collect();
+    pub fn open(project: &Project, digests: Digests) -> Result<(Self, Vec<String>)> {
+        let layers = project.layers();
+        let Comparison { changes, identical } = layers.compare(&digests)?;
 
         let tree = Self {
-            base: layout::base(project),
-            overlay,
+            layers,
             digests,
-            edits: paths(edits),
+            edits: changes.into_iter().map(|change| change.path).collect(),
         };
-        Ok((tree, paths(identical)))
+        Ok((tree, identical))
     }
 
     /// The disc files the overlay changed, each named once.
@@ -79,13 +69,8 @@ impl Tree {
     /// shipped it. A path the unpack never wrote fails the same way: either
     /// answer means `base/` is no longer the disc it came from.
     pub fn file(&self, path: &str) -> Result<Vec<u8>> {
-        if let Some(data) = fs::read_if_exists(&self.overlay.join(path))? {
-            return Ok(data);
-        }
-
-        let data = fs::read_if_exists(&self.base.join(path))?
-            .ok_or_else(|| tpmt_project::Error::MissingFile(path.to_string()))?;
-        if !is_vanilla(&self.digests, path, &data) {
+        let (layer, data) = self.layers.read(path)?;
+        if layer == Layer::Base && !is_vanilla(&self.digests, path, &data) {
             return Err(Error::BaseModified(path.to_string()));
         }
         Ok(data)
@@ -100,8 +85,7 @@ impl Tree {
     /// [`Sidecar::fresh`] would.
     #[must_use]
     pub fn is_archive(&self, path: &str) -> bool {
-        self.overlay.join(path).join(SIDECAR).is_file()
-            || self.base.join(path).join(SIDECAR).is_file()
+        self.layers.is_file(&fs::join(path, SIDECAR))
     }
 
     /// What an archive says about itself, the overlay's copy where there is

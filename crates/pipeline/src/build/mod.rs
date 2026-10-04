@@ -15,9 +15,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
-use tpmt_project::fs;
-use tpmt_project::layout::{self, Staging};
-use tpmt_project::metadata::{self, Source};
+use tpmt_project::Project;
+use tpmt_project::base::Base;
+use tpmt_project::io::{Staging, fs, refuse_unowned};
+use tpmt_project::store::{Source, Store};
 
 use crate::Result;
 use crate::progress::{Progress, Step};
@@ -44,12 +45,11 @@ pub struct Built {
 
 /// Everything a target is handed.
 pub struct Job<'a> {
-    /// The project root.
-    pub project: &'a Path,
+    pub project: &'a Project,
     /// Overlay over vanilla, which is where every byte comes from.
     pub tree: &'a Tree,
     /// What `base/` says about itself.
-    pub base: &'a metadata::Base,
+    pub base: &'a Base,
     /// The disc this project was unpacked from.
     pub source: &'a Source,
     /// The disc files the overlay changed, each to be rebuilt.
@@ -64,21 +64,21 @@ pub struct Job<'a> {
 /// every build. An `output` given instead can be anywhere, so it must be
 /// missing or empty rather than emptied.
 pub fn run(
-    project: &Path,
+    project: &Project,
     target: Target,
     output: Option<&Path>,
     progress: &Progress,
 ) -> Result<Built> {
     let out = match output {
         Some(output) => {
-            layout::refuse_unowned(output, &[])?;
+            refuse_unowned(output, &[])?;
             output.to_path_buf()
         }
-        None => layout::target_output(project, target.name()),
+        None => project.target_output(target.name()),
     };
 
-    let metadata::Store { source, digests } = metadata::read_store(project)?;
-    let base = metadata::read_base(&layout::base(project))?;
+    let Store { source, digests } = project.read_store()?;
+    let base = project.read_base()?;
     let (tree, unchanged) = Tree::open(project, digests)?;
     let changed = tree.changed();
 
@@ -133,7 +133,8 @@ mod tests {
     use tpmt_archive::editable::sidecar::{Member, Sidecar};
     use tpmt_disc::{Bi2, Boot, Metadata};
     use tpmt_project::FileKind;
-    use tpmt_project::metadata::digest;
+    use tpmt_project::base;
+    use tpmt_project::store::{Digests, Formats, digest};
 
     use super::*;
     use crate::Error;
@@ -141,7 +142,8 @@ mod tests {
 
     /// [`super::run`] with nobody watching its progress.
     fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {
-        super::run(project, target, output, &Progress::default())
+        let project = Project::discover(project)?;
+        super::run(&project, target, output, &Progress::default())
     }
 
     /// A `GZ2E` revision 0 disc.
@@ -177,8 +179,8 @@ mod tests {
     /// ```
     fn unpacked() -> TempDir {
         let scratch = tempfile::tempdir().unwrap();
-        let project = scratch.path();
-        let base = layout::base(project);
+        let project = Project::claim(scratch.path()).unwrap();
+        let base = project.base();
 
         let sidecar = Sidecar::new(
             "outer".to_string(),
@@ -208,13 +210,13 @@ mod tests {
             ),
         ];
 
-        let mut digests = metadata::Digests::new();
+        let mut digests = Digests::new();
         for (path, data) in &files {
             fs::write(&base.join(path), data).unwrap();
             digests.insert((*path).to_string(), digest(data));
         }
 
-        metadata::write_base(
+        base::write(
             &base,
             &metadata(),
             BTreeSet::from(["files/outer.arc".to_string()]),
@@ -223,22 +225,20 @@ mod tests {
 
         // Nothing in these tests opens the disc; `write_store` only wants a
         // path it can canonicalize.
-        let iso = project.join("source.iso");
+        let iso = scratch.path().join("source.iso");
         fs::write(&iso, b"").unwrap();
-        metadata::write_store(
-            project,
-            &iso,
-            &metadata().boot,
-            &digests,
-            &metadata::Formats::new(),
-        )
-        .unwrap();
+        project
+            .write_store(&iso, &metadata().boot, &digests, &Formats::new())
+            .unwrap();
 
         scratch
     }
 
     fn overlay(project: &Path, path: &str, data: &[u8]) {
-        fs::write(&layout::overlay(project).join(path), data).unwrap();
+        Project::discover(project)
+            .unwrap()
+            .write(path, data)
+            .unwrap();
     }
 
     /// Everything the built disc file explodes back into, which is what the
@@ -351,7 +351,10 @@ mod tests {
     fn an_edited_base_stops_the_build() {
         let scratch = unpacked();
         fs::write(
-            &layout::base(scratch.path()).join("files/outer.arc/wrapped.bin"),
+            &Project::discover(scratch.path())
+                .unwrap()
+                .base()
+                .join("files/outer.arc/wrapped.bin"),
             b"tampered",
         )
         .unwrap();
@@ -373,7 +376,10 @@ mod tests {
         let built = run(scratch.path(), Target::Patch, None).unwrap();
 
         fs::write(
-            &layout::base(scratch.path()).join("files/outer.arc/wrapped.bin"),
+            &Project::discover(scratch.path())
+                .unwrap()
+                .base()
+                .join("files/outer.arc/wrapped.bin"),
             b"tampered",
         )
         .unwrap();

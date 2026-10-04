@@ -101,7 +101,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
 /// - [`tpmt_project::Error::Io`] on any write
 pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(Project, Vec<Report>)> {
-    let reports = unpack::run(iso, project, progress)?;
+    let reports = unpack::run(iso, &Project::claim(project)?, progress)?;
     Ok((Project::discover(project)?, reports))
 }
 
@@ -129,5 +129,5 @@ pub fn build(
     output: Option<&Path>,
     progress: &Progress,
 ) -> Result<Built> {
-    build::run(project.root(), target, output, progress)
+    build::run(project, target, output, progress)
 }

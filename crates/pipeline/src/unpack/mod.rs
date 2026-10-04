@@ -6,8 +6,9 @@ use std::path::Path;
 
 use rayon::prelude::*;
 use tpmt_disc::{Disc, Entry};
-use tpmt_project::metadata::{self, Digests, Formats};
-use tpmt_project::{FileKind, fs, layout};
+use tpmt_project::io::{Staging, fs};
+use tpmt_project::store::{Digests, Formats, digest};
+use tpmt_project::{FileKind, Project, base};
 use tpmt_report::Report;
 
 use crate::Result;
@@ -17,11 +18,10 @@ pub mod explode;
 
 /// Unpacks a disc into `base/`, records the store under `.tpmt/`, and
 /// scaffolds a `mod/` folder. Returns the unpack's reports.
-pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<Vec<Report>> {
-    layout::refuse_foreign(project)?;
+pub fn run(iso: &Path, project: &Project, progress: &Progress) -> Result<Vec<Report>> {
     let disc = Disc::open(iso)?;
 
-    let staging = layout::Staging::begin(&layout::base(project))?;
+    let staging = Staging::begin(&project.base())?;
     let Unpacked {
         yaz0_compressed,
         digests,
@@ -30,12 +30,12 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<Vec<Report
     } = unpack_disc(&disc, staging.dir(), progress)?;
 
     progress.begin(Step::Save, 0);
-    metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
+    base::write(staging.dir(), disc.metadata(), yaz0_compressed)?;
     staging.promote()?;
 
-    metadata::write_store(project, iso, &disc.metadata().boot, &digests, &formats)?;
+    project.write_store(iso, &disc.metadata().boot, &digests, &formats)?;
 
-    layout::scaffold_mod(project)?;
+    project.scaffold_mod()?;
     Ok(reports)
 }
 
@@ -133,7 +133,7 @@ fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
             }
             let path = layer.path;
             fs::write(&base.join(path), layer.bytes)?;
-            digests.push((path.to_string(), metadata::digest(layer.bytes)));
+            digests.push((path.to_string(), digest(layer.bytes)));
             if let Some(kind) = layer.kind {
                 kinds.push((kind, path.to_string()));
             }

@@ -9,8 +9,8 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use tpmt_disc::{Disc, Entry, Item, Layout, Span};
-use tpmt_project::fs;
-use tpmt_project::metadata::Source;
+use tpmt_project::io::fs;
+use tpmt_project::store::Source;
 
 use crate::build::{Job, rebuild};
 use crate::progress::Step;
@@ -154,6 +154,7 @@ fn open(source: &Source) -> Result<Disc> {
 fn name(job: &Job) -> String {
     let stem = job
         .project
+        .root()
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(&job.base.metadata.boot.id);

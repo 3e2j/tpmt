@@ -11,22 +11,69 @@
 //! copy otherwise. [`Project::write`] puts new bytes in `mod/overlay/`. The
 //! caller hands the bytes to `tpmt-documents`, which decodes them.
 //!
-//! [`layout`], [`metadata`], [`fs`] and [`diff`] are public for the pipeline,
-//! which writes `base/` and `.tpmt/` and reads them back. A front end has no
-//! reason to reach past [`Project`].
+//! A project is two directories, edited in place:
 //!
-//! Project layout: see [`layout`].
+//! ```text
+//! base/         read-only unpack of the ISO, decoded index for the UI to browse
+//!   disc.toml   the preamble values a build cannot derive
+//!   yaz0.toml   which loose files arrived Yaz0 wrapped
+//!   sys/        apploader.img, main.dol
+//!   files/      game content, archives as directories
+//! mod/          the mod project; the only directory a modder edits
+//!   overlay/    whole-file / archive-member replacements, real paths
+//!   res/        authored user-made content
+//!     scripts/  Luau scripts, never parsed, copied into a build untouched
+//!   mod.json    mod metadata (id, name, version, author, description, icon, banner)
+//! build/
+//!   targets/
+//!     <target>/ what one build target produced, cleared and rewritten by it
+//! ```
+//!
+//! Every unpack rewrites `base/` whole ([`base`]). [`Project::scaffold_mod`]
+//! writes `mod/` once.
+//!
+//! Facts a decoded file can't carry, like a wrapper that came off it or
+//! which memory an archive member loads into, live in a sidecar next to it
+//! instead, one name per format:
+//!
+//! ```text
+//! *.arc/.tpmt-arc.toml   what an unpacked archive is, minus its bytes
+//! ```
+//!
+//! Everything generated about the project, rather than for it, lives in
+//! `.tpmt/` (see [`store`]). It goes in last, after everything else
+//! succeeded, so its presence means an unpack finished, which is what
+//! [`is_project`] tests.
+//!
+//! [`base`], [`store`] and [`io`] are public for the pipeline, which writes
+//! `base/` and `.tpmt/` and reads them back. A front end has no reason to
+//! reach past [`Project`].
+// # TODO
+// One disc per project FOR NOW.
+//
+// A modder may bring more than one region (GZ2E, GZ2P, GZ2J), in which case
+// the first unpacked (by the modder) is the primary copy and each other region's
+// files show only where their hash differs from the primary's file at the same path.
+// That needs `digests` and `source.toml` keyed per region; both hold
+// one disc today.
+// Nothing here decides which regions an edit applies to yet.
+//
+// A modder who edits `base/` directly should have those edits moved into
+// `mod/overlay/` automatically, and `base/` restored. Hashing all of `base/`
+// on every build is too slow, so record each file's size and mtime at unpack
+// and hash only the files whose size or mtime changed.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-pub mod diff;
-pub mod fs;
-pub mod layout;
-mod leaf;
-pub mod metadata;
+pub mod base;
+mod discover;
+pub mod io;
+mod layers;
+mod mod_dir;
+pub mod store;
 
-pub use layout::is_project;
+pub use discover::is_project;
+pub use layers::{Change, ChangeKind, Comparison, Layer, Layers};
 pub use tpmt_binary::FileKind;
 
 #[derive(Debug, thiserror::Error)]
@@ -67,21 +114,13 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// One file that differs from vanilla.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Change {
-    /// A project path, under `mod/overlay/`.
-    pub path: String,
-    pub kind: ChangeKind,
-}
+/// Build output, one directory per target under [`TARGETS_DIR`].
+const BUILD_DIR: &str = "build";
+const TARGETS_DIR: &str = "targets";
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum ChangeKind {
-    Added,
-    Modified,
-}
-
-/// A finished unpack, by its canonical root.
+/// A project directory. One from [`discover`](Self::discover) is a finished
+/// unpack, by its canonical root. One from [`claim`](Self::claim) is one an
+/// unpack is still writing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Project {
     root: PathBuf,
@@ -97,7 +136,26 @@ impl Project {
     /// - [`Error::NoProjectFound`] if nothing above `dir` is a project
     pub fn discover(dir: &Path) -> Result<Self> {
         Ok(Self {
-            root: layout::discover(dir)?,
+            root: discover::discover(dir)?,
+        })
+    }
+
+    /// Takes `root` for an unpack to write a project into, refusing it if it
+    /// is not a project but already holds files.
+    ///
+    /// A project passes whatever else it holds (notes, fixtures, `.git`), since
+    /// a re-unpack replaces only `base/`. An empty or missing directory passes,
+    /// as does one holding only names this crate writes, from an unpack that
+    /// failed part way.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ForeignDirectory`] if it holds anything else
+    /// - [`Error::Io`] if it cannot be listed
+    pub fn claim(root: &Path) -> Result<Self> {
+        discover::refuse_foreign(root)?;
+        Ok(Self {
+            root: root.to_path_buf(),
         })
     }
 
@@ -109,7 +167,32 @@ impl Project {
     /// The read-only unpack of the disc.
     #[must_use]
     pub fn base(&self) -> PathBuf {
-        layout::base(&self.root)
+        self.root.join(base::DIR)
+    }
+
+    /// The modder's whole-file and archive-member replacements, addressed by
+    /// the same project paths [`base`](Self::base) holds.
+    #[must_use]
+    pub fn overlay(&self) -> PathBuf {
+        mod_dir::overlay(&self.root.join(mod_dir::DIR))
+    }
+
+    /// `mod/overlay/` over `base/`, the way a build reads them.
+    #[must_use]
+    pub fn layers(&self) -> Layers {
+        Layers::new(self.base(), self.overlay())
+    }
+
+    /// Where one build target writes what it produced. A target owns its
+    /// directory outright and clears it on every build, so two targets never
+    /// read each other's leftovers.
+    #[must_use]
+    pub fn target_output(&self, target: &str) -> PathBuf {
+        self.root.join(BUILD_DIR).join(TARGETS_DIR).join(target)
+    }
+
+    fn store(&self) -> PathBuf {
+        self.root.join(store::DIR)
     }
 
     /// Every file the unpack recognised a leaf format in, by project path
@@ -122,9 +205,10 @@ impl Project {
     /// # Errors
     ///
     /// - [`Error::Io`] if `.tpmt/formats` is missing
-    /// - [`Error::Parse`] if it is not what an unpack wrote
-    pub fn formats(&self) -> Result<BTreeMap<FileKind, BTreeSet<String>>> {
-        metadata::read_formats(&self.root)
+    /// - [`Error::Parse`] if it is not what an unpack wrote, or names a kind
+    ///   this build doesn't know
+    pub fn formats(&self) -> Result<store::Formats> {
+        store::read_formats(&self.store())
     }
 
     /// Who the unpacked disc says it is, from `base/disc.toml`. Its game id
@@ -135,7 +219,65 @@ impl Project {
     /// - [`Error::Io`] if `base/disc.toml` is missing
     /// - [`Error::Parse`] if it is not what an unpack wrote
     pub fn boot(&self) -> Result<tpmt_disc::Boot> {
-        metadata::read_boot(&self.base())
+        base::read_boot(&self.base())
+    }
+
+    /// Everything `base/` says about itself.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] if `disc.toml` or `yaz0.toml` is missing
+    /// - [`Error::Parse`] if either is not what an unpack wrote
+    pub fn read_base(&self) -> Result<base::Base> {
+        base::read(&self.base())
+    }
+
+    /// The source disc and vanilla digests from `.tpmt/`.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] if `source.toml` or `digests` is missing
+    /// - [`Error::Parse`] if either is not what an unpack wrote
+    pub fn read_store(&self) -> Result<store::Store> {
+        store::read(&self.store())
+    }
+
+    /// Writes `.tpmt/`, which is what makes this a project. The caller
+    /// runs this last, once every other file is in place.
+    ///
+    /// Stores the ISO path canonicalized so later commands can read files off
+    /// the original disc without asking the user where it is again.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] if `iso` cannot be canonicalized, or on any write
+    /// - [`Error::UnusablePath`] if a path would not read back from a line of its own
+    /// - [`Error::Serialize`] if a file will not serialize
+    pub fn write_store(
+        &self,
+        iso: &Path,
+        boot: &tpmt_disc::Boot,
+        digests: &store::Digests,
+        formats: &store::Formats,
+    ) -> Result<()> {
+        store::write(&self.store(), iso, boot, digests, formats)
+    }
+
+    /// Writes the `mod/` skeleton (`overlay/`, `res/scripts/`, a starter
+    /// `mod.json`) alongside `base/`. Skips an existing `mod/`, so re-unpacking
+    /// a project never clobbers a modder's edits.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`] if any of it cannot be written
+    /// - [`Error::Serialize`] if `mod.json` will not serialize
+    pub fn scaffold_mod(&self) -> Result<()> {
+        let id = self
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("mod");
+        mod_dir::scaffold(&self.root.join(mod_dir::DIR), id)
     }
 
     /// One project file's bytes, from `mod/overlay/` when it holds `path` and
@@ -152,7 +294,7 @@ impl Project {
     /// - [`Error::MissingFile`] if neither layer holds a file at `path`
     /// - [`Error::Io`] if the file can't be read
     pub fn read(&self, path: &str) -> Result<Vec<u8>> {
-        leaf::read(&self.root, path)
+        Ok(self.layers().read(path)?.1)
     }
 
     /// Writes `data` to `path` under `mod/overlay/`, creating any missing
@@ -163,7 +305,7 @@ impl Project {
     /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
     /// - [`Error::Io`] on the write
     pub fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        leaf::write(&self.root, path, data)
+        self.layers().write(path, data)
     }
 
     /// Hashes `mod/overlay/` against the vanilla digests taken at unpack,
@@ -178,6 +320,7 @@ impl Project {
     /// - [`Error::Io`] if a project file cannot be walked or read
     /// - [`Error::UnusablePath`] if a name in the project is not UTF-8
     pub fn diff(&self) -> Result<Vec<Change>> {
-        diff::run(&self.root)
+        let store::Store { digests, .. } = self.read_store()?;
+        Ok(self.layers().compare(&digests)?.changes)
     }
 }
