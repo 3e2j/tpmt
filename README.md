@@ -31,6 +31,7 @@ The GameCube USA, PAL and JPN discs, as `.iso` or `.ciso`. Wii discs aren't supp
 - **Containers**
   - [x] RARC archives (`.arc`)
   - [x] Yaz0 compression
+  - [x] Yay0 compression (optional)
 - **Text**
   - [ ] BMG messages and dialogue flow (W.I.P)
 - **Models**
