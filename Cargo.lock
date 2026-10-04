@@ -528,7 +528,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "thiserror",
- "tpmt-pipeline",
  "tpmt-project",
  "tpmt-report",
 ]
@@ -593,13 +592,11 @@ name = "tpmt-pipeline"
 version = "0.1.0"
 dependencies = [
  "rayon",
- "tempfile",
  "thiserror",
  "tpmt-archive",
  "tpmt-binary",
  "tpmt-compression",
  "tpmt-disc",
- "tpmt-project",
  "tpmt-report",
 ]
 
@@ -613,8 +610,11 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "tpmt-archive",
  "tpmt-binary",
  "tpmt-disc",
+ "tpmt-pipeline",
+ "tpmt-report",
  "xxhash-rust",
 ]
 

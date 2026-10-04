@@ -1,7 +1,6 @@
 //! CLI frontend for the Twilight Princess Modding Toolkit.
 //!
-//! Reads an invocation and hands it to the pipeline or the project to deal
-//! with.
+//! Reads an invocation and hands it to the project to deal with.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -9,8 +8,7 @@ use std::process::ExitCode;
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
-use tpmt_pipeline::{Built, Target};
-use tpmt_project::{Change, ChangeKind, Project};
+use tpmt_project::{Built, Change, ChangeKind, Project, Target};
 
 mod progress;
 
@@ -58,7 +56,7 @@ enum Command {
     },
 }
 
-/// Offers exactly the pipeline's targets, so a new one needs nothing here.
+/// Offers exactly the build targets, so a new one needs nothing here.
 fn target_parser() -> impl TypedValueParser<Value = Target> {
     PossibleValuesParser::new(Target::ALL.map(Target::name))
         .try_map(|name| Target::from_name(&name).ok_or("not a build target"))
@@ -74,7 +72,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Matches the command given and runs the pipeline.
+/// Matches the command given and runs it on the project.
 fn run(command: Command) -> Result<(), Error> {
     match command {
         Command::New { iso, dir, yes } => {
@@ -99,7 +97,7 @@ fn run(command: Command) -> Result<(), Error> {
                 }
             }
 
-            progress::show(|progress| tpmt_pipeline::unpack(&iso, &project, progress))?;
+            progress::show(|progress| Project::unpack(&iso, &project, progress))?;
             println!("unpacked {} into {}", iso.display(), project.display());
         }
         Command::Status { dir } => {
@@ -112,9 +110,8 @@ fn run(command: Command) -> Result<(), Error> {
             output,
         } => {
             let project = project(dir.as_ref())?;
-            let built = progress::show(|progress| {
-                tpmt_pipeline::build(&project, target, output.as_deref(), progress)
-            })?;
+            let built =
+                progress::show(|progress| project.build(target, output.as_deref(), progress))?;
             print_built(&built);
         }
     }
@@ -180,9 +177,6 @@ fn ask(prompt: &str) -> Result<bool, Error> {
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
-    #[error(transparent)]
-    Pipeline(#[from] tpmt_pipeline::Error),
-
     #[error(transparent)]
     Project(#[from] tpmt_project::Error),
 

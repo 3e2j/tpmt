@@ -3,16 +3,19 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::Result;
-use crate::build::{Job, rebuild};
+use crate::Error;
+use crate::build::{Context, rebuild};
 
 /// Writes the changed disc files into `out`, which is itself the result, so
 /// the path returned is empty.
 ///
 /// # Errors
 ///
-/// Whatever assembling one of them hit. See [`crate::build::run`].
-pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
-    rebuild(job, out)?;
+/// Whatever assembling one of them hit. See [`crate::build`].
+pub fn write<E>(context: &Context<'_, E>, out: &Path) -> Result<PathBuf, E>
+where
+    E: From<Error> + Send,
+{
+    rebuild(context, out)?;
     Ok(PathBuf::new())
 }

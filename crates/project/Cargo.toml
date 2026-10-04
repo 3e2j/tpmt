@@ -10,6 +10,8 @@ license.workspace = true
 # `disc.toml` and `source.toml` record the disc's own header types.
 tpmt-disc.workspace = true
 tpmt-binary.workspace = true
+tpmt-pipeline.workspace = true
+tpmt-report.workspace = true
 
 thiserror.workspace = true
 rayon.workspace = true
@@ -19,6 +21,7 @@ serde_json.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+tpmt-archive.workspace = true
 tempfile.workspace = true
 
 [lints]

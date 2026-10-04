@@ -4,17 +4,14 @@
 //! files swapped in.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use tpmt_disc::{Disc, Entry, Item, Layout, Span};
-use tpmt_project::io::fs;
-use tpmt_project::store::Source;
-
-use crate::build::{Job, rebuild};
-use crate::{Error, Result};
 use tpmt_report::Step;
+
+use crate::build::{Context, Job, Source, rebuild};
+use crate::{Error, Result, fs};
 
 /// Where rebuilt disc files wait while the image is laid out around them.
 /// Cleared again once the image is written, since the patch target is where
@@ -29,20 +26,34 @@ const STAGING: &str = ".rebuilt";
 /// - [`Error::SourceMissing`] if the disc this project came from has moved
 /// - [`Error::SourceChanged`] if it now holds another game or revision
 /// - [`Error::Disc`] if the image will not lay out or will not write
-/// - whatever assembling a changed file hit. See [`crate::build::run`]
-pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
-    let disc = open(job.source)?;
+/// - whatever assembling a changed file hit. See [`crate::build`]
+pub fn write<E>(context: &Context<'_, E>, out: &Path) -> Result<PathBuf, E>
+where
+    E: From<Error> + Send,
+{
+    let job = context.job;
+    let disc = open(&job.source)?;
     let staged = out.join(STAGING);
-    rebuild(job, &staged)?;
+    rebuild(context, &staged)?;
+    Ok(lay_out(job, &disc, &staged, &context.changed, out)?)
+}
 
+/// Writes the image around the rebuilt files under `staged`, then clears
+/// them.
+fn lay_out<E>(
+    job: &Job<'_, E>,
+    disc: &Disc,
+    staged: &Path,
+    changed: &BTreeSet<String>,
+    out: &Path,
+) -> Result<PathBuf> {
     let original = disc.entries()?;
-    let sources = sources(&original, &staged, job.changed)?;
-    let layout = Layout::plan(&job.base.metadata, &items(&original, &sources))?;
+    let sources = sources(&original, staged, changed)?;
+    let layout = Layout::plan(job.metadata, &items(&original, &sources))?;
 
-    let name = name(job);
+    let name = format!("{}.iso", job.name);
     let path = out.join(&name);
-    let file = File::create(&path).map_err(tpmt_project::Error::io(&path))?;
-    let mut image = layout.write(BufWriter::new(file));
+    let mut image = layout.write(BufWriter::new(fs::create(&path)?));
 
     let writing = job
         .progress
@@ -54,7 +65,7 @@ pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
         };
 
         let Some(source) = sources.get(at.as_str()) else {
-            return Err(tpmt_project::Error::MissingFile(at.clone()).into());
+            return Err(Error::Unsourced(at.clone()));
         };
         let bytes = match source {
             Bytes::Disc(span) => disc.read(*span)?,
@@ -65,7 +76,7 @@ pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
     }
     image.finish()?;
 
-    fs::remove_dir_all_if_exists(&staged)?;
+    fs::remove_dir_all_if_exists(staged)?;
     Ok(PathBuf::from(name))
 }
 
@@ -128,35 +139,23 @@ fn items(original: &[Entry], sources: &BTreeMap<&str, Bytes>) -> Vec<Item> {
 ///
 /// Another dump of the same revision passes, since its unchanged files are
 /// the same bytes. A disc edited in place under the same id passes too.
-fn open(source: &Source) -> Result<Disc> {
-    let disc = match Disc::open(&source.iso) {
+fn open(source: &Source<'_>) -> Result<Disc> {
+    let disc = match Disc::open(source.iso) {
         Ok(disc) => disc,
         Err(tpmt_disc::Error::Open { source: io, .. })
             if io.kind() == std::io::ErrorKind::NotFound =>
         {
-            return Err(Error::SourceMissing(source.iso.clone()));
+            return Err(Error::SourceMissing(source.iso.to_path_buf()));
         }
         Err(error) => return Err(error.into()),
     };
     let boot = &disc.metadata().boot;
     if !source.matches(boot) {
         return Err(Error::SourceChanged {
-            iso: source.iso.clone(),
+            iso: source.iso.to_path_buf(),
             unpacked: format!("{} revision {}", source.id, source.revision),
             found: format!("{} revision {}", boot.id, boot.revision),
         });
     }
     Ok(disc)
-}
-
-/// What the image is called: the project's own name, or failing that the game
-/// the disc says it is.
-fn name(job: &Job) -> String {
-    let stem = job
-        .project
-        .root()
-        .file_name()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap_or(&job.base.metadata.boot.id);
-    format!("{stem}.iso")
 }

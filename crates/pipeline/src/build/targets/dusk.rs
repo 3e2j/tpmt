@@ -10,8 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::build::{Job, Target};
-use crate::{Error, Result};
+use crate::Error;
+use crate::build::{Context, Target};
 
 // TODO: an option to export through Dusklight's services instead of overlay
 // files: `MessageService` for messages, `FlowService` for flows, and others
@@ -22,7 +22,7 @@ use crate::{Error, Result};
 
 /// # Errors
 ///
-/// Always [`Error::Unsupported`], until there is something here.
-pub const fn write(_job: &Job, _out: &Path) -> Result<PathBuf> {
-    Err(Error::Unsupported(Target::Dusk))
+/// [`Error::Unsupported`] until there is something here.
+pub fn write<E: From<Error>>(_context: &Context<'_, E>, _out: &Path) -> Result<PathBuf, E> {
+    Err(Error::Unsupported(Target::Dusk).into())
 }

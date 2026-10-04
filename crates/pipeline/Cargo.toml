@@ -1,6 +1,6 @@
 [package]
 name = "tpmt-pipeline"
-description = "Unpacking a disc into a project and building it back."
+description = "Taking a disc apart into files, and putting changed files back into a disc."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -14,14 +14,10 @@ tpmt-archive.workspace = true
 tpmt-compression.workspace = true
 tpmt-disc.workspace = true
 tpmt-binary.workspace = true
-tpmt-project.workspace = true
 tpmt-report.workspace = true
 
 thiserror.workspace = true
 rayon.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

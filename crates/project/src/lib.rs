@@ -1,15 +1,9 @@
-//! A project folder: where everything in it lives, what tpmt records in it,
-//! and its files in and out. A front end goes through a [`Project`], found
-//! with [`Project::discover`].
+//! Everything a frontend does with a project: unpack a disc into one, read
+//! and write its files, and build it.
 //!
-//! Nothing here touches packaging. Making a project from a disc and building
-//! it back is `tpmt-pipeline`'s job.
-//!
-//! A caller edits a leaf through three calls, none of which decode it.
-//! [`Project::formats`] lists every leaf by kind. [`Project::read`] returns
-//! one leaf's bytes, the `mod/overlay/` copy when there is one and the `base/`
-//! copy otherwise. [`Project::write`] puts new bytes in `mod/overlay/`. The
-//! caller hands the bytes to `tpmt-documents`, which decodes them.
+//! This crate knows the project folder: where things live and what tpmt records.
+//! It doesn't know what's inside a file. `tpmt-pipeline` takes the disc
+//! apart and puts it back, and the format crates decode files.
 //!
 //! A project is two directories, edited in place:
 //!
@@ -45,9 +39,6 @@
 //! succeeded, so its presence means an unpack finished, which is what
 //! [`is_project`] tests.
 //!
-//! [`base`], [`store`] and [`io`] are public for the pipeline, which writes
-//! `base/` and `.tpmt/` and reads them back. A front end has no reason to
-//! reach past [`Project`].
 // # TODO
 // One disc per project FOR NOW.
 //
@@ -66,16 +57,20 @@
 use std::path::{Path, PathBuf};
 
 pub mod base;
+mod build;
 mod discover;
 pub mod io;
 mod layers;
 mod mod_dir;
 pub mod path;
 pub mod store;
+mod unpack;
 
+pub use build::Built;
 pub use discover::is_project;
 pub use layers::{Change, ChangeKind, Comparison, Layer, Layers};
 pub use tpmt_binary::FileKind;
+pub use tpmt_pipeline::Target;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -111,6 +106,14 @@ pub enum Error {
 
     #[error("nothing in `base/` or `mod/overlay/` holds `{0}`")]
     MissingFile(String),
+
+    /// A vanilla file is no longer what the unpack recorded, so a build off
+    /// it would pack somebody's edit as though the disc had shipped it.
+    #[error("`{0}` in `base/` is not what was unpacked; re-unpack the disc, or put it back")]
+    BaseModified(String),
+
+    #[error(transparent)]
+    Pipeline(#[from] tpmt_pipeline::Error),
 }
 
 impl Error {

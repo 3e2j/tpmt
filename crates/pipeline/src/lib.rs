@@ -1,17 +1,15 @@
-//! Unpacking a disc into a project folder, and building it back. The
-//! project itself, and every file in it, is `tpmt-project`'s.
-//!
-//! This crate works on the whole disc at once, so it only touches packaging.
-//! Working with a single unpacked file (a payload), is `tpmt-project`'s job.
+//! Taking a disc apart into files, and putting changed files back into a
+//! disc. Which folder those files live in is `tpmt-project`'s, and this
+//! crate never names one: [`unpack`] hands each file to the caller to store,
+//! and [`build`] reads them back through [`Files`].
 //!
 //! Unpack and build only handle containers: compression and archives.
 //! A leaf format (BMG, ...) passes through both as raw bytes. Unpack sniffs
-//! each file's magic to record its kind in `.tpmt/formats`, but never
-//! decodes it.
+//! each file's magic to say what it is, but never decodes it.
 //!
-//! This crate owns what it takes to get from a disc to a project and back:
-//! the disc image, archives, compression, and anything that spans files, like
-//! cross-references. A leaf's own layout belongs to its format crate.
+//! This crate owns what it takes to get from a disc to files and back (packaging):
+//! the disc image, archives, compression, anything that wraps a leaf (payload).
+//! A leaf's own layout belongs to its format crate.
 
 // TODO: a mod has no way to say a file was deleted, only which ones it
 // replaces or adds. Only matters outside an archive, since a deleted member
@@ -28,21 +26,23 @@
 
 use std::path::{Path, PathBuf};
 
-use tpmt_project::Project;
-use tpmt_project::io::{Staging, fs};
-use tpmt_project::store::{Digests, Formats, digest};
-use tpmt_report::{Progress, Step};
+use tpmt_report::Progress;
 
 mod build;
+mod fs;
 mod unpack;
 
-pub use build::{Built, EncodeError, Target};
+pub use build::{Built, EncodeError, Files, Job, Source, Target};
 pub use unpack::explode::{DecodeError, Layer, file as explode};
+pub use unpack::{Leaf, Unpacked};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error(transparent)]
-    Project(#[from] tpmt_project::Error),
+    #[error("`{}`: {source}", .path.display())]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 
     #[error(transparent)]
     Disc(#[from] tpmt_disc::Error),
@@ -56,10 +56,17 @@ pub enum Error {
     #[error("`{path}`: {source}")]
     Encode { path: String, source: EncodeError },
 
-    /// A vanilla file is no longer what the unpack recorded, so a build off
-    /// it would pack somebody's edit as though the disc had shipped it.
-    #[error("`{0}` in `base/` is not what was unpacked; re-unpack the disc, or put it back")]
-    BaseModified(String),
+    /// An archive's sidecar would not read back as one.
+    #[error("could not read `{path}`: {source}")]
+    Sidecar {
+        path: String,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// The image's layout lists a file that neither the source disc nor the
+    /// rebuild supplies.
+    #[error("nothing supplies `{0}` for the image")]
+    Unsourced(String),
 
     #[error("the disc this project was unpacked from is no longer at `{}`", .0.display())]
     SourceMissing(PathBuf),
@@ -79,81 +86,48 @@ pub enum Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Walks the disc, peels off compression, opens archives, and hands each
-/// file to whichever format crate can decode it, writing the result out as
-/// `base/`. Returns the project it made.
+/// Walks the disc, peels off compression, opens archives, and calls `store`
+/// with every file that comes out (see [`Leaf`]).
 ///
-/// Also scaffolds an empty `mod/` next to it.
+/// Reads the disc once, front to back. Reports [`tpmt_report::Step::Unpack`]
+/// across the whole image through `progress`. Each file's reports go to
+/// `progress` as soon as that file is walked.
 ///
-/// `project` may be an existing project. In that case the unpack replaces
-/// only `base/` and leaves `mod/` alone. It commits only once every file is
-/// written, so a failure part way through leaves no half-made project.
-///
-/// Reads the disc once, front to back. Reports [`Step::Unpack`] across the
-/// whole image, then [`Step::Save`], through `progress`. Each file's reports
-/// go to `progress` as soon as that file is unpacked.
+/// `store` runs on several threads at once, one disc file per thread.
 ///
 /// # Errors
 ///
-/// - [`tpmt_project::Error::ForeignDirectory`] if `project` holds something
-///   else
 /// - [`Error::Disc`] if the ISO can't be opened or read
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
-/// - [`tpmt_project::Error::Io`] on any write
-pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<Project> {
-    // TODO: moves into `tpmt-project` once build stops depending on it.
-    let claimed = Project::claim(project)?;
-    let staging = Staging::begin(&claimed.base())?;
-    let base = staging.dir();
-    let unpacked = unpack::run(iso, progress, |leaf| -> Result<_> {
-        fs::write(&base.join(leaf.path), leaf.bytes)?;
-        Ok((leaf.path.to_string(), digest(leaf.bytes), leaf.kind))
-    })?;
-    for dir in &unpacked.directories {
-        fs::create_dir_all(&base.join(dir))?;
-    }
-
-    progress.begin(Step::Save, 0);
-    tpmt_project::base::write(base, &unpacked.metadata, unpacked.yaz0_compressed)?;
-    staging.promote()?;
-
-    let mut digests = Digests::new();
-    let mut formats = Formats::new();
-    for (path, digest, kind) in unpacked.stored {
-        if let Some(kind) = kind {
-            formats.entry(kind).or_default().insert(path.clone());
-        }
-        digests.insert(path, digest);
-    }
-    claimed.write_store(iso, &unpacked.metadata.boot, &digests, &formats)?;
-    claimed.scaffold_mod()?;
-
-    Project::discover(project).map_err(Error::from)
+/// - whatever `store` returns
+pub fn unpack<T, E>(
+    iso: &Path,
+    progress: &Progress,
+    store: impl Fn(Leaf<'_>) -> Result<T, E> + Sync,
+) -> Result<Unpacked<T>, E>
+where
+    T: Send,
+    E: From<Error> + Send,
+{
+    unpack::run(iso, progress, store)
 }
 
-/// Re-encodes whatever `mod/overlay/` changed and hands it to `target`,
-/// which decides what to do with it: a tree of the changed disc files, a
-/// whole disc image, or a mod bundle.
+/// Rebuilds every disc file [`Job::edits`] touches and hands them to
+/// `target`, which writes what it makes into `out`: a tree of the changed
+/// disc files, a whole disc image, or a mod bundle.
 ///
-/// `output` stands in for the directory the target would otherwise own
-/// under `build/targets/`, and must be missing or empty.
-///
-/// Reports [`Step::Rebuild`] through `progress`, and for an image
-/// [`Step::WriteImage`] as well.
+/// Reports [`tpmt_report::Step::Rebuild`] through the job's progress, and for
+/// an image [`tpmt_report::Step::WriteImage`] as well.
 ///
 /// # Errors
 ///
-/// - [`tpmt_project::Error::ForeignDirectory`] if `output` is not empty
-/// - [`Error::Project`] if the project's own files cannot be read
-/// - [`Error::BaseModified`] if `base/` no longer matches the disc it came
-///   from
 /// - [`Error::Encode`] if a rebuilt file does not fit its format
+/// - [`Error::Sidecar`] if an archive's sidecar won't read
+/// - whatever reading a file through [`Job::files`] returns
 /// - whatever else the target needs, which for an image is the source disc
-pub fn build(
-    project: &Project,
-    target: Target,
-    output: Option<&Path>,
-    progress: &Progress,
-) -> Result<Built> {
-    build::run(project, target, output, progress)
+pub fn build<E>(target: Target, job: &Job<'_, E>, out: &Path) -> Result<Built, E>
+where
+    E: From<Error> + Send,
+{
+    build::run(target, job, out)
 }

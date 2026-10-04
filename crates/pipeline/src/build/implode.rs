@@ -37,17 +37,27 @@ pub enum EncodeError {
 ///
 /// # Errors
 ///
-/// - [`tpmt_project::Error::MissingFile`] if something the archive holds is in neither layer
-/// - [`Error::BaseModified`] if a vanilla file no longer hashes to what it did
+/// - whatever reading a file the archive holds returns
+/// - [`Error::Sidecar`] if an archive's sidecar won't read
 /// - [`Error::Encode`] if what came out does not fit the format
-pub fn disc_file(tree: &Tree, path: &str, wrapped: bool) -> Result<Vec<u8>> {
+pub fn disc_file<E>(tree: &Tree<'_, E>, path: &str, wrapped: bool) -> Result<Vec<u8>, E>
+where
+    E: From<Error> + Send,
+{
     let bare = node(tree, path)?;
-    if wrapped { wrap(path, &bare) } else { Ok(bare) }
+    if wrapped {
+        Ok(wrap(path, &bare)?)
+    } else {
+        Ok(bare)
+    }
 }
 
 /// One project path's final bytes, minus whatever wrapper its container puts
 /// back on it.
-fn node(tree: &Tree, path: &str) -> Result<Vec<u8>> {
+fn node<E>(tree: &Tree<'_, E>, path: &str) -> Result<Vec<u8>, E>
+where
+    E: From<Error> + Send,
+{
     if tree.is_archive(path) {
         archive(tree, path)
     } else {
@@ -56,7 +66,10 @@ fn node(tree: &Tree, path: &str) -> Result<Vec<u8>> {
 }
 
 /// Every member assembled, then the archive around them.
-fn archive(tree: &Tree, path: &str) -> Result<Vec<u8>> {
+fn archive<E>(tree: &Tree<'_, E>, path: &str) -> Result<Vec<u8>, E>
+where
+    E: From<Error> + Send,
+{
     let sidecar = tree.sidecar(path)?;
     let members = tree.members(path, &sidecar);
 
@@ -69,12 +82,12 @@ fn archive(tree: &Tree, path: &str) -> Result<Vec<u8>> {
             let inner = format!("{path}/{}", member.path);
             let assembled = node(tree, &inner)?;
             if member.yaz0_compressed {
-                wrap(&inner, &assembled)
+                Ok(wrap(&inner, &assembled)?)
             } else {
                 Ok(assembled)
             }
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, E>>()?;
 
     // TODO: the linker goes here, where every member's bytes exist, the member
     // list is fixed, and the archive has not been encoded yet. Lands with its first user (`.stb`), as
@@ -99,13 +112,14 @@ fn archive(tree: &Tree, path: &str) -> Result<Vec<u8>> {
         .collect();
 
     let Sidecar { root, .. } = sidecar;
-    Archive {
+    let encoded = Archive {
         root,
         files,
         next_free_id: None,
     }
     .encode()
-    .map_err(at(path))
+    .map_err(at(path))?;
+    Ok(encoded)
 }
 
 fn wrap(path: &str, data: &[u8]) -> Result<Vec<u8>> {
