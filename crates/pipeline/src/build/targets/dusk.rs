@@ -20,6 +20,10 @@ use crate::build::{Context, Target};
 // writing only what each one does. Worth revisiting once those services
 // mature.
 
+// TODO: warn on game code in the overlay: `.dol`, `.rel`, `.str` and `.map`.
+// Dusklight compiles the game in and never loads these, so replaced code
+// won't run. Point the modder at hooks instead.
+
 /// # Errors
 ///
 /// [`Error::Unsupported`] until there is something here.
