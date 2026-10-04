@@ -14,8 +14,12 @@ use tpmt_pipeline::{Files, Job, Source, Target};
 use tpmt_report::Progress;
 
 use crate::io::{Staging, refuse_unowned};
-use crate::store::{Digests, Store, digest};
+use crate::layout::store::{Digests, Store, digest};
 use crate::{Comparison, Error, Layer, Layers, Project, Result};
+
+/// Build output, one directory per target under [`TARGETS_DIR`].
+pub const DIR: &str = "build";
+pub const TARGETS_DIR: &str = "targets";
 
 /// What a build produced.
 #[derive(Debug)]
@@ -144,9 +148,10 @@ mod tests {
     use tpmt_disc::{Bi2, Boot, Metadata};
 
     use super::*;
+    use crate::FileKind;
     use crate::io::fs;
-    use crate::store::Formats;
-    use crate::{FileKind, base};
+    use crate::layout::base;
+    use crate::layout::store::Formats;
 
     /// [`Project::build`] with nobody watching its progress.
     fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {

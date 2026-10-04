@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::io::fs;
+use crate::layout::store::{Digests, digest_file};
 use crate::path::{checked, files};
-use crate::store::{Digests, digest_file};
 use crate::{Error, Result};
 
 /// One file that differs from vanilla.
@@ -129,7 +129,7 @@ fn change(file: &Path, path: &str, digests: &Digests) -> Result<Option<ChangeKin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::digest;
+    use crate::layout::store::digest;
     use tempfile::TempDir;
 
     const PATH: &str = "files/res/a.arc/m.bmg";

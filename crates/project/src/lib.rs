@@ -55,20 +55,20 @@
 
 use std::path::{Path, PathBuf};
 
-mod base;
+use layout::{base, modding, store};
+
 mod build;
 mod discover;
 mod io;
 mod layers;
-mod mod_dir;
+mod layout;
 mod path;
-mod store;
 mod unpack;
 
 pub use build::Built;
 pub use discover::is_project;
 pub use layers::{Change, ChangeKind, Comparison, Layer, Layers};
-pub use store::Formats;
+pub use layout::store::Formats;
 pub use tpmt_binary::FileKind;
 pub use tpmt_pipeline::Target;
 
@@ -140,10 +140,6 @@ impl Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Build output, one directory per target under [`TARGETS_DIR`].
-const BUILD_DIR: &str = "build";
-const TARGETS_DIR: &str = "targets";
-
 /// A project directory. One from [`discover`](Self::discover) is a finished
 /// unpack, by its canonical root. Inside [`unpack`](Self::unpack), it is one
 /// still being written.
@@ -200,7 +196,7 @@ impl Project {
     /// the same project paths [`base`](Self::base) holds.
     #[must_use]
     pub fn overlay(&self) -> PathBuf {
-        mod_dir::overlay(&self.root.join(mod_dir::DIR))
+        modding::overlay(&self.root.join(modding::DIR))
     }
 
     /// `mod/overlay/` over `base/`, the way a build reads them.
@@ -214,7 +210,10 @@ impl Project {
     /// read each other's leftovers.
     #[must_use]
     pub fn target_output(&self, target: &str) -> PathBuf {
-        self.root.join(BUILD_DIR).join(TARGETS_DIR).join(target)
+        self.root
+            .join(build::DIR)
+            .join(build::TARGETS_DIR)
+            .join(target)
     }
 
     fn store(&self) -> PathBuf {
@@ -303,7 +302,7 @@ impl Project {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("mod");
-        mod_dir::scaffold(&self.root.join(mod_dir::DIR), id)
+        modding::scaffold(&self.root.join(modding::DIR), id)
     }
 
     /// One project file's bytes, from `mod/overlay/` when it holds `path` and

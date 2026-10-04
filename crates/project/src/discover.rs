@@ -4,12 +4,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::io::refuse_unowned;
-use crate::{BUILD_DIR, Error, Result, base, mod_dir, store};
+use crate::layout::{base, modding, store};
+use crate::{Error, Result, build};
 
 /// Every top-level name this crate writes. A directory holding nothing but
 /// these and their [`Staging`](crate::io::Staging) copies is ours, however
 /// far an unpack got before it failed.
-const OWNED: [&str; 4] = [base::DIR, mod_dir::DIR, BUILD_DIR, store::DIR];
+const OWNED: [&str; 4] = [base::DIR, modding::DIR, build::DIR, store::DIR];
 
 /// Whether `dir` is a finished unpack: it has the `.tpmt/` that an unpack
 /// writes last, once everything else is in place.
@@ -127,7 +128,7 @@ mod tests {
             b"",
         )
         .unwrap();
-        fs::create_dir_all(scratch.path().join(mod_dir::DIR)).unwrap();
+        fs::create_dir_all(scratch.path().join(modding::DIR)).unwrap();
 
         refuse_foreign(scratch.path()).unwrap();
     }

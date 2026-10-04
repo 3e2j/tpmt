@@ -6,8 +6,9 @@ use std::path::Path;
 use tpmt_report::{Progress, Step};
 
 use crate::io::{Staging, fs};
-use crate::store::{Digests, Formats, digest};
-use crate::{Project, Result, base};
+use crate::layout::base;
+use crate::layout::store::{Digests, Formats, digest};
+use crate::{Project, Result};
 
 impl Project {
     /// Unpacks the disc at `iso` into a project at `root`, and returns it.
