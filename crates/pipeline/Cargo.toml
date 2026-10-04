@@ -1,6 +1,6 @@
 [package]
 name = "tpmt-pipeline"
-description = "Unpacking a disc to a mod folder and building it back."
+description = "Unpacking a disc into a project and building it back."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -14,16 +14,14 @@ tpmt-archive.workspace = true
 tpmt-compression.workspace = true
 tpmt-disc.workspace = true
 tpmt-binary.workspace = true
+tpmt-project.workspace = true
 tpmt-report.workspace = true
 
 thiserror.workspace = true
 rayon.workspace = true
-xxhash-rust.workspace = true # change detection against the vanilla digests
-# disc.toml. Six crates, and serde was already here for the format crates. A
-# project file a person edits by hand is not worth a parser of our own.
-serde.workspace = true
-serde_json.workspace = true # mod.json specifically
-toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-use super::{DIGESTS, DISC_TOML, FORMATS, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::fs::{self, io_at, parse_at, read_toml, write_json, write_toml};
+use crate::layout::{DIGESTS, DISC_TOML, FORMATS, MOD_JSON, SOURCE_TOML, STORE_DIR, YAZ0_TOML};
 use crate::{Error, FileKind, Result};
 
 /// `yaz0.toml`: which loose files arrived Yaz0 wrapped. Recorded here
@@ -40,6 +40,11 @@ struct Yaz0 {
 /// Writes `base/`'s own metadata: `disc.toml` and `yaz0.toml`. The one call
 /// site for everything under `base/` that isn't a copied file, so nothing
 /// else reaches into `base/` to write a TOML of its own.
+///
+/// # Errors
+///
+/// - [`Error::Serialize`] if either will not serialize
+/// - [`Error::Io`] on either write
 pub fn write_base(
     base: &Path,
     metadata: &tpmt_disc::Metadata,
@@ -68,8 +73,8 @@ pub struct Base {
 ///
 /// # Errors
 ///
-/// - [`Error::Io`](crate::Error::Io) if either file is missing
-/// - [`Error::Parse`](crate::Error::Parse) if either is not what it was
+/// - [`Error::Io`] if either file is missing
+/// - [`Error::Parse`] if either is not what it was
 pub fn read_base(base: &Path) -> Result<Base> {
     let metadata = read_toml(&base.join(DISC_TOML))?;
     let yaz0: Yaz0 = read_toml(&base.join(YAZ0_TOML))?;
@@ -83,8 +88,8 @@ pub fn read_base(base: &Path) -> Result<Base> {
 ///
 /// # Errors
 ///
-/// - [`Error::Io`](crate::Error::Io) if `disc.toml` is missing
-/// - [`Error::Parse`](crate::Error::Parse) if it is not what it was
+/// - [`Error::Io`] if `disc.toml` is missing
+/// - [`Error::Parse`] if it is not what it was
 pub fn read_boot(base: &Path) -> Result<tpmt_disc::Boot> {
     let metadata: tpmt_disc::Metadata = read_toml(&base.join(DISC_TOML))?;
     Ok(metadata.boot)
@@ -106,6 +111,12 @@ pub struct ModMetadata<'a> {
     pub banner: Option<&'a str>,
 }
 
+/// Writes `mod.json` into `mod_dir`.
+///
+/// # Errors
+///
+/// - [`Error::Serialize`] if it will not serialize
+/// - [`Error::Io`] on the write
 pub fn write_mod(mod_dir: &Path, metadata: &ModMetadata<'_>) -> Result<()> {
     write_json(&mod_dir.join(MOD_JSON), metadata)
 }
@@ -124,6 +135,7 @@ pub struct Source {
 
 impl Source {
     /// Whether `boot` is the version this project was unpacked from.
+    #[must_use]
     pub fn matches(&self, boot: &tpmt_disc::Boot) -> bool {
         self.id == boot.id && self.revision == boot.revision
     }
@@ -134,6 +146,12 @@ impl Source {
 ///
 /// Stores the ISO path canonicalized so later commands can read files off
 /// the original disc without asking the user where it is again.
+///
+/// # Errors
+///
+/// - [`Error::Io`] if `iso` cannot be canonicalized, or on any write
+/// - [`Error::UnusablePath`] if a path would not read back from a line of its own
+/// - [`Error::Serialize`] if a file will not serialize
 pub fn write_store(
     project: &Path,
     iso: &Path,
@@ -166,8 +184,8 @@ pub struct Store {
 ///
 /// # Errors
 ///
-/// - [`Error::Io`](crate::Error::Io) if either file is missing
-/// - [`Error::Parse`](crate::Error::Parse) if either is not what it was
+/// - [`Error::Io`] if either file is missing
+/// - [`Error::Parse`] if either is not what it was
 pub fn read_store(project: &Path) -> Result<Store> {
     let store = project.join(STORE_DIR);
     Ok(Store {
@@ -250,8 +268,8 @@ fn write_formats(path: &Path, formats: &Formats) -> Result<()> {
 ///
 /// # Errors
 ///
-/// - [`Error::Io`](crate::Error::Io) if it is missing
-/// - [`Error::Parse`](crate::Error::Parse) if it is not what it was, or names a
+/// - [`Error::Io`] if it is missing
+/// - [`Error::Parse`] if it is not what it was, or names a
 ///   kind this build doesn't know
 pub fn read_formats(project: &Path) -> Result<Formats> {
     let path = project.join(STORE_DIR).join(FORMATS);
@@ -292,12 +310,17 @@ fn read_text(path: &Path) -> Result<String> {
 ///
 /// XXH3-128 rather than a cryptographic hash, since it only has to catch
 /// edits, not forgeries.
+#[must_use]
 pub fn digest(data: &[u8]) -> u128 {
     xxh3_128(data)
 }
 
 /// [`digest`] of a file, streamed rather than read whole. Status hashes
 /// every file in the project, videos included.
+///
+/// # Errors
+///
+/// - [`Error::Io`] if the file cannot be opened or read
 pub fn digest_file(path: &Path) -> Result<u128> {
     let file = std::fs::File::open(path).map_err(io_at(path))?;
     let mut hasher = Xxh3::new();
@@ -308,7 +331,6 @@ pub fn digest_file(path: &Path) -> Result<u128> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::Scratch;
 
     fn formats_path(project: &Path) -> PathBuf {
         project.join(STORE_DIR).join(FORMATS)
@@ -316,7 +338,7 @@ mod tests {
 
     #[test]
     fn formats_read_back_as_written() {
-        let scratch = Scratch::new("formats-round-trip");
+        let scratch = tempfile::tempdir().unwrap();
         let formats = Formats::from([
             (
                 FileKind::Mesg,
@@ -324,8 +346,8 @@ mod tests {
             ),
             (FileKind::Rarc, BTreeSet::from(["files/d.arc".to_string()])),
         ]);
-        write_formats(&formats_path(&scratch.0), &formats).unwrap();
+        write_formats(&formats_path(scratch.path()), &formats).unwrap();
 
-        assert_eq!(read_formats(&scratch.0).unwrap(), formats);
+        assert_eq!(read_formats(scratch.path()).unwrap(), formats);
     }
 }

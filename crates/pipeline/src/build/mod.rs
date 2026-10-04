@@ -15,11 +15,12 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
+use tpmt_project::fs;
+use tpmt_project::layout::{self, Staging};
+use tpmt_project::metadata::{self, Source};
 
+use crate::Result;
 use crate::progress::{Progress, Step};
-use crate::project::metadata::{self, Source};
-use crate::project::{self, Staging};
-use crate::{Result, fs};
 
 mod implode;
 mod targets;
@@ -70,14 +71,14 @@ pub fn run(
 ) -> Result<Built> {
     let out = match output {
         Some(output) => {
-            project::refuse_unowned(output, &[])?;
+            layout::refuse_unowned(output, &[])?;
             output.to_path_buf()
         }
-        None => project::target_output(project, target.name()),
+        None => layout::target_output(project, target.name()),
     };
 
     let metadata::Store { source, digests } = metadata::read_store(project)?;
-    let base = metadata::read_base(&project::base(project))?;
+    let base = metadata::read_base(&layout::base(project))?;
     let (tree, unchanged) = Tree::open(project, digests)?;
     let changed = tree.changed();
 
@@ -128,17 +129,42 @@ fn rebuild(job: &Job, into: &Path) -> Result<()> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use tempfile::TempDir;
     use tpmt_archive::editable::sidecar::{Member, Sidecar};
+    use tpmt_disc::{Bi2, Boot, Metadata};
+    use tpmt_project::FileKind;
+    use tpmt_project::metadata::digest;
 
     use super::*;
-    use crate::project::metadata::digest;
-    use crate::test_support::{Scratch, metadata};
+    use crate::Error;
     use crate::unpack::explode;
-    use crate::{Error, FileKind};
 
     /// [`super::run`] with nobody watching its progress.
     fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {
         super::run(project, target, output, &Progress::default())
+    }
+
+    /// A `GZ2E` revision 0 disc.
+    fn metadata() -> Metadata {
+        Metadata {
+            boot: Boot {
+                id: "GZ2E".to_string(),
+                maker: "01".to_string(),
+                disc_number: 0,
+                revision: 0,
+                audio_streaming: 0,
+                stream_buffer_size: 0,
+                title: "test".to_string(),
+            },
+            bi2: Bi2 {
+                simulated_memory_size: 0x0180_0000,
+                debug_flag: 0,
+                country: 1,
+                unknown_1c: 1,
+                unknown_20: 1,
+                pad_spec: 0,
+            },
+        }
     }
 
     /// A project holding one wrapped archive of two members and one loose
@@ -149,10 +175,10 @@ mod tests {
     /// files/outer.arc/wrapped.bin   "member", Yaz0 inside the archive
     /// files/loose.bin               "loose"
     /// ```
-    fn unpacked(name: &str) -> Scratch {
-        let scratch = Scratch::new(name);
-        let project = &scratch.0;
-        let base = project::base(project);
+    fn unpacked() -> TempDir {
+        let scratch = tempfile::tempdir().unwrap();
+        let project = scratch.path();
+        let base = layout::base(project);
 
         let sidecar = Sidecar::new(
             "outer".to_string(),
@@ -212,7 +238,7 @@ mod tests {
     }
 
     fn overlay(project: &Path, path: &str, data: &[u8]) {
-        fs::write(&project::overlay(project).join(path), data).unwrap();
+        fs::write(&layout::overlay(project).join(path), data).unwrap();
     }
 
     /// Everything the built disc file explodes back into, which is what the
@@ -243,10 +269,10 @@ mod tests {
     /// edit in it and every other member as it was.
     #[test]
     fn an_edited_member_rebuilds_its_archive() {
-        let scratch = unpacked("member");
-        overlay(&scratch.0, "files/outer.arc/plain.bin", b"edited");
+        let scratch = unpacked();
+        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
 
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.rebuilt, ["files/outer.arc"]);
         assert_eq!(built.unchanged, Vec::<String>::new());
 
@@ -259,10 +285,10 @@ mod tests {
     /// back on the same member and leaves the other bare.
     #[test]
     fn members_keep_the_wrapper_they_arrived_with() {
-        let scratch = unpacked("wrapper");
-        overlay(&scratch.0, "files/outer.arc/plain.bin", b"edited");
+        let scratch = unpacked();
+        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
 
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
         let outputs = exploded(&built.path, "files/outer.arc");
         let sidecar = Sidecar::from_toml(
             std::str::from_utf8(&outputs["files/outer.arc/.tpmt-arc.toml"]).unwrap(),
@@ -282,10 +308,10 @@ mod tests {
     /// add one by dropping it in the overlay.
     #[test]
     fn an_added_file_becomes_a_member() {
-        let scratch = unpacked("added");
-        overlay(&scratch.0, "files/outer.arc/extra.bin", b"extra");
+        let scratch = unpacked();
+        overlay(scratch.path(), "files/outer.arc/extra.bin", b"extra");
 
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
         let outputs = exploded(&built.path, "files/outer.arc");
         assert_eq!(outputs["files/outer.arc/extra.bin"], b"extra");
         assert_eq!(outputs["files/outer.arc/plain.bin"], b"plain");
@@ -295,10 +321,10 @@ mod tests {
     /// alone.
     #[test]
     fn a_loose_file_is_its_own_disc_file() {
-        let scratch = unpacked("loose");
-        overlay(&scratch.0, "files/loose.bin", b"replaced");
+        let scratch = unpacked();
+        overlay(scratch.path(), "files/loose.bin", b"replaced");
 
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.rebuilt, ["files/loose.bin"]);
         assert_eq!(
             fs::read(&built.path.join("files/loose.bin")).unwrap(),
@@ -311,10 +337,10 @@ mod tests {
     /// build.
     #[test]
     fn an_edit_that_changes_nothing_is_reported() {
-        let scratch = unpacked("noop");
-        overlay(&scratch.0, "files/loose.bin", b"loose");
+        let scratch = unpacked();
+        overlay(scratch.path(), "files/loose.bin", b"loose");
 
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.unchanged, ["files/loose.bin"]);
         assert_eq!(built.rebuilt, Vec::<String>::new());
     }
@@ -323,15 +349,15 @@ mod tests {
     /// pack that edit as though it had shipped.
     #[test]
     fn an_edited_base_stops_the_build() {
-        let scratch = unpacked("drift");
+        let scratch = unpacked();
         fs::write(
-            &project::base(&scratch.0).join("files/outer.arc/wrapped.bin"),
+            &layout::base(scratch.path()).join("files/outer.arc/wrapped.bin"),
             b"tampered",
         )
         .unwrap();
-        overlay(&scratch.0, "files/outer.arc/plain.bin", b"edited");
+        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
 
-        let error = run(&scratch.0, Target::Patch, None).unwrap_err();
+        let error = run(scratch.path(), Target::Patch, None).unwrap_err();
         assert!(
             matches!(&error, Error::BaseModified(path) if path == "files/outer.arc/wrapped.bin"),
             "{error}"
@@ -342,17 +368,17 @@ mod tests {
     /// nothing of its own beside it.
     #[test]
     fn a_failed_build_keeps_the_last_one() {
-        let scratch = unpacked("keep");
-        overlay(&scratch.0, "files/loose.bin", b"replaced");
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let scratch = unpacked();
+        overlay(scratch.path(), "files/loose.bin", b"replaced");
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
 
         fs::write(
-            &project::base(&scratch.0).join("files/outer.arc/wrapped.bin"),
+            &layout::base(scratch.path()).join("files/outer.arc/wrapped.bin"),
             b"tampered",
         )
         .unwrap();
-        overlay(&scratch.0, "files/outer.arc/plain.bin", b"edited");
-        run(&scratch.0, Target::Patch, None).unwrap_err();
+        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
+        run(scratch.path(), Target::Patch, None).unwrap_err();
 
         assert_eq!(
             fs::read(&built.path.join("files/loose.bin")).unwrap(),
@@ -365,9 +391,9 @@ mod tests {
     /// An empty overlay is not an error. There is simply nothing to write.
     #[test]
     fn an_empty_overlay_builds_nothing() {
-        let scratch = unpacked("empty");
+        let scratch = unpacked();
 
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.rebuilt, Vec::<String>::new());
         assert_eq!(std::fs::read_dir(&built.path).unwrap().count(), 0);
     }
@@ -376,13 +402,13 @@ mod tests {
     /// what this build put there.
     #[test]
     fn a_target_clears_what_it_left_last_time() {
-        let scratch = unpacked("clear");
-        overlay(&scratch.0, "files/loose.bin", b"replaced");
-        let built = run(&scratch.0, Target::Patch, None).unwrap();
+        let scratch = unpacked();
+        overlay(scratch.path(), "files/loose.bin", b"replaced");
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
 
         let stale = built.path.join("files/gone.bin");
         fs::write(&stale, b"from a build before").unwrap();
-        run(&scratch.0, Target::Patch, None).unwrap();
+        run(scratch.path(), Target::Patch, None).unwrap();
 
         assert!(!stale.exists());
     }
@@ -392,13 +418,13 @@ mod tests {
     /// emptied.
     #[test]
     fn a_directory_of_somebody_elses_files_is_refused() {
-        let scratch = unpacked("foreign");
-        let out = scratch.0.join("elsewhere");
+        let scratch = unpacked();
+        let out = scratch.path().join("elsewhere");
         fs::write(&out.join("notes.txt"), b"do not delete").unwrap();
 
-        let error = run(&scratch.0, Target::Patch, Some(&out)).unwrap_err();
+        let error = run(scratch.path(), Target::Patch, Some(&out)).unwrap_err();
         assert!(
-            matches!(&error, Error::ForeignDirectory(at) if *at == out),
+            matches!(&error, Error::Project(tpmt_project::Error::ForeignDirectory(at)) if *at == out),
             "{error}"
         );
         assert!(out.join("notes.txt").exists());
@@ -408,24 +434,16 @@ mod tests {
     /// same `-o` is refused like any other non-empty directory.
     #[test]
     fn an_output_directory_is_never_replaced() {
-        let scratch = unpacked("reuse");
-        let out = scratch.0.join("elsewhere");
-        overlay(&scratch.0, "files/loose.bin", b"replaced");
+        let scratch = unpacked();
+        let out = scratch.path().join("elsewhere");
+        overlay(scratch.path(), "files/loose.bin", b"replaced");
 
-        run(&scratch.0, Target::Patch, Some(&out)).unwrap();
-        let error = run(&scratch.0, Target::Patch, Some(&out)).unwrap_err();
+        run(scratch.path(), Target::Patch, Some(&out)).unwrap();
+        let error = run(scratch.path(), Target::Patch, Some(&out)).unwrap_err();
         assert!(
-            matches!(&error, Error::ForeignDirectory(at) if *at == out),
+            matches!(&error, Error::Project(tpmt_project::Error::ForeignDirectory(at)) if *at == out),
             "{error}"
         );
         assert_eq!(fs::read(&out.join("files/loose.bin")).unwrap(), b"replaced");
-    }
-
-    #[test]
-    fn dusk_says_it_is_not_here_yet() {
-        let scratch = unpacked("dusk");
-
-        let error = run(&scratch.0, Target::Dusk, None).unwrap_err();
-        assert!(matches!(error, Error::Unsupported(Target::Dusk)), "{error}");
     }
 }

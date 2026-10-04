@@ -9,9 +9,10 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 use tpmt_archive::editable::sidecar::{Member, SIDECAR, Sidecar};
+use tpmt_project::metadata::{Digests, digest};
+use tpmt_project::{diff, fs, layout};
 
-use crate::project::metadata::{Digests, digest};
-use crate::{Error, Result, fs, project, status};
+use crate::{Error, Result};
 
 /// The two layers a build reads, in the order it reads them.
 pub struct Tree {
@@ -33,22 +34,22 @@ impl Tree {
     ///
     /// # Errors
     ///
-    /// - [`Error::Io`] if the overlay cannot be walked or read
-    /// - [`Error::UnusablePath`] if a name in it is not UTF-8
+    /// - [`tpmt_project::Error::Io`] if the overlay cannot be walked or read
+    /// - [`tpmt_project::Error::UnusablePath`] if a name in it is not UTF-8
     pub fn open(project: &Path, digests: Digests) -> Result<(Self, Vec<String>)> {
-        let overlay = project::overlay(project);
+        let overlay = layout::overlay(project);
         let overlaid = fs::files(&overlay)?;
 
         let flagged = overlaid
             .into_par_iter()
-            .map(|path| Ok((status::diff(&overlay, &path, &digests)?.is_none(), path)))
+            .map(|path| Ok((diff::file(&overlay, &path, &digests)?.is_none(), path)))
             .collect::<Result<Vec<_>>>()?;
         let (identical, edits): (Vec<_>, Vec<_>) = flagged.into_iter().partition(|(same, _)| *same);
         let paths =
             |flagged: Vec<(bool, String)>| flagged.into_iter().map(|(_, path)| path).collect();
 
         let tree = Self {
-            base: project::base(project),
+            base: layout::base(project),
             overlay,
             digests,
             edits: paths(edits),
@@ -83,7 +84,7 @@ impl Tree {
         }
 
         let data = fs::read_if_exists(&self.base.join(path))?
-            .ok_or_else(|| Error::MissingFile(path.to_string()))?;
+            .ok_or_else(|| tpmt_project::Error::MissingFile(path.to_string()))?;
         if !is_vanilla(&self.digests, path, &data) {
             return Err(Error::BaseModified(path.to_string()));
         }
@@ -110,7 +111,7 @@ impl Tree {
         let at = format!("{path}/{SIDECAR}");
         let data = self.file(&at)?;
         let text = std::str::from_utf8(&data).map_err(fs::parse_at(Path::new(&at)))?;
-        Sidecar::from_toml(text).map_err(fs::parse_at(Path::new(&at)))
+        Ok(Sidecar::from_toml(text).map_err(fs::parse_at(Path::new(&at)))?)
     }
 
     /// Every member an archive rebuilds from: the ones its sidecar lists, in

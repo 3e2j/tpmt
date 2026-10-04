@@ -1,0 +1,25 @@
+[package]
+name = "tpmt-project"
+description = "A project folder: its layout, what tpmt records in it, and its files in and out."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+# `disc.toml` and `source.toml` record the disc's own header types.
+tpmt-disc.workspace = true
+tpmt-binary.workspace = true
+
+thiserror.workspace = true
+rayon.workspace = true
+xxhash-rust.workspace = true # change detection against the vanilla digests
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

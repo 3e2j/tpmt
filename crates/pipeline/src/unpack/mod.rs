@@ -6,21 +6,22 @@ use std::path::Path;
 
 use rayon::prelude::*;
 use tpmt_disc::{Disc, Entry};
+use tpmt_project::metadata::{self, Digests, Formats};
+use tpmt_project::{FileKind, fs, layout};
 use tpmt_report::Report;
 
+use crate::Result;
 use crate::progress::{Progress, Step};
-use crate::project::metadata::{Digests, Formats};
-use crate::{FileKind, Result, fs, project};
 
 pub mod explode;
 
 /// Unpacks a disc into `base/`, records the store under `.tpmt/`, and
 /// scaffolds a `mod/` folder. Returns the unpack's reports.
 pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<Vec<Report>> {
-    project::refuse_foreign(project)?;
+    layout::refuse_foreign(project)?;
     let disc = Disc::open(iso)?;
 
-    let staging = project::Staging::begin(&project::base(project))?;
+    let staging = layout::Staging::begin(&layout::base(project))?;
     let Unpacked {
         yaz0_compressed,
         digests,
@@ -29,12 +30,12 @@ pub fn run(iso: &Path, project: &Path, progress: &Progress) -> Result<Vec<Report
     } = unpack_disc(&disc, staging.dir(), progress)?;
 
     progress.begin(Step::Save, 0);
-    project::metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
+    metadata::write_base(staging.dir(), disc.metadata(), yaz0_compressed)?;
     staging.promote()?;
 
-    project::metadata::write_store(project, iso, &disc.metadata().boot, &digests, &formats)?;
+    metadata::write_store(project, iso, &disc.metadata().boot, &digests, &formats)?;
 
-    project::scaffold_mod(project)?;
+    layout::scaffold_mod(project)?;
     Ok(reports)
 }
 
@@ -132,7 +133,7 @@ fn unpack_file(base: &Path, path: &str, data: &[u8]) -> Result<UnpackedFile> {
             }
             let path = layer.path;
             fs::write(&base.join(path), layer.bytes)?;
-            digests.push((path.to_string(), project::metadata::digest(layer.bytes)));
+            digests.push((path.to_string(), metadata::digest(layer.bytes)));
             if let Some(kind) = layer.kind {
                 kinds.push((kind, path.to_string()));
             }

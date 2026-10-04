@@ -1,6 +1,7 @@
 //! CLI frontend for the Twilight Princess Modding Toolkit.
 //!
-//! Reads an invocation and hands it to the pipeline to deal with.
+//! Reads an invocation and hands it to the pipeline or the project to deal
+//! with.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -8,7 +9,8 @@ use std::process::ExitCode;
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
-use tpmt_pipeline::{Built, Change, ChangeKind, Project, Target};
+use tpmt_pipeline::{Built, Target};
+use tpmt_project::{Change, ChangeKind, Project};
 use tpmt_report::{Level, Report};
 
 mod progress;
@@ -87,7 +89,7 @@ fn run(command: Command) -> Result<(), Error> {
                     .ok_or_else(|| Error::NamelessIso(iso.clone()))?,
             };
 
-            if project.exists() && tpmt_pipeline::is_project(&project) {
+            if project.exists() && tpmt_project::is_project(&project) {
                 let overwrite = yes
                     || ask(&format!(
                         "`{}` is already a project. Overwrite it? [y/N] ",
@@ -104,7 +106,7 @@ fn run(command: Command) -> Result<(), Error> {
             println!("unpacked {} into {}", iso.display(), project.display());
         }
         Command::Status { dir } => {
-            let changes = project(dir.as_ref())?.status()?;
+            let changes = project(dir.as_ref())?.diff()?;
             print_status(&changes);
         }
         Command::Build {
@@ -113,8 +115,9 @@ fn run(command: Command) -> Result<(), Error> {
             output,
         } => {
             let project = project(dir.as_ref())?;
-            let built =
-                progress::show(|progress| project.build(target, output.as_deref(), progress))?;
+            let built = progress::show(|progress| {
+                tpmt_pipeline::build(&project, target, output.as_deref(), progress)
+            })?;
             print_built(&built);
         }
     }
@@ -191,6 +194,9 @@ fn ask(prompt: &str) -> Result<bool, Error> {
 enum Error {
     #[error(transparent)]
     Pipeline(#[from] tpmt_pipeline::Error),
+
+    #[error(transparent)]
+    Project(#[from] tpmt_project::Error),
 
     // PathBuf has no Display, and lossy is the right call in an error message.
     #[error("`{}` has no filename to borrow, so name the project directory yourself", .0.display())]

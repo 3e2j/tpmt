@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/tpmt",
     "crates/pipeline",
+    "crates/project",
     "crates/report",
     "crates/retail-tests",
     "crates/game/binary",
@@ -32,6 +33,8 @@ tpmt-message = { path = "crates/game/payload/formats/message", version = "0.1.0"
 tpmt-tables = { path = "crates/game/payload/tables", version = "0.1.0" }
 tpmt-documents = { path = "crates/game/payload/documents", version = "0.1.0" }
 
+# Entry points into game/: the project folder, and unpacking and building one.
+tpmt-project = { path = "crates/project", version = "0.1.0" }
 tpmt-pipeline = { path = "crates/pipeline", version = "0.1.0" }
 
 # Common reporting levels
@@ -45,6 +48,7 @@ encoding_rs = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+tempfile = "3"
 
 # Not 0.11. That release changed the output type and dropped its LowerHex impl,
 # and every digest here is written out as hex.

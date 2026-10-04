@@ -9,11 +9,12 @@ use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use tpmt_disc::{Disc, Entry, Item, Layout, Span};
+use tpmt_project::fs;
+use tpmt_project::metadata::Source;
 
 use crate::build::{Job, rebuild};
 use crate::progress::Step;
-use crate::project::metadata::Source;
-use crate::{Error, Result, fs};
+use crate::{Error, Result};
 
 /// Where rebuilt disc files wait while the image is laid out around them.
 /// Cleared again once the image is written, since the patch target is where
@@ -53,7 +54,7 @@ pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
         };
 
         let Some(source) = sources.get(at.as_str()) else {
-            return Err(Error::MissingFile(at.clone()));
+            return Err(tpmt_project::Error::MissingFile(at.clone()).into());
         };
         let bytes = match source {
             Bytes::Disc(span) => disc.read(*span)?,

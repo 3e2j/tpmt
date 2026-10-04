@@ -3,11 +3,11 @@
 
 use std::path::{Component, Path};
 
-use crate::{Error, Result, fs, project};
+use crate::{Error, Result, fs, layout};
 
 pub fn read(project: &Path, path: &str) -> Result<Vec<u8>> {
     let at = checked(path)?;
-    for layer in [project::overlay(project), project::base(project)] {
+    for layer in [layout::overlay(project), layout::base(project)] {
         if let Some(data) = fs::read_if_exists(&layer.join(at))? {
             return Ok(data);
         }
@@ -16,7 +16,7 @@ pub fn read(project: &Path, path: &str) -> Result<Vec<u8>> {
 }
 
 pub fn write(project: &Path, path: &str, data: &[u8]) -> Result<()> {
-    fs::write(&project::overlay(project).join(checked(path)?), data)
+    fs::write(&layout::overlay(project).join(checked(path)?), data)
 }
 
 /// `path` as a relative path that stays inside the layer it's joined to.
@@ -36,45 +36,45 @@ fn checked(path: &str) -> Result<&Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::Scratch;
+    use tempfile::TempDir;
 
     const PATH: &str = "files/res/a.arc/m.bmg";
 
-    fn project(name: &str) -> Scratch {
-        let scratch = Scratch::new(name);
-        fs::write(&project::base(&scratch.0).join(PATH), b"vanilla").unwrap();
+    fn project() -> TempDir {
+        let scratch = tempfile::tempdir().unwrap();
+        fs::write(&layout::base(scratch.path()).join(PATH), b"vanilla").unwrap();
         scratch
     }
 
     #[test]
     fn a_read_takes_the_overlay_over_base() {
-        let scratch = project("leaf-read");
-        assert_eq!(read(&scratch.0, PATH).unwrap(), b"vanilla");
+        let scratch = project();
+        assert_eq!(read(scratch.path(), PATH).unwrap(), b"vanilla");
 
-        write(&scratch.0, PATH, b"edited").unwrap();
-        assert_eq!(read(&scratch.0, PATH).unwrap(), b"edited");
+        write(scratch.path(), PATH, b"edited").unwrap();
+        assert_eq!(read(scratch.path(), PATH).unwrap(), b"edited");
         assert_eq!(
-            fs::read(&project::base(&scratch.0).join(PATH)).unwrap(),
+            fs::read(&layout::base(scratch.path()).join(PATH)).unwrap(),
             b"vanilla"
         );
     }
 
     #[test]
     fn a_path_in_neither_layer_is_missing() {
-        let scratch = project("leaf-missing");
+        let scratch = project();
         assert!(matches!(
-            read(&scratch.0, "files/none.bmg"),
+            read(scratch.path(), "files/none.bmg"),
             Err(Error::MissingFile(path)) if path == "files/none.bmg"
         ));
         assert!(matches!(
-            read(&scratch.0, "files/res"),
+            read(scratch.path(), "files/res"),
             Err(Error::MissingFile(_))
         ));
     }
 
     #[test]
     fn a_path_that_leaves_the_layer_is_refused() {
-        let scratch = project("leaf-escape");
+        let scratch = project();
         for path in [
             "",
             "/etc/passwd",
@@ -83,11 +83,14 @@ mod tests {
             "./files",
         ] {
             assert!(
-                matches!(read(&scratch.0, path), Err(Error::UnusablePath(_))),
+                matches!(read(scratch.path(), path), Err(Error::UnusablePath(_))),
                 "{path}"
             );
             assert!(
-                matches!(write(&scratch.0, path, b""), Err(Error::UnusablePath(_))),
+                matches!(
+                    write(scratch.path(), path, b""),
+                    Err(Error::UnusablePath(_))
+                ),
                 "{path}"
             );
         }

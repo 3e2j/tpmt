@@ -8,22 +8,26 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::project::metadata::{self, Digests, digest_file};
-use crate::{Change, ChangeKind, Result, fs, project};
+use crate::metadata::{self, Digests, digest_file};
+use crate::{Change, ChangeKind, Result, fs, layout};
 
-pub fn run(project: &Path) -> Result<Vec<Change>> {
+pub(crate) fn run(project: &Path) -> Result<Vec<Change>> {
     let metadata::Store { digests, .. } = metadata::read_store(project)?;
-    let overlay = project::overlay(project);
+    let overlay = layout::overlay(project);
     fs::files(&overlay)?
         .into_par_iter()
-        .map(|path| Ok(diff(&overlay, &path, &digests)?.map(|kind| Change { path, kind })))
+        .map(|path| Ok(file(&overlay, &path, &digests)?.map(|kind| Change { path, kind })))
         .filter_map(Result::transpose)
         .collect()
 }
 
 /// What the file at `dir/path` is next to what the unpack wrote at `path`,
 /// or `None` if it is the same bytes.
-pub fn diff(dir: &Path, path: &str, digests: &Digests) -> Result<Option<ChangeKind>> {
+///
+/// # Errors
+///
+/// - [`Error::Io`](crate::Error::Io) if the file cannot be read
+pub fn file(dir: &Path, path: &str, digests: &Digests) -> Result<Option<ChangeKind>> {
     let Some(want) = digests.get(path) else {
         return Ok(Some(ChangeKind::Added));
     };
@@ -33,27 +37,36 @@ pub fn diff(dir: &Path, path: &str, digests: &Digests) -> Result<Option<ChangeKi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::metadata::digest;
-    use crate::test_support::{Scratch, metadata};
+    use crate::metadata::digest;
+    use tempfile::TempDir;
+    use tpmt_disc::Boot;
 
     /// A project whose unpack wrote two files.
-    fn unpacked(name: &str) -> Scratch {
-        let scratch = Scratch::new(name);
-        let base = project::base(&scratch.0);
+    fn unpacked() -> TempDir {
+        let scratch = tempfile::tempdir().unwrap();
+        let base = layout::base(scratch.path());
 
         let mut digests = Digests::new();
         for (path, data) in [("files/a.bin", b"a"), ("files/b.arc/m.bin", b"m")] {
             fs::write(&base.join(path), data).unwrap();
             digests.insert(path.to_string(), digest(data));
         }
-        fs::create_dir_all(&project::overlay(&scratch.0)).unwrap();
+        fs::create_dir_all(&layout::overlay(scratch.path())).unwrap();
 
-        let iso = scratch.0.join("source.iso");
+        let iso = scratch.path().join("source.iso");
         fs::write(&iso, b"").unwrap();
         metadata::write_store(
-            &scratch.0,
+            scratch.path(),
             &iso,
-            &metadata().boot,
+            &Boot {
+                id: "GZ2E".to_string(),
+                maker: "01".to_string(),
+                disc_number: 0,
+                revision: 0,
+                audio_streaming: 0,
+                stream_buffer_size: 0,
+                title: "test".to_string(),
+            },
             &digests,
             &metadata::Formats::new(),
         )
@@ -70,19 +83,19 @@ mod tests {
 
     #[test]
     fn a_fresh_unpack_has_no_changes() {
-        let scratch = unpacked("fresh");
-        assert_eq!(run(&scratch.0).unwrap(), []);
+        let scratch = unpacked();
+        assert_eq!(run(scratch.path()).unwrap(), []);
     }
 
     #[test]
     fn overlay_edits_and_additions_are_reported() {
-        let scratch = unpacked("overlay");
-        let overlay = project::overlay(&scratch.0);
+        let scratch = unpacked();
+        let overlay = layout::overlay(scratch.path());
         fs::write(&overlay.join("files/a.bin"), b"edited").unwrap();
         fs::write(&overlay.join("files/b.arc/new.bin"), b"new").unwrap();
 
         assert_eq!(
-            run(&scratch.0).unwrap(),
+            run(scratch.path()).unwrap(),
             [
                 change("files/a.bin", ChangeKind::Modified),
                 change("files/b.arc/new.bin", ChangeKind::Added),
@@ -93,9 +106,9 @@ mod tests {
     /// An overlay copy of a vanilla file changes nothing on the disc.
     #[test]
     fn an_overlay_file_identical_to_vanilla_is_not_a_change() {
-        let scratch = unpacked("identical");
-        fs::write(&project::overlay(&scratch.0).join("files/a.bin"), b"a").unwrap();
+        let scratch = unpacked();
+        fs::write(&layout::overlay(scratch.path()).join("files/a.bin"), b"a").unwrap();
 
-        assert_eq!(run(&scratch.0).unwrap(), []);
+        assert_eq!(run(scratch.path()).unwrap(), []);
     }
 }

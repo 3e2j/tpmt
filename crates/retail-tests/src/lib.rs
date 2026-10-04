@@ -25,7 +25,8 @@ use std::process::ExitCode;
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
 use tpmt_disc::{Boot, Disc};
-use tpmt_pipeline::{FileKind, Progress, Project};
+use tpmt_pipeline::Progress;
+use tpmt_project::{FileKind, Project};
 use tpmt_tables::Version;
 
 /// Reports past this many are counted but not printed.
@@ -369,7 +370,7 @@ fn unpacked(iso: &Path) -> Result<Project, Failed> {
     }
     let mut saved = String::new();
     file.read_to_string(&mut saved)?;
-    if saved == stamp && tpmt_pipeline::is_project(&project) {
+    if saved == stamp && tpmt_project::is_project(&project) {
         return Ok(Project::discover(&project)?);
     }
 

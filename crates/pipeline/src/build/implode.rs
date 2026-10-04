@@ -37,7 +37,7 @@ pub enum EncodeError {
 ///
 /// # Errors
 ///
-/// - [`Error::MissingFile`] if something the archive holds is in neither layer
+/// - [`tpmt_project::Error::MissingFile`] if something the archive holds is in neither layer
 /// - [`Error::BaseModified`] if a vanilla file no longer hashes to what it did
 /// - [`Error::Encode`] if what came out does not fit the format
 pub fn disc_file(tree: &Tree, path: &str, wrapped: bool) -> Result<Vec<u8>> {

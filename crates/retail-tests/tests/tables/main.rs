@@ -11,7 +11,7 @@ mod message;
 
 use std::process::ExitCode;
 
-use tpmt_pipeline::FileKind::Mesg;
+use tpmt_project::FileKind::Mesg;
 use tpmt_retail_tests::Check::File;
 use tpmt_retail_tests::Checks;
 

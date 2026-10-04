@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 tpmt-pipeline.workspace = true
+tpmt-project.workspace = true
 tpmt-report.workspace = true
 
 thiserror.workspace = true
