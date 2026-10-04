@@ -1,4 +1,4 @@
-//! Showing the pipeline's [`Progress`] while a command runs.
+//! Showing a call's [`Progress`] while a command runs.
 //!
 //! One line on standard error for the current step, redrawn in place ten
 //! times a second, with each report printed above it as it arrives. The line
@@ -10,8 +10,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-use tpmt_pipeline::{Progress, Snapshot, Unit};
-use tpmt_report::{Level, Report};
+use tpmt_report::{Level, Progress, Report, Snapshot, Unit};
 
 const FRAME: Duration = Duration::from_millis(100);
 const BAR_CELLS: u64 = 20;

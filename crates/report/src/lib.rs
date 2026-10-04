@@ -1,11 +1,16 @@
-//! Whatever a call has to tell the user besides its result. A call returns
-//! its reports next to that result, and the caller decides what each one
-//! means for it: a log line, a message on stderr, or a reason to exit.
+//! Whatever a call has to tell the user besides its result, and how far it
+//! has got. A call sends both through a [`Progress`] as it goes, and the
+//! caller decides what each report means for it: a log line, a message on
+//! stderr, or a reason to exit.
 //!
 //! A failure that stops the call still comes back as its `Err`.
 //! [`Level::Error`] is for one the call carried on past.
 
 use std::fmt;
+
+mod progress;
+
+pub use progress::{Counter, Progress, Snapshot, Step, Unit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {

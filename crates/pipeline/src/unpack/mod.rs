@@ -11,7 +11,7 @@ use tpmt_project::store::{Digests, Formats, digest};
 use tpmt_project::{FileKind, Project, base};
 
 use crate::Result;
-use crate::progress::{Progress, Step};
+use tpmt_report::{Progress, Step};
 
 pub mod explode;
 

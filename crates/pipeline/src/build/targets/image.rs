@@ -13,8 +13,8 @@ use tpmt_project::io::fs;
 use tpmt_project::store::Source;
 
 use crate::build::{Job, rebuild};
-use crate::progress::Step;
 use crate::{Error, Result};
+use tpmt_report::Step;
 
 /// Where rebuilt disc files wait while the image is laid out around them.
 /// Cleared again once the image is written, since the patch target is where

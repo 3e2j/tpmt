@@ -25,8 +25,8 @@ use std::process::ExitCode;
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
 use tpmt_disc::{Boot, Disc};
-use tpmt_pipeline::Progress;
 use tpmt_project::{FileKind, Project};
+use tpmt_report::Progress;
 use tpmt_tables::Version;
 
 /// Reports past this many are counted but not printed.

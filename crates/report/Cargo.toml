@@ -1,6 +1,6 @@
 [package]
 name = "tpmt-report"
-description = "What a call has to tell the user besides its result, at a level the caller decides how to show."
+description = "What a call tells the user while it runs: its reports, and how far it has got."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true

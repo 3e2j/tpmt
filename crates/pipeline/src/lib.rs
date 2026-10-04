@@ -29,13 +29,12 @@
 use std::path::{Path, PathBuf};
 
 use tpmt_project::Project;
+use tpmt_report::Progress;
 
 mod build;
-mod progress;
 mod unpack;
 
 pub use build::{Built, EncodeError, Target};
-pub use progress::{Progress, Snapshot, Step, Unit};
 pub use unpack::explode::{DecodeError, Layer, file as explode};
 
 #[derive(Debug, thiserror::Error)]
@@ -88,8 +87,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// only `base/` and leaves `mod/` alone. It commits only once every file is
 /// written, so a failure part way through leaves no half-made project.
 ///
-/// Reads the disc once, front to back. Reports [`Step::Unpack`] across the
-/// whole image, then [`Step::Save`], through `progress`. Each file's reports
+/// Reads the disc once, front to back. Reports [`tpmt_report::Step::Unpack`] across the
+/// whole image, then [`tpmt_report::Step::Save`], through `progress`. Each file's reports
 /// go to `progress` as soon as that file is unpacked.
 ///
 /// # Errors
@@ -111,8 +110,8 @@ pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<Project
 /// `output` stands in for the directory the target would otherwise own
 /// under `build/targets/`, and must be missing or empty.
 ///
-/// Reports [`Step::Rebuild`] through `progress`, and for an image
-/// [`Step::WriteImage`] as well.
+/// Reports [`tpmt_report::Step::Rebuild`] through `progress`, and for an image
+/// [`tpmt_report::Step::WriteImage`] as well.
 ///
 /// # Errors
 ///

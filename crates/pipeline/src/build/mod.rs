@@ -21,7 +21,7 @@ use tpmt_project::io::{Staging, fs, refuse_unowned};
 use tpmt_project::store::{Source, Store};
 
 use crate::Result;
-use crate::progress::{Progress, Step};
+use tpmt_report::{Progress, Step};
 
 mod implode;
 mod targets;

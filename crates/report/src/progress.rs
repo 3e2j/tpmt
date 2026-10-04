@@ -1,6 +1,6 @@
 //! How far a running command has got, for whoever is watching it.
 //!
-//! The pipeline only counts. A command's steps run one after another, so
+//! A call only counts. A command's steps run one after another, so
 //! [`Progress`] holds the current one and its tally. Workers add to it with
 //! relaxed atomics, so a parallel loop pays one `fetch_add` per file. A
 //! frontend reads [`Progress::current`] on its own clock and draws it however
@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use tpmt_report::Report;
+use crate::Report;
 
 /// One stage of a command, in the order the commands reach them.
 ///
@@ -68,7 +68,7 @@ impl Step {
 }
 
 /// The step a command is on, its tally, and the reports no one has taken
-/// yet. Hand one to a pipeline call and read it from another thread while the
+/// yet. Hand one to a call and read it from another thread while the
 /// call runs.
 #[derive(Default)]
 pub struct Progress {
@@ -90,7 +90,7 @@ pub struct Snapshot {
 impl Progress {
     /// Makes `step` the current one, with `total` to go. It stays current,
     /// finished or not, until the next step begins.
-    pub(crate) fn begin(&self, step: Step, total: u64) -> Counter<'_> {
+    pub fn begin(&self, step: Step, total: u64) -> Counter<'_> {
         self.done.store(0, Ordering::Relaxed);
         self.total.store(total, Ordering::Relaxed);
         self.step.store(step as u8, Ordering::Relaxed);
@@ -108,7 +108,7 @@ impl Progress {
         })
     }
 
-    pub(crate) fn report(&self, reports: impl IntoIterator<Item = Report>) {
+    pub fn report(&self, reports: impl IntoIterator<Item = Report>) {
         // A panic inside `extend` still leaves a valid list, so poison is safe
         // to ignore.
         self.reports

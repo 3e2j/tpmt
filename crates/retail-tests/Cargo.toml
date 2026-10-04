@@ -15,6 +15,7 @@ tpmt-disc.workspace = true
 tpmt-tables.workspace = true
 tpmt-pipeline.workspace = true
 tpmt-project.workspace = true
+tpmt-report.workspace = true
 
 libtest-mimic.workspace = true
 rayon.workspace = true
