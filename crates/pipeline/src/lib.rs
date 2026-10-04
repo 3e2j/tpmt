@@ -72,7 +72,7 @@ pub enum Error {
     SourceMissing(PathBuf),
 
     /// The source disc now holds another version. Its unchanged files would
-    /// not match what `base/` and the overlay were made against.
+    /// not match the ones the unpack produced.
     #[error("`{}` holds {found}, but this project was unpacked from {unpacked}", .iso.display())]
     SourceChanged {
         iso: PathBuf,

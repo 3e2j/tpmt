@@ -20,7 +20,7 @@ use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 use crate::io::fs::{self, read_toml, write_toml};
 use crate::{Error, FileKind, Result};
 
-pub(crate) const DIR: &str = ".tpmt";
+pub const DIR: &str = ".tpmt";
 const FORMATS: &str = "formats";
 const DIGESTS: &str = "digests.xxh128";
 const SOURCE_TOML: &str = "source.toml";
@@ -37,14 +37,6 @@ pub struct Source {
     pub revision: u8,
 }
 
-impl Source {
-    /// Whether `boot` is the version this project was unpacked from.
-    #[must_use]
-    pub fn matches(&self, boot: &tpmt_disc::Boot) -> bool {
-        self.id == boot.id && self.revision == boot.revision
-    }
-}
-
 /// What `.tpmt/` holds: the disc this project came from, and what every file
 /// the unpack wrote hashed to.
 pub struct Store {
@@ -52,7 +44,7 @@ pub struct Store {
     pub digests: Digests,
 }
 
-pub(crate) fn write(
+pub fn write(
     dir: &Path,
     iso: &Path,
     boot: &tpmt_disc::Boot,
@@ -72,7 +64,7 @@ pub(crate) fn write(
     )
 }
 
-pub(crate) fn read(dir: &Path) -> Result<Store> {
+pub fn read(dir: &Path) -> Result<Store> {
     Ok(Store {
         source: read_toml(&dir.join(SOURCE_TOML))?,
         digests: read_digests(&dir.join(DIGESTS))?,
@@ -150,7 +142,7 @@ fn write_formats(path: &Path, formats: &Formats) -> Result<()> {
 
 /// Reads `formats` alone, since a lookup by kind has no use for 27,000
 /// digests.
-pub(crate) fn read_formats(dir: &Path) -> Result<Formats> {
+pub fn read_formats(dir: &Path) -> Result<Formats> {
     let path = dir.join(FORMATS);
     let mut formats = Formats::new();
     let mut files = None;

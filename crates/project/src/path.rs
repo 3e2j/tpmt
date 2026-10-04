@@ -49,7 +49,7 @@ pub fn files(dir: &Path) -> Result<Vec<String>> {
 }
 
 /// `path` as a relative path that stays inside the layer it's joined to.
-pub(crate) fn checked(path: &str) -> Result<&Path> {
+pub fn checked(path: &str) -> Result<&Path> {
     let at = Path::new(path);
     let inside = !path.is_empty()
         && at

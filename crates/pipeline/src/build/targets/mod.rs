@@ -1,7 +1,6 @@
-//! One module per build target, each owning a directory of the same name
-//! under `build/targets/`.
+//! One module per build target.
 //!
-//! Every target re-encodes the overlay's changes with [`super::rebuild`] and
+//! Every target re-encodes the changed files with [`super::rebuild`] and
 //! packages the result its own way.
 //!
 //! Replacing something by an id a format already has (an audio bank and wave
@@ -11,10 +10,7 @@
 //! Dusklight at load.
 //!
 //! An edit a target can't express is reported as unsupported for it, never
-//! worked around. For example, a BMG tag playing an added wave works in
-//! `image`, where the id is written into the file, but not in `dusk`, where
-//! the BMG is an overlay with its ids fixed before Dusklight dynamically hands
-//! one out (unpredictable).
+//! worked around.
 
 use std::fmt;
 
@@ -36,7 +32,7 @@ pub enum Target {
 impl Target {
     pub const ALL: [Self; 3] = [Self::Patch, Self::Image, Self::Dusk];
 
-    /// What the target is called, which is also the directory it owns.
+    /// What the target is called.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {

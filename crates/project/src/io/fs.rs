@@ -128,15 +128,6 @@ pub fn rename_if_exists(from: &Path, to: &Path) -> Result<()> {
     }
 }
 
-/// How long a file is, without reading it.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if `path`'s metadata cannot be read
-pub fn len(path: &Path) -> Result<u64> {
-    Ok(fs::metadata(path).map_err(Error::io(path))?.len())
-}
-
 /// Reads `path` back as TOML.
 ///
 /// # Errors

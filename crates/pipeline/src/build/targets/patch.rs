@@ -1,4 +1,4 @@
-//! Every disc file the overlay changed, at the path the disc holds it under,
+//! Every disc file the edits changed, at the path the disc holds it under,
 //! so the output drops over an extracted game.
 
 use std::path::{Path, PathBuf};

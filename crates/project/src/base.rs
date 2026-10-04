@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::Result;
 use crate::io::fs::{read_toml, write_toml};
 
-pub(crate) const DIR: &str = "base";
+pub const DIR: &str = "base";
 const DISC_TOML: &str = "disc.toml";
 const YAZ0_TOML: &str = "yaz0.toml";
 
@@ -63,7 +63,7 @@ pub fn write(
     )
 }
 
-pub(crate) fn read(dir: &Path) -> Result<Base> {
+pub fn read(dir: &Path) -> Result<Base> {
     let metadata = read_toml(&dir.join(DISC_TOML))?;
     let yaz0: Yaz0 = read_toml(&dir.join(YAZ0_TOML))?;
     Ok(Base {
@@ -73,7 +73,7 @@ pub(crate) fn read(dir: &Path) -> Result<Base> {
 }
 
 /// The disc's boot header from `disc.toml`, without reading `yaz0.toml`.
-pub(crate) fn read_boot(dir: &Path) -> Result<tpmt_disc::Boot> {
+pub fn read_boot(dir: &Path) -> Result<tpmt_disc::Boot> {
     let metadata: tpmt_disc::Metadata = read_toml(&dir.join(DISC_TOML))?;
     Ok(metadata.boot)
 }

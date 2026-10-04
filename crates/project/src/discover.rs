@@ -11,9 +11,8 @@ use crate::{BUILD_DIR, Error, Result, base, mod_dir, store};
 /// far an unpack got before it failed.
 const OWNED: [&str; 4] = [base::DIR, mod_dir::DIR, BUILD_DIR, store::DIR];
 
-/// Whether `dir` is a finished unpack: it has the `.tpmt/` that only
-/// [`Project::write_store`](crate::Project::write_store) writes, and only
-/// after everything else is in place.
+/// Whether `dir` is a finished unpack: it has the `.tpmt/` that an unpack
+/// writes last, once everything else is in place.
 #[must_use]
 pub fn is_project(dir: &Path) -> bool {
     dir.join(store::DIR).is_dir()

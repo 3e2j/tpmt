@@ -23,8 +23,8 @@
 //!     <target>/ what one build target produced, cleared and rewritten by it
 //! ```
 //!
-//! Every unpack rewrites `base/` whole ([`base`]). [`Project::scaffold_mod`]
-//! writes `mod/` once.
+//! Every unpack rewrites `base/` whole, and writes `mod/` only if it is
+//! missing.
 //!
 //! Facts a decoded file can't carry, like a wrapper that came off it or
 //! which memory an archive member loads into, live in a sidecar next to it
@@ -35,9 +35,8 @@
 //! ```
 //!
 //! Everything generated about the project, rather than for it, lives in
-//! `.tpmt/` (see [`store`]). It goes in last, after everything else
-//! succeeded, so its presence means an unpack finished, which is what
-//! [`is_project`] tests.
+//! `.tpmt/`. It goes in last, after everything else succeeded, so its
+//! presence means an unpack finished, which is what [`is_project`] tests.
 //!
 // # TODO
 // One disc per project FOR NOW.
@@ -56,19 +55,20 @@
 
 use std::path::{Path, PathBuf};
 
-pub mod base;
+mod base;
 mod build;
 mod discover;
-pub mod io;
+mod io;
 mod layers;
 mod mod_dir;
-pub mod path;
-pub mod store;
+mod path;
+mod store;
 mod unpack;
 
 pub use build::Built;
 pub use discover::is_project;
 pub use layers::{Change, ChangeKind, Comparison, Layer, Layers};
+pub use store::Formats;
 pub use tpmt_binary::FileKind;
 pub use tpmt_pipeline::Target;
 
@@ -145,8 +145,8 @@ const BUILD_DIR: &str = "build";
 const TARGETS_DIR: &str = "targets";
 
 /// A project directory. One from [`discover`](Self::discover) is a finished
-/// unpack, by its canonical root. One from [`claim`](Self::claim) is one an
-/// unpack is still writing.
+/// unpack, by its canonical root. Inside [`unpack`](Self::unpack), it is one
+/// still being written.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Project {
     root: PathBuf,
@@ -178,7 +178,7 @@ impl Project {
     ///
     /// - [`Error::ForeignDirectory`] if it holds anything else
     /// - [`Error::Io`] if it cannot be listed
-    pub fn claim(root: &Path) -> Result<Self> {
+    pub(crate) fn claim(root: &Path) -> Result<Self> {
         discover::refuse_foreign(root)?;
         Ok(Self {
             root: root.to_path_buf(),
@@ -233,7 +233,7 @@ impl Project {
     /// - [`Error::Io`] if `.tpmt/formats` is missing
     /// - [`Error::Parse`] if it is not what an unpack wrote, or names a kind
     ///   this build doesn't know
-    pub fn formats(&self) -> Result<store::Formats> {
+    pub fn formats(&self) -> Result<Formats> {
         store::read_formats(&self.store())
     }
 
@@ -254,7 +254,7 @@ impl Project {
     ///
     /// - [`Error::Io`] if `disc.toml` or `yaz0.toml` is missing
     /// - [`Error::Parse`] if either is not what an unpack wrote
-    pub fn read_base(&self) -> Result<base::Base> {
+    pub(crate) fn read_base(&self) -> Result<base::Base> {
         base::read(&self.base())
     }
 
@@ -264,7 +264,7 @@ impl Project {
     ///
     /// - [`Error::Io`] if `source.toml` or `digests` is missing
     /// - [`Error::Parse`] if either is not what an unpack wrote
-    pub fn read_store(&self) -> Result<store::Store> {
+    pub(crate) fn read_store(&self) -> Result<store::Store> {
         store::read(&self.store())
     }
 
@@ -279,7 +279,7 @@ impl Project {
     /// - [`Error::Io`] if `iso` cannot be canonicalized, or on any write
     /// - [`Error::UnusablePath`] if a path would not read back from a line of its own
     /// - [`Error::Serialize`] if a file will not serialize
-    pub fn write_store(
+    pub(crate) fn write_store(
         &self,
         iso: &Path,
         boot: &tpmt_disc::Boot,
@@ -297,7 +297,7 @@ impl Project {
     ///
     /// - [`Error::Io`] if any of it cannot be written
     /// - [`Error::Serialize`] if `mod.json` will not serialize
-    pub fn scaffold_mod(&self) -> Result<()> {
+    pub(crate) fn scaffold_mod(&self) -> Result<()> {
         let id = self
             .root
             .file_name()

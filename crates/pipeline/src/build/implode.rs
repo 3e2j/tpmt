@@ -32,8 +32,8 @@ pub enum EncodeError {
 /// Assembles one disc file: everything under it, then the Yaz0 wrapper if the
 /// disc held it wrapped.
 ///
-/// `wrapped` comes from `base/yaz0.toml`, since a loose file never records
-/// its own wrapper.
+/// `wrapped` comes from what the unpack recorded, since a loose file never
+/// records its own wrapper.
 ///
 /// # Errors
 ///

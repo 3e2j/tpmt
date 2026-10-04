@@ -76,8 +76,8 @@ impl<'a, E: From<Error>> Tree<'a, E> {
     /// comes back in exactly its own order.
     ///
     /// Only an edit can add one, since a vanilla member the sidecar does not
-    /// mention is `base/` having been edited. A nested
-    /// archive is one member rather than a directory of them.
+    /// mention means the vanilla copy itself was changed. A nested archive is
+    /// one member rather than a directory of them.
     #[must_use]
     pub fn members(&self, path: &str, sidecar: &Sidecar) -> Vec<Member> {
         let added: BTreeSet<&str> = self

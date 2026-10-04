@@ -1,12 +1,12 @@
 //! A Dusklight mod bundle: `mod.json`, an `overlay/` remapped to Dusklight's
 //! own naming, and `res/` carried across.
 //!
-//! Not implemented. It rebuilds the overlay the same way `patch` does.
+//! Not implemented. It rebuilds the changed files the same way `patch` does.
 //!
-//! What it will need that neither other target does: `mod/res/`, `mod.json`,
-//! the generated `res/main.luau` glue, and the overlay path rewrite for
-//! Dusklight's duplicated archive root names. Nothing of that belongs in the
-//! shared build; this is where it lands.
+//! What it will need that neither other target does: the mod's own resources and metadata,
+//! which [`Job`](crate::Job) doesn't carry yet, the generated `res/main.luau` glue,
+//! and the overlay path rewrite for Dusklight's duplicated archive root names.
+//! Nothing of that belongs in the shared build; this is where it lands.
 
 use std::path::{Path, PathBuf};
 
