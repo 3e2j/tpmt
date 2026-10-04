@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 # `disc.toml` and `source.toml` record the disc's own header types.
 tpmt-disc.workspace = true
-tpmt-binary.workspace = true
+tpmt-binary = { workspace = true, features = ["serde"] }
 tpmt-pipeline.workspace = true
 tpmt-report.workspace = true
 

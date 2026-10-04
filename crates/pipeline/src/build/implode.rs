@@ -3,16 +3,14 @@
 //!
 //! Builds leaves first. An archive's header records each member's offset and
 //! size, so the archive can't encode until every member's bytes are final.
-//! The recursion assembles each member, Yaz0-wraps it if its entry says so,
+//! The recursion assembles each member, wraps it if its entry says so,
 //! then encodes the archive. A disc file's own wrapper goes on last, because
 //! the disc records it, not an archive.
-
-use std::borrow::Cow;
 
 use rayon::prelude::*;
 use tpmt_archive::editable::sidecar::Sidecar;
 use tpmt_archive::{Archive, File, Format};
-use tpmt_compression::{Strategy, Yaz0};
+use tpmt_compression::{Compression, Strategy};
 
 use super::tree::Tree;
 use crate::{Error, Result};
@@ -29,27 +27,27 @@ pub enum EncodeError {
     Compress(#[from] tpmt_compression::Error),
 }
 
-/// Assembles one disc file: everything under it, then the Yaz0 wrapper if the
-/// disc held it wrapped.
+/// Assembles one disc file: everything under it, then the compression wrapper
+/// the disc held it in, if any.
 ///
-/// `wrapped` comes from what the unpack recorded, since a loose file never
-/// records its own wrapper.
+/// `compression` comes from what the unpack recorded, since a loose file
+/// never records its own wrapper.
 ///
 /// # Errors
 ///
 /// - whatever reading a file the archive holds returns
 /// - [`Error::Sidecar`] if an archive's sidecar won't read
 /// - [`Error::Encode`] if what came out does not fit the format
-pub fn disc_file<E>(tree: &Tree<'_, E>, path: &str, wrapped: bool) -> Result<Vec<u8>, E>
+pub fn disc_file<E>(
+    tree: &Tree<'_, E>,
+    path: &str,
+    compression: Option<Compression>,
+) -> Result<Vec<u8>, E>
 where
     E: From<Error> + Send,
 {
     let bare = node(tree, path)?;
-    if wrapped {
-        Ok(wrap(path, &bare)?)
-    } else {
-        Ok(bare)
-    }
+    Ok(wrap(path, bare, compression)?)
 }
 
 /// One project path's final bytes, minus whatever wrapper its container puts
@@ -74,18 +72,14 @@ where
     let members = tree.members(path, &sidecar);
 
     // Final bytes, in member order. Members are independent, and one archive
-    // can hold most of a build's Yaz0 work, so they encode in parallel rather
+    // can hold most of a build's compression work, so they encode in parallel rather
     // than leaving it to the single task `rebuild` gave this disc file.
     let bytes = members
         .par_iter()
         .map(|member| {
             let inner = format!("{path}/{}", member.path);
             let assembled = node(tree, &inner)?;
-            if member.yaz0_compressed {
-                Ok(wrap(&inner, &assembled)?)
-            } else {
-                Ok(assembled)
-            }
+            Ok(wrap(&inner, assembled, member.compression)?)
         })
         .collect::<Result<Vec<_>, E>>()?;
 
@@ -122,15 +116,14 @@ where
     Ok(encoded)
 }
 
-fn wrap(path: &str, data: &[u8]) -> Result<Vec<u8>> {
+/// `data` in `compression`'s wrapper, or as it is with none.
+fn wrap(path: &str, data: Vec<u8>, compression: Option<Compression>) -> Result<Vec<u8>> {
+    let Some(compression) = compression else {
+        return Ok(data);
+    };
     // Forced cheap (vanilla) strategy here. May be opened up in future
     // when customization comes into play.
-    Yaz0 {
-        data: Cow::Borrowed(data),
-        strategy: Strategy::Parity,
-    }
-    .encode()
-    .map_err(at(path))
+    tpmt_compression::compress(compression, &data, Strategy::Parity).map_err(at(path))
 }
 
 fn at<E: Into<EncodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {

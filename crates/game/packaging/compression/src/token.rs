@@ -1,13 +1,4 @@
-/// The flag byte itself: one bit per token in its group.
-pub type Flags = u8;
-/// Number of tokens preceded by one flag byte, each bit marks each following [`Token`] type
-// `Flags` is a `u8`, so `BITS` is always 8: this never truncates.
-#[allow(clippy::cast_possible_truncation)]
-pub const GROUP_SIZE: u8 = Flags::BITS as u8;
-/// Whether the token about to be read is a literal or a match (backref).
-pub const TOP_FLAG_BIT: Flags = 1 << (Flags::BITS - 1);
-
-/// One entry in a group of eight: a literal byte, or a back-reference.
+/// One step of the output: a literal byte, or a back-reference.
 pub enum Token {
     Literal(u8),
     BackReference(backref::Backreference),
@@ -43,9 +34,10 @@ pub mod backref {
     /// A back-reference's distance and length, decoupled from the u16-pair
     /// plus optional extension byte it's packed into on the wire.
     ///
-    /// The single home for that packing, read in [`Backreference::read`] and
-    /// written in [`Backreference::write`], so the two directions can't drift
-    /// apart from each other.
+    /// The single home for that packing, read in [`Backreference::from_pair`]
+    /// and written in [`Backreference::pair`] and [`Backreference::extended`],
+    /// so the two directions can't drift apart. Where the pair and its
+    /// extended byte go is up to each format.
     #[derive(Clone, Copy)]
     pub struct Backreference {
         distance: u16,
@@ -65,42 +57,81 @@ pub mod backref {
             Some(Self { distance, length })
         }
 
-        pub const fn distance(self) -> u16 {
-            self.distance
-        }
-
         pub const fn length(self) -> u16 {
             self.length
         }
 
-        pub fn read(reader: &mut tpmt_binary::Reader) -> crate::Result<Self> {
-            let pair = reader.u16()?;
+        /// Unpacks a pair, calling `extended` for the byte that follows it
+        /// when the nibble is zero.
+        pub fn from_pair(
+            pair: u16,
+            extended: impl FnOnce() -> crate::Result<u8>,
+        ) -> crate::Result<Self> {
             // The stored distance is one short of the real one, so a distance
             // field of zero still means "the byte before this one".
             let distance = (pair & DISTANCE_MASK) + 1;
             let length = match pair >> 12 {
-                0 => u16::from(reader.u8()?) + MIN_EXTENDED_LENGTH,
+                0 => u16::from(extended()?) + MIN_EXTENDED_LENGTH,
                 nibble => nibble - 1 + MIN_LENGTH,
             };
             Ok(Self { distance, length })
         }
 
-        pub fn write(self, out: &mut Vec<u8>) {
-            // Stored one short, matching the plus one `read` puts back.
+        /// The pair this packs into, the inverse of [`from_pair`](Self::from_pair).
+        pub const fn pair(self) -> u16 {
+            // Stored one short, matching the plus one `from_pair` puts back.
             let distance = self.distance - 1;
             if self.length < MIN_EXTENDED_LENGTH {
                 // -1 here to make sure it's never represented as 0 (used for extended byte)
                 let nibble = self.length - (MIN_LENGTH - 1);
-                out.extend_from_slice(&(nibble << 12 | distance).to_be_bytes());
+                nibble << 12 | distance
             } else {
-                out.extend_from_slice(&distance.to_be_bytes()); // Empty nibble + distance
-                // Only `new` and `read` build one, and both keep `length <=
-                // MAX_LENGTH`, which is `0xFF` past `MIN_EXTENDED_LENGTH`.
-                #[allow(clippy::expect_used)]
-                out.push(
-                    u8::try_from(self.length - MIN_EXTENDED_LENGTH).expect("within MAX_LENGTH"),
-                );
+                distance // Empty nibble + distance
             }
+        }
+
+        /// The byte that follows the pair, for a length the nibble can't hold.
+        pub fn extended(self) -> Option<u8> {
+            // Only `new` and `from_pair` build one, and both keep `length <=
+            // MAX_LENGTH`, which is `0xFF` past `MIN_EXTENDED_LENGTH`.
+            #[allow(clippy::expect_used)]
+            (self.length >= MIN_EXTENDED_LENGTH).then(|| {
+                u8::try_from(self.length - MIN_EXTENDED_LENGTH).expect("within MAX_LENGTH")
+            })
+        }
+
+        /// Copies this run into `out` at `pos`, from the bytes already written
+        /// behind it, and returns where the run ends.
+        ///
+        /// # Errors
+        ///
+        /// - [`Error::BackReference`](crate::Error::BackReference) if it
+        ///   reaches before the start of `out`
+        /// - [`Error::SizeMismatch`](crate::Error::SizeMismatch) if it runs
+        ///   past the end of `out`
+        pub fn copy(self, out: &mut [u8], pos: usize) -> crate::Result<usize> {
+            let (distance, length) = (self.distance as usize, self.length as usize);
+            let start = pos
+                .checked_sub(distance)
+                .ok_or(crate::Error::BackReference { pos, distance })?;
+            let end = pos + length;
+            if end > out.len() {
+                return Err(crate::Error::SizeMismatch {
+                    expected: out.len(),
+                    actual: end,
+                });
+            }
+
+            // A run longer than its distance repeats the bytes behind it, so
+            // each pass can copy everything written since `start`, doubling
+            // the chunk.
+            let mut pos = pos;
+            while pos < end {
+                let chunk = (pos - start).min(end - pos);
+                out.copy_within(start..start + chunk, pos);
+                pos += chunk;
+            }
+            Ok(end)
         }
     }
 }

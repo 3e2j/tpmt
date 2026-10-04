@@ -1,11 +1,11 @@
 //! Walks a disc and explodes each file (see [`explode`]), handing every leaf
 //! to the caller to store. See [`crate::unpack`].
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use rayon::prelude::*;
-use tpmt_binary::FileKind;
+use tpmt_binary::{Compression, FileKind};
 use tpmt_disc::{Disc, Entry, Metadata};
 use tpmt_report::{Progress, Step};
 
@@ -30,8 +30,8 @@ pub struct Unpacked<T> {
     pub metadata: Metadata,
     /// Every directory the disc lists, so an empty one survives.
     pub directories: Vec<String>,
-    /// The disc files that arrived Yaz0 wrapped.
-    pub yaz0_compressed: BTreeSet<String>,
+    /// The disc files that arrived compressed, and with which wrapper.
+    pub compressed: BTreeMap<String, Compression>,
     /// What `store` returned for each leaf, in the order files finish.
     pub stored: Vec<T>,
 }
@@ -77,7 +77,7 @@ where
 
             let mut stored = Vec::new();
             let mut reports = Vec::new();
-            let yaz0_compressed = explode::file(
+            let compression = explode::file(
                 path,
                 &data,
                 &mut |layer| -> Result<(), E> {
@@ -93,21 +93,24 @@ where
                 &mut reports,
             )?;
             progress.report(reports);
-            Ok((yaz0_compressed.then(|| path.to_string()), stored))
+            Ok((
+                compression.map(|compression| (path.to_string(), compression)),
+                stored,
+            ))
         })
         .collect::<Result<Vec<_>, E>>()?;
 
-    let mut yaz0_compressed = BTreeSet::new();
+    let mut compressed = BTreeMap::new();
     let mut stored = Vec::new();
     for (wrapped, leaves) in files {
-        yaz0_compressed.extend(wrapped);
+        compressed.extend(wrapped);
         stored.extend(leaves);
     }
 
     Ok(Unpacked {
         metadata: disc.metadata().clone(),
         directories,
-        yaz0_compressed,
+        compressed,
         stored,
     })
 }

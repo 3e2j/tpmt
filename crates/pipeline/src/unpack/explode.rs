@@ -7,11 +7,12 @@
 //! name, only on each format's magic. A blob nothing recognises passes
 //! through unchanged, whatever its name claims.
 //!
-//! [`file`] peels Yaz0 before sniffing content, since most files on disc
-//! arrive wrapped and nothing downstream expects to see it. It hands back
-//! whether a wrapper came off, since the record of it belongs to whatever
-//! holds the file. An archive writes it on the member's sidecar entry, the
-//! disc on `yaz0.toml`. A file never records its own.
+//! [`file`] peels a compression wrapper before sniffing content, since most
+//! files on disc arrive wrapped and nothing downstream expects to see it.
+//! It hands back which wrapper came off, since the record of it belongs to
+//! whatever holds the file. An archive writes it on the member's sidecar
+//! entry, and the unpack's caller keeps it for a disc file. A file never
+//! records its own.
 //!
 //! An archive entry also states its member's compression in its flags. The
 //! magic still decides what gets peeled, and a flag that disagrees with it
@@ -26,7 +27,6 @@ use std::borrow::Cow;
 use tpmt_archive::Archive;
 use tpmt_archive::editable::sidecar::{Member, SIDECAR, Sidecar};
 use tpmt_binary::{Compression, FileKind, Format};
-use tpmt_compression::Yaz0;
 use tpmt_report::Report;
 
 use crate::{Error, Result};
@@ -51,7 +51,8 @@ pub enum DecodeError {
 
 /// One step on the way from a disc file to the project files it becomes.
 ///
-/// A Yaz0 wrapper and the bytes it holds share a path, told apart by `kind`.
+/// A compression wrapper and the bytes it holds share a path, told apart by
+/// `kind`.
 #[derive(Debug, Clone, Copy)]
 pub struct Layer<'a> {
     /// Its project path.
@@ -68,8 +69,8 @@ pub struct Layer<'a> {
 ///
 /// Calls `sink` with every [`Layer`], outermost first: the wrapper if there
 /// is one, then a plain file, or an archive followed by each member's layers
-/// and its sidecar. Returns whether a Yaz0 wrapper came off `data` first, for
-/// the caller to record. Pushes a warning to `reports` for every member whose
+/// and its sidecar. Returns the compression wrapper that came off `data`
+/// first, if any, for the caller to record. Pushes a warning to `reports` for every member whose
 /// entry misstates its compression.
 ///
 /// Each format's magic picks it before its decoder runs, so an error out of
@@ -78,29 +79,30 @@ pub struct Layer<'a> {
 ///
 /// # Errors
 ///
-/// - [`Error::Decode`] naming the innermost file whose Yaz0 wrapper or
-///   archive would not open
+/// - [`Error::Decode`] naming the innermost file whose compression wrapper
+///   or archive would not open
 /// - whatever `sink` returns
 pub fn file<E: From<Error>>(
     path: &str,
     data: &[u8],
     sink: &mut impl FnMut(Layer<'_>) -> Result<(), E>,
     reports: &mut Vec<Report>,
-) -> Result<bool, E> {
+) -> Result<Option<Compression>, E> {
     // On this disc the wrapper is a convention of where a file sits, not
     // something the file itself declares, so the caller records it.
     let kind = FileKind::identify(data);
-    let bare = match kind {
-        Some(FileKind::Yaz0) => {
+    let compression = kind.and_then(FileKind::compression);
+    let bare = match compression {
+        Some(compression) => {
             sink(Layer {
                 path,
                 kind,
                 bytes: data,
                 leaf: false,
             })?;
-            Yaz0::decode(data).map_err(at(path))?.data
+            Cow::Owned(tpmt_compression::decompress(compression, data).map_err(at(path))?)
         }
-        _ => Cow::Borrowed(data),
+        None => Cow::Borrowed(data),
     };
 
     let inner = FileKind::identify(&bare);
@@ -118,11 +120,11 @@ pub fn file<E: From<Error>>(
         archive(path, decoded, sink, reports)?;
     }
 
-    Ok(kind == Some(FileKind::Yaz0))
+    Ok(compression)
 }
 
 /// Sinks every member of `archive`, then a [`SIDECAR`] recording each
-/// member's path, preload flag, id, and Yaz0 wrapper.
+/// member's path, preload flag, id, and compression wrapper.
 fn archive<E: From<Error>>(
     path: &str,
     archive: Archive<'_>,
@@ -141,11 +143,11 @@ fn archive<E: From<Error>>(
                 describe(found)
             )));
         }
-        let yaz0_compressed = file(&member_path, member.data, sink, reports)?;
+        let compression = file(&member_path, member.data, sink, reports)?;
         members.push(Member {
             path: member.path.clone(),
             preload: member.preload,
-            yaz0_compressed,
+            compression,
             id: member.id,
         });
     }
@@ -172,20 +174,13 @@ fn at<E: Into<DecodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {
 mod tests {
     use std::collections::BTreeMap;
 
-    use std::borrow::Cow;
     use tpmt_archive::File;
-
     use tpmt_compression::Strategy;
 
     use super::*;
 
-    fn wrap(data: &[u8]) -> Vec<u8> {
-        Yaz0 {
-            data: Cow::Borrowed(data),
-            strategy: Strategy::Parity,
-        }
-        .encode()
-        .unwrap()
+    fn wrap(compression: Compression, data: &[u8]) -> Vec<u8> {
+        tpmt_compression::compress(compression, data, Strategy::Parity).unwrap()
     }
 
     fn archive(root: &str, files: Vec<File<'_>>) -> Vec<u8> {
@@ -211,14 +206,14 @@ mod tests {
     struct Exploded {
         /// Everything it became, keyed by project path.
         outputs: BTreeMap<String, Vec<u8>>,
-        yaz0_compressed: bool,
+        compression: Option<Compression>,
         reports: Vec<Report>,
     }
 
     fn explode(path: &str, data: &[u8]) -> Result<Exploded> {
         let mut outputs = BTreeMap::new();
         let mut reports = Vec::new();
-        let yaz0_compressed = super::file(
+        let compression = super::file(
             path,
             data,
             &mut |layer| -> Result<()> {
@@ -231,7 +226,7 @@ mod tests {
         )?;
         Ok(Exploded {
             outputs,
-            yaz0_compressed,
+            compression,
             reports,
         })
     }
@@ -247,10 +242,10 @@ mod tests {
     fn unrecognised_bytes_pass_through_unwrapped() {
         let Exploded {
             outputs,
-            yaz0_compressed,
+            compression,
             ..
-        } = explode("files/thing.bin", &wrap(b"not a format")).unwrap();
-        assert!(yaz0_compressed);
+        } = explode("files/thing.bin", &wrap(Compression::Yaz0, b"not a format")).unwrap();
+        assert_eq!(compression, Some(Compression::Yaz0));
         assert_eq!(
             outputs,
             BTreeMap::from([("files/thing.bin".to_string(), b"not a format".to_vec())])
@@ -258,28 +253,35 @@ mod tests {
     }
 
     /// A wrapped archive holding a wrapped member and a wrapped nested
-    /// archive. Every wrapper comes off, and whatever held the file records
-    /// it exactly once.
+    /// archive. Every wrapper comes off, whichever it is, and whatever held
+    /// the file records it exactly once.
     #[test]
     fn wrapping_is_recorded_by_the_container() {
-        let inner = wrap(&archive("inner", vec![file("deep.bin", b"deep")]));
-        let member = wrap(b"member");
-        let outer = wrap(&archive(
-            "outer",
-            vec![
-                file("inner.arc", &inner),
-                file("wrapped.bin", &member),
-                file("plain.bin", b"plain"),
-            ],
-        ));
+        let inner = wrap(
+            Compression::Yaz0,
+            &archive("inner", vec![file("deep.bin", b"deep")]),
+        );
+        let member = wrap(Compression::Yay0, b"member");
+        let outer = wrap(
+            Compression::Yaz0,
+            &archive(
+                "outer",
+                vec![
+                    file("inner.arc", &inner),
+                    file("wrapped.bin", &member),
+                    file("plain.bin", b"plain"),
+                ],
+            ),
+        );
 
         let Exploded {
             outputs,
-            yaz0_compressed,
+            compression,
             reports,
         } = explode("files/outer.arc", &outer).unwrap();
-        assert!(
-            yaz0_compressed,
+        assert_eq!(
+            compression,
+            Some(Compression::Yaz0),
             "the disc file's wrapper goes up to the caller, not to disk"
         );
         assert_eq!(reports, [], "a packed archive states what its bytes are");
@@ -301,14 +303,14 @@ mod tests {
         let wrapped: Vec<_> = outer
             .members
             .iter()
-            .map(|member| (member.path.as_str(), member.yaz0_compressed))
+            .map(|member| (member.path.as_str(), member.compression))
             .collect();
         assert_eq!(
             wrapped,
             [
-                ("inner.arc", true),
-                ("wrapped.bin", true),
-                ("plain.bin", false)
+                ("inner.arc", Some(Compression::Yaz0)),
+                ("wrapped.bin", Some(Compression::Yay0)),
+                ("plain.bin", None)
             ]
         );
     }
@@ -317,8 +319,11 @@ mod tests {
     /// first, with only what the project stores marked as a leaf.
     #[test]
     fn every_layer_reaches_the_sink() {
-        let member = wrap(b"member");
-        let outer = wrap(&archive("outer", vec![file("wrapped.bin", &member)]));
+        let member = wrap(Compression::Yaz0, b"member");
+        let outer = wrap(
+            Compression::Yaz0,
+            &archive("outer", vec![file("wrapped.bin", &member)]),
+        );
 
         let mut layers = Vec::new();
         super::file(
@@ -349,7 +354,7 @@ mod tests {
     /// the magic still decides that the wrapper comes off.
     #[test]
     fn misstated_compression_is_warned_about() {
-        let member = wrap(b"member");
+        let member = wrap(Compression::Yaz0, b"member");
         let mut outer = archive("outer", vec![file("wrapped.bin", &member)]);
 
         // The entry list's offset sits 0xC into the data header at 0x20, and
@@ -373,7 +378,7 @@ mod tests {
     /// The innermost path, not the disc file's, names a failure.
     #[test]
     fn errors_name_the_member_that_failed() {
-        let mut truncated = wrap(b"member bytes that will be cut short");
+        let mut truncated = wrap(Compression::Yaz0, b"member bytes that will be cut short");
         truncated.truncate(12);
         let outer = archive("outer", vec![file("bad.bin", &truncated)]);
 

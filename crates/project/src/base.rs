@@ -2,45 +2,38 @@
 //! what its unpacked files can't:
 //!
 //! ```text
-//! disc.toml   tpmt_disc::Metadata   preamble values a build cannot derive
-//! yaz0.toml   Yaz0                  which loose files arrived Yaz0 wrapped
+//! disc.toml          tpmt_disc::Metadata   preamble values a build cannot derive
+//! compression.toml   path = "yaz0"         which loose files arrived wrapped, in what
 //! ```
 //!
 //! `disc.toml` is safe to edit by hand. Every unpack rewrites `base/` whole.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use tpmt_binary::Compression;
 
 use crate::Result;
 use crate::io::fs::{read_toml, write_toml};
 
 pub const DIR: &str = "base";
 const DISC_TOML: &str = "disc.toml";
-const YAZ0_TOML: &str = "yaz0.toml";
-
-/// `yaz0.toml`. Recorded here because a loose file never records its own
-/// wrapper (unlike containers).
-///
-/// A set rather than a list, since the only question anyone asks it is
-/// whether one path is in it.
-#[derive(Serialize, Deserialize)]
-struct Yaz0 {
-    compressed: BTreeSet<String>,
-}
+/// Recorded here because a loose file never records its own wrapper (unlike
+/// an archive member, whose sidecar does).
+const COMPRESSION_TOML: &str = "compression.toml";
 
 /// What `base/` says about itself, which is everything a rebuild needs that
 /// the unpacked files do not carry.
 pub struct Base {
     /// The preamble values a build cannot derive.
     pub metadata: tpmt_disc::Metadata,
-    /// Which disc files arrived Yaz0 wrapped, so a rebuild puts the wrapper
-    /// back on the same ones.
-    pub yaz0_compressed: BTreeSet<String>,
+    /// Which disc files arrived compressed, so a rebuild puts the same
+    /// wrapper back on each.
+    pub compressed: BTreeMap<String, Compression>,
 }
 
-/// Writes `disc.toml` and `yaz0.toml` into `dir`, a `base/` being staged.
+/// Writes `disc.toml` and `compression.toml` into `dir`, a `base/` being
+/// staged.
 ///
 /// The one call site for everything under `base/` that isn't a copied file,
 /// so nothing else reaches into `base/` to write a TOML of its own.
@@ -52,27 +45,22 @@ pub struct Base {
 pub fn write(
     dir: &Path,
     metadata: &tpmt_disc::Metadata,
-    yaz0_compressed: BTreeSet<String>,
+    compressed: &BTreeMap<String, Compression>,
 ) -> Result<()> {
     write_toml(&dir.join(DISC_TOML), metadata)?;
-    write_toml(
-        &dir.join(YAZ0_TOML),
-        &Yaz0 {
-            compressed: yaz0_compressed,
-        },
-    )
+    write_toml(&dir.join(COMPRESSION_TOML), compressed)
 }
 
 pub fn read(dir: &Path) -> Result<Base> {
     let metadata = read_toml(&dir.join(DISC_TOML))?;
-    let yaz0: Yaz0 = read_toml(&dir.join(YAZ0_TOML))?;
+    let compressed = read_toml(&dir.join(COMPRESSION_TOML))?;
     Ok(Base {
         metadata,
-        yaz0_compressed: yaz0.compressed,
+        compressed,
     })
 }
 
-/// The disc's boot header from `disc.toml`, without reading `yaz0.toml`.
+/// The disc's boot header from `disc.toml`, without reading `compression.toml`.
 pub fn read_boot(dir: &Path) -> Result<tpmt_disc::Boot> {
     let metadata: tpmt_disc::Metadata = read_toml(&dir.join(DISC_TOML))?;
     Ok(metadata.boot)

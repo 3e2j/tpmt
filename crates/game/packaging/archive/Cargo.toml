@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-tpmt-binary.workspace = true
+tpmt-binary = { workspace = true, features = ["serde"] }
 thiserror.workspace = true
 encoding_rs.workspace = true # entry names in the string pool are Shift-JIS
 serde.workspace = true

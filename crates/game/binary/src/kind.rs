@@ -32,12 +32,14 @@ pub enum FileKind {
     /// A compression wrapper, owned by `JKernel` and decoded by
     /// `tpmt-compression`.
     Yaz0,
+    /// The other compression wrapper, the same way.
+    Yay0,
     /// A message file, owned by `JMessage` and decoded by `tpmt-message`.
     Mesg,
 }
 
 impl FileKind {
-    pub const ALL: [Self; 3] = [Self::Rarc, Self::Yaz0, Self::Mesg];
+    pub const ALL: [Self; 4] = [Self::Rarc, Self::Yaz0, Self::Yay0, Self::Mesg];
 
     /// The kind whose magic `data` opens with, if any.
     #[must_use]
@@ -68,6 +70,7 @@ impl FileKind {
         match self {
             Self::Rarc => *b"RARC",
             Self::Yaz0 => *b"Yaz0",
+            Self::Yay0 => *b"Yay0",
             Self::Mesg => *b"MESG",
         }
     }
@@ -78,6 +81,7 @@ impl FileKind {
         match self {
             Self::Rarc => "rarc",
             Self::Yaz0 => "yaz0",
+            Self::Yay0 => "yay0",
             Self::Mesg => "mesg",
         }
     }
@@ -93,9 +97,8 @@ impl FileKind {
     pub const fn compression(self) -> Option<Compression> {
         match self {
             Self::Yaz0 => Some(Compression::Yaz0),
-            // Yay0 has no FileKind yet. Once it does, its arm is
-            // Compression::Yay0.
-            _ => None,
+            Self::Yay0 => Some(Compression::Yay0),
+            Self::Rarc | Self::Mesg => None,
         }
     }
 
@@ -111,7 +114,15 @@ impl FileKind {
 
 /// A compression wrapper, the subset of formats a container can say its
 /// contents are in.
+///
+/// With the `serde` feature, a record names one the way [`FileKind::name`]
+/// does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "lowercase")
+)]
 pub enum Compression {
     Yaz0,
     /// No retail archive marks a file with it.

@@ -44,7 +44,7 @@ impl Project {
         }
 
         progress.begin(Step::Save, 0);
-        base::write(base, &unpacked.metadata, unpacked.yaz0_compressed)?;
+        base::write(base, &unpacked.metadata, &unpacked.compressed)?;
         staging.promote()?;
 
         let mut digests = Digests::new();

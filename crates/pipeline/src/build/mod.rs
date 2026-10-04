@@ -7,10 +7,11 @@
 //!
 //! An unchanged file is never rebuilt.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
+use tpmt_binary::Compression;
 use tpmt_disc::{Boot, Metadata};
 use tpmt_report::{Progress, Step};
 
@@ -62,9 +63,9 @@ pub struct Job<'a, E> {
     pub edits: &'a [String],
     /// The preamble values a build cannot derive.
     pub metadata: &'a Metadata,
-    /// The disc files that arrived Yaz0 wrapped, so a rebuild puts the
-    /// wrapper back on the same ones.
-    pub yaz0_compressed: &'a BTreeSet<String>,
+    /// The disc files that arrived compressed, so a rebuild puts the same
+    /// wrapper back on each.
+    pub compressed: &'a BTreeMap<String, Compression>,
     pub source: Source<'a>,
     /// What to call a build that is one file, like an image.
     pub name: &'a str,
@@ -127,8 +128,8 @@ where
         .changed
         .par_iter()
         .map(|path| {
-            let wrapped = job.yaz0_compressed.contains(path);
-            let bytes = implode::disc_file(&context.tree, path, wrapped)?;
+            let compression = job.compressed.get(path).copied();
+            let bytes = implode::disc_file(&context.tree, path, compression)?;
             fs::write(&into.join(path), &bytes)?;
             rebuilding.add(1);
             Ok(())

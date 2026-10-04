@@ -81,7 +81,7 @@ impl Project {
             },
             edits: &edits,
             metadata: &base.metadata,
-            yaz0_compressed: &base.yaz0_compressed,
+            compressed: &base.compressed,
             source: Source {
                 iso: &source.iso,
                 id: &source.id,
@@ -136,10 +136,11 @@ impl Files<Error> for Checked<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     use tempfile::TempDir;
     use tpmt_archive::editable::sidecar::{Member, Sidecar};
+    use tpmt_binary::Compression;
     use tpmt_disc::{Bi2, Boot, Metadata};
 
     use super::*;
@@ -180,7 +181,7 @@ mod tests {
     ///
     /// ```text
     /// files/outer.arc/plain.bin     "plain"
-    /// files/outer.arc/wrapped.bin   "member", Yaz0 inside the archive
+    /// files/outer.arc/wrapped.bin   "member", Yay0 inside the archive
     /// files/loose.bin               "loose"
     /// ```
     fn unpacked() -> TempDir {
@@ -194,13 +195,13 @@ mod tests {
                 Member {
                     path: "plain.bin".to_string(),
                     preload: tpmt_archive::Preload::Mram,
-                    yaz0_compressed: false,
+                    compression: None,
                     id: Some(0),
                 },
                 Member {
                     path: "wrapped.bin".to_string(),
                     preload: tpmt_archive::Preload::Mram,
-                    yaz0_compressed: true,
+                    compression: Some(Compression::Yay0),
                     id: Some(1),
                 },
             ],
@@ -225,7 +226,7 @@ mod tests {
         base::write(
             &base,
             &metadata(),
-            BTreeSet::from(["files/outer.arc".to_string()]),
+            &BTreeMap::from([("files/outer.arc".to_string(), Compression::Yaz0)]),
         )
         .unwrap();
 
@@ -304,9 +305,15 @@ mod tests {
         let wrapped: Vec<_> = sidecar
             .members
             .iter()
-            .map(|member| (member.path.as_str(), member.yaz0_compressed))
+            .map(|member| (member.path.as_str(), member.compression))
             .collect();
-        assert_eq!(wrapped, [("plain.bin", false), ("wrapped.bin", true)]);
+        assert_eq!(
+            wrapped,
+            [
+                ("plain.bin", None),
+                ("wrapped.bin", Some(Compression::Yay0))
+            ]
+        );
         assert_eq!(sidecar.root, "outer");
     }
 

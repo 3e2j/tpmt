@@ -3,7 +3,7 @@
 //! - Pre-assigned member IDs used for cross-referencing.
 //! - Which memory each member is loaded into.
 //! - The name the root node goes back under.
-//! - Yaz0 wrapper presence, per member.
+//! - Which compression wrapper, if any, per member.
 //!
 //! The order of the members is data too. An archive lays its file bytes out in
 //! the order its entries come, and the two preload runs the header describes
@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Preload;
+use crate::{Compression, Preload};
 
 /// The name a project keeps this under, at the root of every directory an
 /// archive was unpacked into.
@@ -33,7 +33,7 @@ const ROOT: &str = "archive";
 /// per file sits on [`Member`] instead, because that is where the archive keeps
 /// it: an entry each, not a setting for the container.
 ///
-/// Whether the archive itself arrived Yaz0 wrapped is not here either: that
+/// Whether the archive itself arrived compressed is not here either: that
 /// is a fact about it as somebody's member, so whatever holds the archive
 /// (a parent archive, or the disc) records it, the same way this records it
 /// for each member.
@@ -65,12 +65,12 @@ pub struct Member {
     pub path: String,
     /// Which memory the game loads this one file into.
     pub preload: Preload,
-    /// Whether this member's bytes were Yaz0 wrapped inside the archive.
+    /// The wrapper this member's bytes had inside the archive, if any.
     ///
     /// Recorded because unpack takes the wrapper off members before writing
     /// the member out.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub yaz0_compressed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<Compression>,
     /// The id the game asks for this member by.
     ///
     /// Left out only for a member nothing has named, which is one somebody put
@@ -109,7 +109,7 @@ impl Member {
         Self {
             path,
             preload: Preload::Mram,
-            yaz0_compressed: false,
+            compression: None,
             id: None,
         }
     }
@@ -167,13 +167,13 @@ mod tests {
                 Member {
                     path: "model.bdl".to_string(),
                     preload: Preload::Mram,
-                    yaz0_compressed: false,
+                    compression: None,
                     id: Some(0),
                 },
                 Member {
                     path: "sound/bgm.aw".to_string(),
                     preload: Preload::Aram,
-                    yaz0_compressed: true,
+                    compression: Some(Compression::Yaz0),
                     id: Some(3),
                 },
             ],
@@ -198,16 +198,16 @@ mod tests {
              [[member]]\n\
              path = \"sound/bgm.aw\"\n\
              preload = \"aram\"\n\
-             yaz0_compressed = true\n\
+             compression = \"yaz0\"\n\
              id = 3\n"
         );
 
         let read = Sidecar::from_toml(&text).unwrap();
         assert_eq!(read.root, "archive");
         assert_eq!(read.members[0].id, Some(0));
-        assert!(!read.members[0].yaz0_compressed);
+        assert_eq!(read.members[0].compression, None);
         assert_eq!(read.members[1].preload, Preload::Aram);
-        assert!(read.members[1].yaz0_compressed);
+        assert_eq!(read.members[1].compression, Some(Compression::Yaz0));
         assert_eq!(read.members[1].id, Some(3));
     }
 
@@ -224,7 +224,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!read.members[0].yaz0_compressed);
+        assert_eq!(read.members[0].compression, None);
         assert_eq!(read.members[0].id, None);
     }
 }

@@ -8,19 +8,19 @@
 //! A project is two directories, edited in place:
 //!
 //! ```text
-//! base/         read-only unpack of the ISO, decoded index for the UI to browse
-//!   disc.toml   the preamble values a build cannot derive
-//!   yaz0.toml   which loose files arrived Yaz0 wrapped
-//!   sys/        apploader.img, main.dol
-//!   files/      game content, archives as directories
-//! mod/          the mod project; the only directory a modder edits
-//!   overlay/    whole-file / archive-member replacements, real paths
-//!   res/        authored user-made content
-//!     scripts/  Luau scripts, never parsed, copied into a build untouched
-//!   mod.json    mod metadata (id, name, version, author, description, icon, banner)
+//! base/                read-only unpack of the ISO, decoded index for the UI to browse
+//!   disc.toml          the preamble values a build cannot derive
+//!   compression.toml   which loose files arrived wrapped, and in what
+//!   sys/               apploader.img, main.dol
+//!   files/             game content, archives as directories
+//! mod/                 the mod project; the only directory a modder edits
+//!   overlay/           whole-file / archive-member replacements, real paths
+//!   res/               authored user-made content
+//!     scripts/         Luau scripts, never parsed, copied into a build untouched
+//!   mod.json           mod metadata (id, name, version, author, description, icon, banner)
 //! build/
 //!   targets/
-//!     <target>/ what one build target produced, cleared and rewritten by it
+//!     <target>/        what one build target produced, cleared and rewritten by it
 //! ```
 //!
 //! Every unpack rewrites `base/` whole, and writes `mod/` only if it is
@@ -252,7 +252,7 @@ impl Project {
     ///
     /// # Errors
     ///
-    /// - [`Error::Io`] if `disc.toml` or `yaz0.toml` is missing
+    /// - [`Error::Io`] if `disc.toml` or `compression.toml` is missing
     /// - [`Error::Parse`] if either is not what an unpack wrote
     pub(crate) fn read_base(&self) -> Result<base::Base> {
         base::read(&self.base())

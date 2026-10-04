@@ -1,11 +1,9 @@
-//! The write path: turns raw bytes into Yaz0 data.
+//! The match search both formats share: turns raw bytes into tokens. Each
+//! format lays the tokens out its own way.
 
-use tpmt_binary::{Be32, FileKind, Record, Writer};
-
-use crate::Header;
+use crate::Strategy;
+use crate::token::Token;
 use crate::token::backref::{Backreference, MAX_DISTANCE, MAX_LENGTH, MIN_LENGTH};
-use crate::token::{Flags, GROUP_SIZE, TOP_FLAG_BIT, Token};
-use crate::{Error, Result, Strategy};
 
 /// After finding a valid backref match, we look to see if a match beside it is
 /// better, a "lazy match". These are the knobs that shape detection.
@@ -64,65 +62,49 @@ impl LazyMatch {
     }
 }
 
-/// Compresses `input` into Yaz0 data. See the module docs for the token
-/// format.
-pub fn compress(input: &[u8], strategy: Strategy) -> Result<Vec<u8>> {
-    encode_with(input, &LazyMatch::of(strategy))
+/// Every token `input` compresses to, in order.
+pub struct Tokens<'a> {
+    data: &'a [u8],
+    pos: usize,
+    chains: Chains,
+    lookahead: Lookahead,
+    strategy: LazyMatch,
 }
 
-/// Runs the encoder against an explicit strategy.
-fn encode_with(input: &[u8], strategy: &LazyMatch) -> Result<Vec<u8>> {
-    let decompressed_size =
-        u32::try_from(input.len()).map_err(|_| Error::TooLarge { len: input.len() })?;
-
-    let mut out = Writer::with_capacity(Header::LEN + input.len());
-    out.record(&Header {
-        magic: FileKind::Yaz0.magic(),
-        decompressed_size: Be32::new(decompressed_size),
-        unnamed: [0; 8],
-    });
-    let mut out = out.finish();
-
-    let mut chains = Chains::new(decompressed_size);
-    let mut lookahead = Lookahead::default();
-    let mut pos = 0;
-
-    let mut flags: Flags = 0;
-    let mut body = Vec::new();
-    let mut items = 0;
-
-    while pos < input.len() {
-        match next_token(&mut chains, &mut lookahead, input, pos, strategy) {
-            Token::Literal(byte) => {
-                flags |= TOP_FLAG_BIT >> items;
-                body.push(byte);
-                pos += 1;
-            }
-            Token::BackReference(matched) => {
-                matched.write(&mut body);
-                pos += matched.length() as usize;
-            }
-        }
-
-        items += 1;
-        if items == GROUP_SIZE {
-            out.push(flags);
-            out.append(&mut body);
-            flags = 0;
-            items = 0;
+impl<'a> Tokens<'a> {
+    /// `input` must fit a 32-bit size, which every format's header checks
+    /// first.
+    pub fn new(input: &'a [u8], size: u32, strategy: Strategy) -> Self {
+        Self {
+            data: input,
+            pos: 0,
+            chains: Chains::new(size),
+            lookahead: Lookahead::default(),
+            strategy: LazyMatch::of(strategy),
         }
     }
+}
 
-    // Flushes the un-full final group.
-    // As a quirk, on an exact multiple of 8, flags/body are already blank here
-    // (from the reset above), but not empty, so this writes a trailing zero byte.
-    // This is never read back by the decoder, but kept for Nintendo parity.
-    if !input.is_empty() {
-        out.push(flags);
-        out.append(&mut body);
+impl Iterator for Tokens<'_> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Token> {
+        if self.pos >= self.data.len() {
+            return None;
+        }
+        let token = next_token(
+            &mut self.chains,
+            &mut self.lookahead,
+            self.data,
+            self.pos,
+            &self.strategy,
+        );
+        self.pos += match &token {
+            Token::Literal(_) => 1,
+            Token::BackReference(matched) => matched.length() as usize,
+        };
+        Some(token)
     }
-
-    Ok(out)
 }
 
 /// A backreference the lazy match has committed to using, plus how many more
@@ -312,75 +294,5 @@ impl Chains {
         }
 
         best
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::borrow::Cow;
-
-    use super::*;
-    use crate::{Format, Yaz0};
-
-    /// Deterministic noise, so a failure repeats.
-    fn noise(len: usize) -> Vec<u8> {
-        let mut state = 0x1234_5678u32;
-        (0..len)
-            .map(|_| {
-                state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
-                // Intentional truncation: taking the PRNG's middle byte, not narrowing a value.
-                #[allow(clippy::cast_possible_truncation)]
-                {
-                    (state >> 16) as u8
-                }
-            })
-            .collect()
-    }
-
-    fn round_trip(input: &[u8]) {
-        for strategy in [Strategy::Parity, Strategy::Extensive] {
-            let encoded = Yaz0 {
-                data: Cow::Borrowed(input),
-                strategy,
-            }
-            .encode()
-            .unwrap();
-            FileKind::Yaz0.check(&encoded).unwrap_or_else(|err| {
-                panic!("encoder wrote something else entirely, {strategy:?}: {err}")
-            });
-            assert_eq!(
-                *Yaz0::decode(&encoded).unwrap().data,
-                *input,
-                "on {} bytes, {strategy:?}",
-                input.len()
-            );
-        }
-    }
-
-    /// Literals, back-references, and a run overlapping its own output, which
-    /// is why the decoder copies a byte at a time.
-    #[test]
-    fn round_trips_literals_and_runs() {
-        let mut input = b"the quick brown fox jumps over the quick brown dog".to_vec();
-        input.extend(std::iter::repeat_n(b'!', 300));
-        round_trip(&input);
-    }
-
-    /// Both length encodings and the boundary where the nibble runs out.
-    #[test]
-    fn round_trips_every_match_length() {
-        for length in MIN_LENGTH as usize..=MAX_LENGTH as usize + 8 {
-            let mut input = noise(length);
-            input.extend_from_within(..);
-            round_trip(&input);
-        }
-    }
-
-    /// Lengths either side of a full group of eight, empty included.
-    #[test]
-    fn round_trips_short_buffers() {
-        for length in 0..40 {
-            round_trip(&b"abcabcabcabcabcabcabcabcabcabcabcabcabca"[..length]);
-        }
     }
 }
