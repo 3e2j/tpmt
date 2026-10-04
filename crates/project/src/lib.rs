@@ -70,6 +70,7 @@ mod discover;
 pub mod io;
 mod layers;
 mod mod_dir;
+pub mod path;
 pub mod store;
 
 pub use discover::is_project;
@@ -110,6 +111,28 @@ pub enum Error {
 
     #[error("nothing in `base/` or `mod/overlay/` holds `{0}`")]
     MissingFile(String),
+}
+
+impl Error {
+    /// Wraps an I/O failure at `path`, for `map_err`.
+    pub fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Self + '_ {
+        move |source| Self::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+
+    /// Wraps a failure to parse the file at `path` after it read fine, for
+    /// `map_err`.
+    pub fn parse<E>(path: &Path) -> impl FnOnce(E) -> Self + '_
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        move |source| Self::Parse {
+            path: path.to_path_buf(),
+            source: source.into(),
+        }
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

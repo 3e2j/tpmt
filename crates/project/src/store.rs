@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
-use crate::io::fs::{self, io_at, parse_at, read_toml, write_toml};
+use crate::io::fs::{self, read_toml, write_toml};
 use crate::{Error, FileKind, Result};
 
 pub(crate) const DIR: &str = ".tpmt";
@@ -59,7 +59,7 @@ pub(crate) fn write(
     digests: &Digests,
     formats: &Formats,
 ) -> Result<()> {
-    let iso = iso.canonicalize().map_err(io_at(iso))?;
+    let iso = iso.canonicalize().map_err(Error::io(iso))?;
     write_digests(&dir.join(DIGESTS), digests)?;
     write_formats(&dir.join(FORMATS), formats)?;
     write_toml(
@@ -113,10 +113,10 @@ fn read_digests(path: &Path) -> Result<Digests> {
     read_text(path)?
         .lines()
         .map(|line| {
-            let (digest, file) = line
-                .split_once("  ")
-                .ok_or_else(|| parse_at(path)(format!("`{line}` is not a digest and a path")))?;
-            let digest = u128::from_str_radix(digest, 16).map_err(parse_at(path))?;
+            let (digest, file) = line.split_once("  ").ok_or_else(|| {
+                Error::parse(path)(format!("`{line}` is not a digest and a path"))
+            })?;
+            let digest = u128::from_str_radix(digest, 16).map_err(Error::parse(path))?;
             Ok((file.to_string(), digest))
         })
         .collect()
@@ -160,12 +160,12 @@ pub(crate) fn read_formats(dir: &Path) -> Result<Formats> {
             .and_then(|line| line.strip_suffix(']'))
         {
             let kind = FileKind::from_name(name)
-                .ok_or_else(|| parse_at(&path)(format!("no file kind is named `{name}`")))?;
+                .ok_or_else(|| Error::parse(&path)(format!("no file kind is named `{name}`")))?;
             files = Some(formats.entry(kind).or_default());
         } else {
             files
                 .as_mut()
-                .ok_or_else(|| parse_at(&path)(format!("`{line}` comes before any `[kind]`")))?
+                .ok_or_else(|| Error::parse(&path)(format!("`{line}` comes before any `[kind]`")))?
                 .insert(line.to_string());
         }
     }
@@ -182,7 +182,7 @@ fn one_line(file: &str) -> Result<&str> {
 }
 
 fn read_text(path: &Path) -> Result<String> {
-    String::from_utf8(fs::read(path)?).map_err(parse_at(path))
+    String::from_utf8(fs::read(path)?).map_err(Error::parse(path))
 }
 
 /// The digest [`Digests`] records per project file.
@@ -201,9 +201,9 @@ pub fn digest(data: &[u8]) -> u128 {
 ///
 /// - [`Error::Io`] if the file cannot be opened or read
 pub fn digest_file(path: &Path) -> Result<u128> {
-    let file = std::fs::File::open(path).map_err(io_at(path))?;
+    let file = std::fs::File::open(path).map_err(Error::io(path))?;
     let mut hasher = Xxh3::new();
-    std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(io_at(path))?;
+    std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(Error::io(path))?;
     Ok(hasher.digest128())
 }
 

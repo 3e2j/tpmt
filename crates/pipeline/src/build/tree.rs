@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use tpmt_archive::editable::sidecar::{Member, SIDECAR, Sidecar};
-use tpmt_project::io::fs;
+use tpmt_project::path::join;
 use tpmt_project::store::{Digests, digest};
 use tpmt_project::{Comparison, Layer, Layers, Project};
 
@@ -85,7 +85,7 @@ impl Tree {
     /// [`Sidecar::fresh`] would.
     #[must_use]
     pub fn is_archive(&self, path: &str) -> bool {
-        self.layers.is_file(&fs::join(path, SIDECAR))
+        self.layers.is_file(&join(path, SIDECAR))
     }
 
     /// What an archive says about itself, the overlay's copy where there is
@@ -94,8 +94,9 @@ impl Tree {
     pub fn sidecar(&self, path: &str) -> Result<Sidecar> {
         let at = format!("{path}/{SIDECAR}");
         let data = self.file(&at)?;
-        let text = std::str::from_utf8(&data).map_err(fs::parse_at(Path::new(&at)))?;
-        Ok(Sidecar::from_toml(text).map_err(fs::parse_at(Path::new(&at)))?)
+        let text =
+            std::str::from_utf8(&data).map_err(tpmt_project::Error::parse(Path::new(&at)))?;
+        Ok(Sidecar::from_toml(text).map_err(tpmt_project::Error::parse(Path::new(&at)))?)
     }
 
     /// Every member an archive rebuilds from: the ones its sidecar lists, in
@@ -140,7 +141,7 @@ impl Tree {
     fn outermost<'p>(&self, under: &str, rest: &'p str) -> &'p str {
         rest.match_indices('/')
             .filter_map(|(end, _)| rest.get(..end))
-            .find(|prefix| self.is_archive(&fs::join(under, prefix)))
+            .find(|prefix| self.is_archive(&join(under, prefix)))
             .unwrap_or(rest)
     }
 }

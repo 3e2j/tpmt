@@ -41,7 +41,7 @@ pub fn write(job: &Job, out: &Path) -> Result<PathBuf> {
 
     let name = name(job);
     let path = out.join(&name);
-    let file = File::create(&path).map_err(fs::io_at(&path))?;
+    let file = File::create(&path).map_err(tpmt_project::Error::io(&path))?;
     let mut image = layout.write(BufWriter::new(file));
 
     let writing = job

@@ -3,7 +3,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::io::fs::io_at;
 use crate::io::refuse_unowned;
 use crate::{BUILD_DIR, Error, Result, base, mod_dir, store};
 
@@ -24,7 +23,7 @@ pub fn is_project(dir: &Path) -> bool {
 /// first, then climbs one directory at a time until a `.tpmt` store turns
 /// up or the climb hits the filesystem root.
 pub fn discover(start: &Path) -> Result<PathBuf> {
-    let mut at = start.canonicalize().map_err(io_at(start))?;
+    let mut at = start.canonicalize().map_err(Error::io(start))?;
 
     loop {
         if is_project(&at) {

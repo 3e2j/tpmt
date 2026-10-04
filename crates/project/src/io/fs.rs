@@ -15,7 +15,7 @@ use crate::{Error, Result};
 ///
 /// - [`Error::Io`] if a directory cannot be made
 pub fn create_dir_all(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).map_err(io_at(path))
+    fs::create_dir_all(path).map_err(Error::io(path))
 }
 
 /// Writes `data` to `path`, creating any missing parent directories.
@@ -27,7 +27,7 @@ pub fn write(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         create_dir_all(parent)?;
     }
-    fs::write(path, data).map_err(io_at(path))
+    fs::write(path, data).map_err(Error::io(path))
 }
 
 /// Writes `value` to `path` as TOML.
@@ -75,13 +75,6 @@ pub fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
     }
 }
 
-pub fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
-    move |source| Error::Io {
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
 /// Reads a whole file. The workspace disallows `std::fs::read` because an ISO
 /// will not fit in memory. Everything this is used for is a project file,
 /// where the largest thing on the disc is a 137 MB video.
@@ -90,11 +83,11 @@ pub fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 ///
 /// - [`Error::Io`] if the file cannot be opened or read
 pub fn read(path: &Path) -> Result<Vec<u8>> {
-    let file = fs::File::open(path).map_err(io_at(path))?;
+    let file = fs::File::open(path).map_err(Error::io(path))?;
     let mut data = Vec::new();
     BufReader::new(file)
         .read_to_end(&mut data)
-        .map_err(io_at(path))?;
+        .map_err(Error::io(path))?;
     Ok(data)
 }
 
@@ -141,7 +134,7 @@ pub fn rename_if_exists(from: &Path, to: &Path) -> Result<()> {
 ///
 /// - [`Error::Io`] if `path`'s metadata cannot be read
 pub fn len(path: &Path) -> Result<u64> {
-    Ok(fs::metadata(path).map_err(io_at(path))?.len())
+    Ok(fs::metadata(path).map_err(Error::io(path))?.len())
 }
 
 /// Reads `path` back as TOML.
@@ -152,58 +145,6 @@ pub fn len(path: &Path) -> Result<u64> {
 /// - [`Error::Parse`] if it is not UTF-8 or not a `T`
 pub fn read_toml<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let bytes = read(path)?;
-    let text = std::str::from_utf8(&bytes).map_err(parse_at(path))?;
-    toml::from_str(text).map_err(parse_at(path))
-}
-
-/// [`io_at`] for a file that read fine and then would not parse.
-pub fn parse_at<E>(path: &Path) -> impl FnOnce(E) -> Error + '_
-where
-    E: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    move |source| Error::Parse {
-        path: path.to_path_buf(),
-        source: source.into(),
-    }
-}
-
-/// Every file under `dir`, as sorted project paths.
-///
-/// # Errors
-///
-/// - [`Error::Io`] if a directory cannot be listed
-/// - [`Error::UnusablePath`] if a name in it is not UTF-8
-pub fn files(dir: &Path) -> Result<Vec<String>> {
-    let mut files = Vec::new();
-    let mut pending = vec![(dir.to_path_buf(), String::new())];
-    while let Some((dir, at)) = pending.pop() {
-        if !dir.is_dir() {
-            continue;
-        }
-        for entry in fs::read_dir(&dir).map_err(io_at(&dir))? {
-            let entry = entry.map_err(io_at(&dir))?;
-            let name = entry.file_name();
-            let name = name
-                .to_str()
-                .ok_or_else(|| Error::UnusablePath(entry.path()))?;
-            let path = join(&at, name);
-            if entry.path().is_dir() {
-                pending.push((entry.path(), path));
-            } else {
-                files.push(path);
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-/// `path` under the project path `under`, which may be the root.
-#[must_use]
-pub fn join(under: &str, path: &str) -> String {
-    if under.is_empty() {
-        path.to_string()
-    } else {
-        format!("{under}/{path}")
-    }
+    let text = std::str::from_utf8(&bytes).map_err(Error::parse(path))?;
+    toml::from_str(text).map_err(Error::parse(path))
 }

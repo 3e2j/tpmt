@@ -2,11 +2,12 @@
 //! paths, and a file comes from the overlay if it's there and from `base/`
 //! otherwise.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
 use crate::io::fs;
+use crate::path::{checked, files};
 use crate::store::{Digests, digest_file};
 use crate::{Error, Result};
 
@@ -97,7 +98,7 @@ impl Layers {
     /// - [`Error::Io`] if the overlay cannot be walked or a file read
     /// - [`Error::UnusablePath`] if a name in it is not UTF-8
     pub fn compare(&self, digests: &Digests) -> Result<Comparison> {
-        let compared = fs::files(&self.overlay)?
+        let compared = files(&self.overlay)?
             .into_par_iter()
             .map(|path| {
                 let kind = change(&self.overlay.join(&path), &path, digests)?;
@@ -123,20 +124,6 @@ fn change(file: &Path, path: &str, digests: &Digests) -> Result<Option<ChangeKin
         return Ok(Some(ChangeKind::Added));
     };
     Ok((digest_file(file)? != *want).then_some(ChangeKind::Modified))
-}
-
-/// `path` as a relative path that stays inside the layer it's joined to.
-fn checked(path: &str) -> Result<&Path> {
-    let at = Path::new(path);
-    let inside = !path.is_empty()
-        && at
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)));
-    if inside {
-        Ok(at)
-    } else {
-        Err(Error::UnusablePath(at.to_path_buf()))
-    }
 }
 
 #[cfg(test)]

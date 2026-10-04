@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::fs::{create_dir_all, io_at, remove_dir_all_if_exists, rename_if_exists};
+use super::fs::{create_dir_all, remove_dir_all_if_exists, rename_if_exists};
 use crate::{Error, Result};
 
 /// Appended to a directory's name for the copy [`Staging`] writes.
@@ -63,7 +63,7 @@ impl Staging {
 
         remove_dir_all_if_exists(&old)?;
         rename_if_exists(&self.target, &old)?;
-        fs::rename(&self.dir, &self.target).map_err(io_at(&self.target))?;
+        fs::rename(&self.dir, &self.target).map_err(Error::io(&self.target))?;
         remove_dir_all_if_exists(&old)
     }
 }
@@ -98,8 +98,8 @@ pub fn refuse_unowned(dir: &Path, owned: &[&str]) -> Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(dir).map_err(io_at(dir))? {
-        let entry = entry.map_err(io_at(dir))?;
+    for entry in fs::read_dir(dir).map_err(Error::io(dir))? {
+        let entry = entry.map_err(Error::io(dir))?;
         let name = entry.file_name();
         if !name
             .to_str()
