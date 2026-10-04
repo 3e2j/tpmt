@@ -11,7 +11,6 @@ use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
 use tpmt_pipeline::{Built, Target};
 use tpmt_project::{Change, ChangeKind, Project};
-use tpmt_report::{Level, Report};
 
 mod progress;
 
@@ -100,9 +99,7 @@ fn run(command: Command) -> Result<(), Error> {
                 }
             }
 
-            let (_, reports) =
-                progress::show(|progress| tpmt_pipeline::unpack(&iso, &project, progress))?;
-            reports.iter().for_each(print_report);
+            progress::show(|progress| tpmt_pipeline::unpack(&iso, &project, progress))?;
             println!("unpacked {} into {}", iso.display(), project.display());
         }
         Command::Status { dir } => {
@@ -150,15 +147,6 @@ fn print_status(changes: &[Change]) {
         } else {
             println!("{tag} {}", change.path);
         }
-    }
-}
-
-/// Prints a report to standard output, or to standard error with its level if
-/// something went wrong.
-fn print_report(report: &Report) {
-    match report.level {
-        Level::Info | Level::Ok => println!("{report}"),
-        Level::Warn | Level::Error => eprintln!("tpmt: {}: {report}", report.level.name()),
     }
 }
 

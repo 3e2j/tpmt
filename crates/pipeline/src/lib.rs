@@ -29,7 +29,6 @@
 use std::path::{Path, PathBuf};
 
 use tpmt_project::Project;
-use tpmt_report::Report;
 
 mod build;
 mod progress;
@@ -90,8 +89,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// written, so a failure part way through leaves no half-made project.
 ///
 /// Reads the disc once, front to back. Reports [`Step::Unpack`] across the
-/// whole image, then [`Step::Save`], through `progress`. Returns whatever it
-/// has to tell the user besides the project as [`Report`]s, in disc order.
+/// whole image, then [`Step::Save`], through `progress`. Each file's reports
+/// go to `progress` as soon as that file is unpacked.
 ///
 /// # Errors
 ///
@@ -100,9 +99,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// - [`Error::Disc`] if the ISO can't be opened or read
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
 /// - [`tpmt_project::Error::Io`] on any write
-pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<(Project, Vec<Report>)> {
-    let reports = unpack::run(iso, &Project::claim(project)?, progress)?;
-    Ok((Project::discover(project)?, reports))
+pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<Project> {
+    unpack::run(iso, &Project::claim(project)?, progress)?;
+    Project::discover(project).map_err(Error::from)
 }
 
 /// Re-encodes whatever `mod/overlay/` changed and hands it to `target`,

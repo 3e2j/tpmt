@@ -375,7 +375,7 @@ fn unpacked(iso: &Path) -> Result<Project, Failed> {
     }
 
     file.set_len(0)?;
-    let (project, _) = tpmt_pipeline::unpack(iso, &project, &Progress::default())?;
+    let project = tpmt_pipeline::unpack(iso, &project, &Progress::default())?;
     file.rewind()?;
     file.write_all(stamp.as_bytes())?;
     Ok(project)
