@@ -81,12 +81,12 @@ pub struct Layer<'a> {
 /// - [`Error::Decode`] naming the innermost file whose Yaz0 wrapper or
 ///   archive would not open
 /// - whatever `sink` returns
-pub fn file(
+pub fn file<E: From<Error>>(
     path: &str,
     data: &[u8],
-    sink: &mut impl FnMut(Layer<'_>) -> Result<()>,
+    sink: &mut impl FnMut(Layer<'_>) -> Result<(), E>,
     reports: &mut Vec<Report>,
-) -> Result<bool> {
+) -> Result<bool, E> {
     // On this disc the wrapper is a convention of where a file sits, not
     // something the file itself declares, so the caller records it.
     let kind = FileKind::identify(data);
@@ -123,12 +123,12 @@ pub fn file(
 
 /// Sinks every member of `archive`, then a [`SIDECAR`] recording each
 /// member's path, preload flag, id, and Yaz0 wrapper.
-fn archive(
+fn archive<E: From<Error>>(
     path: &str,
     archive: Archive<'_>,
-    sink: &mut impl FnMut(Layer<'_>) -> Result<()>,
+    sink: &mut impl FnMut(Layer<'_>) -> Result<(), E>,
     reports: &mut Vec<Report>,
-) -> Result<()> {
+) -> Result<(), E> {
     let mut members = Vec::with_capacity(archive.files.len());
 
     for member in &archive.files {
@@ -221,7 +221,7 @@ mod tests {
         let yaz0_compressed = super::file(
             path,
             data,
-            &mut |layer| {
+            &mut |layer| -> Result<()> {
                 if layer.leaf {
                     outputs.insert(layer.path.to_string(), layer.bytes.to_vec());
                 }
@@ -324,7 +324,7 @@ mod tests {
         super::file(
             "files/outer.arc",
             &outer,
-            &mut |layer| {
+            &mut |layer| -> Result<()> {
                 layers.push((layer.path.to_string(), layer.kind, layer.leaf));
                 Ok(())
             },

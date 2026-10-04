@@ -1,144 +1,113 @@
-//! Walks a disc, explodes each file (see [`explode`]), and lays the
-//! result out under `base/`. See [`crate::unpack`].
+//! Walks a disc and explodes each file (see [`explode`]), handing every leaf
+//! to the caller to store. See [`crate::unpack`].
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use rayon::prelude::*;
-use tpmt_disc::{Disc, Entry};
-use tpmt_project::io::{Staging, fs};
-use tpmt_project::store::{Digests, Formats, digest};
-use tpmt_project::{FileKind, Project, base};
-
-use crate::Result;
+use tpmt_binary::FileKind;
+use tpmt_disc::{Disc, Entry, Metadata};
 use tpmt_report::{Progress, Step};
+
+use crate::Error;
 
 pub mod explode;
 
-/// Unpacks a disc into `base/`, records the store under `.tpmt/`, and
-/// scaffolds a `mod/` folder.
-pub fn run(iso: &Path, project: &Project, progress: &Progress) -> Result<()> {
-    let disc = Disc::open(iso)?;
-
-    let staging = Staging::begin(&project.base())?;
-    let Unpacked {
-        yaz0_compressed,
-        digests,
-        formats,
-    } = unpack_disc(&disc, staging.dir(), progress)?;
-
-    progress.begin(Step::Save, 0);
-    base::write(staging.dir(), disc.metadata(), yaz0_compressed)?;
-    staging.promote()?;
-
-    project.write_store(iso, &disc.metadata().boot, &digests, &formats)?;
-
-    project.scaffold_mod()?;
-    Ok(())
+/// One file a project stores: a plain file, an archive member, or an
+/// archive's sidecar. Archives and compression wrappers never arrive as one.
+#[derive(Debug, Clone, Copy)]
+pub struct Leaf<'a> {
+    /// Its project path.
+    pub path: &'a str,
+    /// What its magic says it is, if anything.
+    pub kind: Option<FileKind>,
+    pub bytes: &'a [u8],
 }
 
-/// What one read of the disc leaves for the project to record.
-struct Unpacked {
-    /// The disc files that arrived Yaz0 wrapped, for `yaz0.toml`.
-    yaz0_compressed: BTreeSet<String>,
-    /// What every project file hashed to, keyed by project path.
-    digests: Digests,
-    /// Which project files hold a known leaf format, for `.tpmt/formats`.
-    formats: Formats,
+/// What a disc holds besides its leaves, and what `store` made of each leaf.
+pub struct Unpacked<T> {
+    /// The preamble values a build cannot derive.
+    pub metadata: Metadata,
+    /// Every directory the disc lists, so an empty one survives.
+    pub directories: Vec<String>,
+    /// The disc files that arrived Yaz0 wrapped.
+    pub yaz0_compressed: BTreeSet<String>,
+    /// What `store` returned for each leaf, in the order files finish.
+    pub stored: Vec<T>,
 }
 
-/// Unpacks one disc's worth of files into `base`, reading the disc once, in
-/// order. Every drive handles that pattern well, and nothing relies on the
-/// page cache holding the disc for a second pass.
-fn unpack_disc(disc: &Disc, base: &Path, progress: &Progress) -> Result<Unpacked> {
-    // Create every listed directory before any file, so empty directories
-    // survive the unpack.
-    let entries = disc.entries()?;
+/// Reads the disc once, in order, and calls `store` with every leaf. Every
+/// drive handles that pattern well, and nothing relies on the page cache
+/// holding the disc for a second pass.
+///
+/// Reports [`Step::Unpack`] across the whole image. Each file's reports go
+/// to `progress` as soon as that file is walked.
+///
+/// `store` runs on several threads at once, one disc file per thread.
+pub fn run<T, E>(
+    iso: &Path,
+    progress: &Progress,
+    store: impl Fn(Leaf<'_>) -> Result<T, E> + Sync,
+) -> Result<Unpacked<T>, E>
+where
+    T: Send,
+    E: From<Error> + Send,
+{
+    let disc = Disc::open(iso).map_err(Error::from)?;
+    let entries = disc.entries().map_err(Error::from)?;
+
+    let mut directories = Vec::new();
+    let mut total = 0;
     for entry in &entries {
-        if let Entry::Directory { path } = entry {
-            fs::create_dir_all(&base.join(path))?;
+        match entry {
+            Entry::Directory { path } => directories.push(path.clone()),
+            Entry::File { span, .. } => total += span.size,
         }
     }
-
-    let total = entries.iter().filter_map(Entry::span).map(|span| span.size);
-    let unpacking = progress.begin(Step::Unpack, total.sum());
+    let unpacking = progress.begin(Step::Unpack, total);
 
     // Workers pull files off the stream one at a time, so the disc is still
     // read in order and at most one file per worker sits in memory.
-    let unpacked_files = disc
+    let files = disc
         .stream(&entries)
         .par_bridge()
         .map(|file| {
-            let (path, data) = file?;
+            let (path, data) = file.map_err(Error::from)?;
             unpacking.add(data.len() as u64);
-            unpack_file(base, path, &data, progress)
+
+            let mut stored = Vec::new();
+            let mut reports = Vec::new();
+            let yaz0_compressed = explode::file(
+                path,
+                &data,
+                &mut |layer| -> Result<(), E> {
+                    if layer.leaf {
+                        stored.push(store(Leaf {
+                            path: layer.path,
+                            kind: layer.kind,
+                            bytes: layer.bytes,
+                        })?);
+                    }
+                    Ok(())
+                },
+                &mut reports,
+            )?;
+            progress.report(reports);
+            Ok((yaz0_compressed.then(|| path.to_string()), stored))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>, E>>()?;
 
-    let yaz0_compressed = unpacked_files
-        .iter()
-        .filter(|file| file.yaz0_compressed)
-        .map(|file| file.path.clone())
-        .collect();
-
-    let mut digests = Digests::new();
-    let mut formats = Formats::new();
-    for file in unpacked_files {
-        digests.extend(file.digests);
-        for (kind, path) in file.kinds {
-            formats.entry(kind).or_default().insert(path);
-        }
+    let mut yaz0_compressed = BTreeSet::new();
+    let mut stored = Vec::new();
+    for (wrapped, leaves) in files {
+        yaz0_compressed.extend(wrapped);
+        stored.extend(leaves);
     }
 
     Ok(Unpacked {
+        metadata: disc.metadata().clone(),
+        directories,
         yaz0_compressed,
-        digests,
-        formats,
-    })
-}
-
-/// One disc file laid out under `base/`.
-struct UnpackedFile {
-    /// The file's disc path.
-    path: String,
-    /// Whether a Yaz0 wrapper came off it. The disc is the container that
-    /// records this for a loose file, in `yaz0.toml`.
-    yaz0_compressed: bool,
-    /// What every project file it became hashed to, in the order it landed.
-    digests: Vec<(String, u128)>,
-    /// The project files it became that hold a known leaf format.
-    kinds: Vec<(FileKind, String)>,
-}
-
-/// Explodes one disc file into `base/`, hashing and identifying each project
-/// file as it lands. Its reports go straight to `progress`.
-fn unpack_file(base: &Path, path: &str, data: &[u8], progress: &Progress) -> Result<UnpackedFile> {
-    let mut digests = Vec::new();
-    let mut kinds = Vec::new();
-    let mut reports = Vec::new();
-    let yaz0_compressed = explode::file(
-        path,
-        data,
-        &mut |layer| {
-            if !layer.leaf {
-                return Ok(());
-            }
-            let path = layer.path;
-            fs::write(&base.join(path), layer.bytes)?;
-            digests.push((path.to_string(), digest(layer.bytes)));
-            if let Some(kind) = layer.kind {
-                kinds.push((kind, path.to_string()));
-            }
-            Ok(())
-        },
-        &mut reports,
-    )?;
-    progress.report(reports);
-
-    Ok(UnpackedFile {
-        path: path.to_string(),
-        yaz0_compressed,
-        digests,
-        kinds,
+        stored,
     })
 }

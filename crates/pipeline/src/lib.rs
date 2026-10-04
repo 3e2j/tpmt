@@ -29,7 +29,9 @@
 use std::path::{Path, PathBuf};
 
 use tpmt_project::Project;
-use tpmt_report::Progress;
+use tpmt_project::io::{Staging, fs};
+use tpmt_project::store::{Digests, Formats, digest};
+use tpmt_report::{Progress, Step};
 
 mod build;
 mod unpack;
@@ -87,8 +89,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// only `base/` and leaves `mod/` alone. It commits only once every file is
 /// written, so a failure part way through leaves no half-made project.
 ///
-/// Reads the disc once, front to back. Reports [`tpmt_report::Step::Unpack`] across the
-/// whole image, then [`tpmt_report::Step::Save`], through `progress`. Each file's reports
+/// Reads the disc once, front to back. Reports [`Step::Unpack`] across the
+/// whole image, then [`Step::Save`], through `progress`. Each file's reports
 /// go to `progress` as soon as that file is unpacked.
 ///
 /// # Errors
@@ -99,7 +101,33 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
 /// - [`tpmt_project::Error::Io`] on any write
 pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<Project> {
-    unpack::run(iso, &Project::claim(project)?, progress)?;
+    // TODO: moves into `tpmt-project` once build stops depending on it.
+    let claimed = Project::claim(project)?;
+    let staging = Staging::begin(&claimed.base())?;
+    let base = staging.dir();
+    let unpacked = unpack::run(iso, progress, |leaf| -> Result<_> {
+        fs::write(&base.join(leaf.path), leaf.bytes)?;
+        Ok((leaf.path.to_string(), digest(leaf.bytes), leaf.kind))
+    })?;
+    for dir in &unpacked.directories {
+        fs::create_dir_all(&base.join(dir))?;
+    }
+
+    progress.begin(Step::Save, 0);
+    tpmt_project::base::write(base, &unpacked.metadata, unpacked.yaz0_compressed)?;
+    staging.promote()?;
+
+    let mut digests = Digests::new();
+    let mut formats = Formats::new();
+    for (path, digest, kind) in unpacked.stored {
+        if let Some(kind) = kind {
+            formats.entry(kind).or_default().insert(path.clone());
+        }
+        digests.insert(path, digest);
+    }
+    claimed.write_store(iso, &unpacked.metadata.boot, &digests, &formats)?;
+    claimed.scaffold_mod()?;
+
     Project::discover(project).map_err(Error::from)
 }
 
@@ -110,8 +138,8 @@ pub fn unpack(iso: &Path, project: &Path, progress: &Progress) -> Result<Project
 /// `output` stands in for the directory the target would otherwise own
 /// under `build/targets/`, and must be missing or empty.
 ///
-/// Reports [`tpmt_report::Step::Rebuild`] through `progress`, and for an image
-/// [`tpmt_report::Step::WriteImage`] as well.
+/// Reports [`Step::Rebuild`] through `progress`, and for an image
+/// [`Step::WriteImage`] as well.
 ///
 /// # Errors
 ///

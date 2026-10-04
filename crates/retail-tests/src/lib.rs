@@ -208,7 +208,7 @@ fn walked(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result
             let walked = tpmt_pipeline::explode(
                 path,
                 &data,
-                &mut |layer| {
+                &mut |layer| -> tpmt_pipeline::Result<()> {
                     if layer.kind == Some(kind) {
                         let file = File {
                             version,
