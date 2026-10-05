@@ -38,11 +38,11 @@ impl<'a, E: From<Error>> Tree<'a, E> {
     }
 
     /// One project file's bytes, the edited copy where there is one.
-    pub fn file(&self, path: &str) -> Result<Vec<u8>, E> {
+    pub fn file(&self, path: &str) -> Result<Box<[u8]>, E> {
         self.files.read(path)
     }
 
-    /// Whether a project path is an unpacked archive rather than a leaf file.
+    /// Whether a project path is an unpacked archive rather than a plain file.
     ///
     /// The sidecar is what says so, edited or not. Unpack writes one for
     /// every archive it opens, so a directory without one is a plain

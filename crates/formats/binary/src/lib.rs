@@ -18,7 +18,7 @@ mod record;
 mod writer;
 
 pub use format::{Checked, Format};
-pub use kind::{Compression, FileKind, WrongKind};
+pub use kind::{Compression, FileKind, Payload, WrongKind};
 pub use reader::Reader;
 pub use record::{Be16, Be32, Flag, Record, bytes_of, record_at_mut};
 pub use writer::Writer;

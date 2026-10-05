@@ -4,12 +4,12 @@
 //! and [`build`] reads them back through [`Files`].
 //!
 //! Unpack and build only handle containers: compression and archives.
-//! A leaf format (BMG, ...) passes through both as raw bytes. Unpack sniffs
+//! A payload (BMG, ...) passes through both as raw bytes. Unpack sniffs
 //! each file's magic to say what it is, but never decodes it.
 //!
 //! This crate owns what it takes to get from a disc to files and back (packaging):
-//! the disc image, archives, compression, anything that wraps a leaf (payload).
-//! A leaf's own layout belongs to its format crate.
+//! the disc image, archives, compression, anything that wraps a payload.
+//! A payload's own layout belongs to its format crate.
 
 // TODO: a mod has no way to say a file was deleted, only which ones it
 // replaces or adds. Only matters outside an archive, since a deleted member
@@ -35,7 +35,7 @@ mod unpack;
 pub use build::{Built, EncodeError, Files, Job, Source, Target};
 pub use tpmt_disc::Metadata;
 pub use unpack::explode::{DecodeError, Layer, file as explode};
-pub use unpack::{Leaf, Unpacked};
+pub use unpack::{File, Unpacked};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -88,7 +88,7 @@ pub enum Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Walks the disc, peels off compression, opens archives, and calls `store`
-/// with every file that comes out (see [`Leaf`]).
+/// with every file that comes out (see [`File`]).
 ///
 /// Reads the disc once, front to back. Reports [`tpmt_report::Step::Unpack`]
 /// across the whole image through `progress`. Each file's reports go to
@@ -104,7 +104,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 pub fn unpack<T, E>(
     iso: &Path,
     progress: &Progress,
-    store: impl Fn(Leaf<'_>) -> Result<T, E> + Sync,
+    store: impl Fn(File<'_>) -> Result<T, E> + Sync,
 ) -> Result<Unpacked<T>, E>
 where
     T: Send,

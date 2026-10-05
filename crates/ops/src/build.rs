@@ -7,8 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
+use tpmt_editing::Version;
 use tpmt_packing::{Files, Job, Metadata, Source, Target};
-use tpmt_project::{Base, Comparison, Digests, Layers, Project, Store};
+use tpmt_project::{Comparison, Digests, Overlay, Project, Store, Stored, Vanilla};
 use tpmt_report::Progress;
 
 use crate::{Error, Result};
@@ -39,8 +40,10 @@ pub struct Built {
 /// - [`tpmt_project::Error::ForeignDirectory`] if `output` is not empty
 /// - [`tpmt_project::Error::Io`] or [`tpmt_project::Error::Parse`] if the
 ///   project's own files cannot be read
-/// - [`tpmt_project::Error::BaseModified`] if `base/` no longer matches the
+/// - [`tpmt_project::Error::VanillaModified`] if `vanilla/` no longer matches the
 ///   disc it came from
+/// - [`Error::UnknownVersion`] or [`Error::File`] if a patch in `changes/`
+///   can't be put back over its vanilla file
 /// - [`tpmt_packing::Error`] if a rebuilt file does not fit its format, or
 ///   whatever else the target needs, which for an image is the source disc
 pub fn build(
@@ -52,9 +55,9 @@ pub fn build(
     let staging = project.stage_output(target.name(), output)?;
 
     let Store { source, digests } = project.read_store()?;
-    let Base { disc, compressed } = project.read_base::<Metadata>()?;
-    let layers = project.layers();
-    let Comparison { changes, identical } = layers.compare(&digests)?;
+    let Vanilla { disc, compressed } = project.read_vanilla::<Metadata>()?;
+    let overlay = project.overlay();
+    let Comparison { changes, identical } = overlay.compare(&digests)?;
     let edits: Vec<String> = changes.into_iter().map(|change| change.path).collect();
 
     let name = project
@@ -63,9 +66,10 @@ pub fn build(
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(&disc.boot.id);
     let job = Job {
-        files: &Checked {
-            layers: &layers,
+        files: &Packed {
+            overlay: &overlay,
             digests: &digests,
+            version: Version::from_disc(&disc.boot.id, disc.boot.revision),
         },
         edits: &edits,
         metadata: &disc,
@@ -90,21 +94,30 @@ pub fn build(
     })
 }
 
-/// `changes/` over `base/`, with every `base/` copy held to its vanilla
-/// digest on the way past (see [`Layers::read_checked`]).
-struct Checked<'a> {
-    layers: &'a Layers,
-    /// The vanilla digest of every file the unpack wrote.
+/// Each project file as a build packs it: patches applied, and `vanilla/`
+/// copies checked against their digests.
+struct Packed<'a> {
+    overlay: &'a Overlay,
     digests: &'a Digests,
+    /// `None` when the disc isn't a known release, which only a patch needs.
+    version: Option<Version>,
 }
 
-impl Files<Error> for Checked<'_> {
-    fn read(&self, path: &str) -> Result<Vec<u8>> {
-        Ok(self.layers.read_checked(path, self.digests)?)
+impl Files<Error> for Packed<'_> {
+    fn read(&self, path: &str) -> Result<Box<[u8]>> {
+        match self.overlay.read_checked(path, self.digests)? {
+            Stored::Added(data) | Stored::Replaced(data) | Stored::Vanilla(data) => Ok(data),
+            Stored::Patched { vanilla, edits } => {
+                let version = self.version.ok_or(Error::UnknownVersion)?;
+                tpmt_editing::apply(&vanilla, &edits, version)
+                    .map(Vec::into_boxed_slice)
+                    .map_err(Error::file(path))
+            }
+        }
     }
 
     fn is_file(&self, path: &str) -> bool {
-        self.layers.is_file(path)
+        self.overlay.is_file(path)
     }
 }
 
@@ -116,9 +129,9 @@ mod tests {
     use tempfile::TempDir;
     use tpmt_archive::editable::sidecar::{Member, Sidecar};
     use tpmt_binary::{Compression, FileKind};
-    use tpmt_disc::{Bi2, Boot};
 
     use super::*;
+    use crate::fixture;
 
     /// [`build`] with nobody watching its progress.
     fn run(project: &Path, target: Target, output: Option<&Path>) -> Result<Built> {
@@ -149,29 +162,6 @@ mod tests {
         }
     }
 
-    /// A `GZ2E` revision 0 disc.
-    fn metadata() -> Metadata {
-        Metadata {
-            boot: Boot {
-                id: "GZ2E".to_string(),
-                maker: "01".to_string(),
-                disc_number: 0,
-                revision: 0,
-                audio_streaming: 0,
-                stream_buffer_size: 0,
-                title: "test".to_string(),
-            },
-            bi2: Bi2 {
-                simulated_memory_size: 0x0180_0000,
-                debug_flag: 0,
-                country: 1,
-                unknown_1c: 1,
-                unknown_20: 1,
-                pad_spec: 0,
-            },
-        }
-    }
-
     /// A project holding one wrapped archive of two members and one loose
     /// file, hashed the way an unpack would leave it.
     ///
@@ -183,7 +173,7 @@ mod tests {
     fn unpacked() -> TempDir {
         let scratch = tempfile::tempdir().unwrap();
         let project = Project::claim(scratch.path()).unwrap();
-        let base = project.new_base().unwrap();
+        let vanilla = project.new_vanilla().unwrap();
 
         let sidecar = Sidecar::new(
             "outer".to_string(),
@@ -215,19 +205,16 @@ mod tests {
 
         let written = files
             .iter()
-            .map(|(path, data)| base.write(path, None, data).unwrap())
+            .map(|(path, data)| vanilla.write(path, None, data).unwrap())
             .collect();
-        base.finish(
-            &metadata(),
-            &BTreeMap::from([("files/outer.arc".to_string(), Compression::Yaz0)]),
-        )
-        .unwrap();
+        vanilla
+            .finish(
+                &fixture::metadata(),
+                &BTreeMap::from([("files/outer.arc".to_string(), Compression::Yaz0)]),
+            )
+            .unwrap();
 
-        // Nothing in these tests opens the disc; `write_store` only wants a
-        // path it can canonicalize.
-        let iso = scratch.path().join("source.iso");
-        fs::write(&iso, b"");
-        project.write_store(&iso, "GZ2E", 0, written).unwrap();
+        fixture::finish(&project, scratch.path(), written);
 
         scratch
     }
@@ -252,7 +239,7 @@ mod tests {
             path,
             &data,
             &mut |layer| -> tpmt_packing::Result<()> {
-                if layer.leaf {
+                if layer.stored {
                     outputs.insert(layer.path.to_string(), layer.bytes.to_vec());
                 }
                 Ok(())
@@ -321,6 +308,25 @@ mod tests {
         assert_eq!(outputs["files/outer.arc/plain.bin"], b"plain");
     }
 
+    /// A patch in `changes/` is put over the vanilla file it names, and the
+    /// result is what the build writes.
+    #[test]
+    fn a_patch_builds_into_its_file() {
+        let path = "files/message.bmg";
+        let (scratch, project) = fixture::project(&[(path, &fixture::message_file(b"Hello"))]);
+        project
+            .overlay()
+            .write_patch(path, b"[message.\"@0\"]\ntext = \"Goodbye\"\n")
+            .unwrap();
+
+        let built = run(scratch.path(), Target::Patch, None).unwrap();
+        assert_eq!(built.rebuilt, [path]);
+        assert_eq!(
+            fs::read(&built.path.join(path)),
+            fixture::message_file(b"Goodbye")
+        );
+    }
+
     /// A loose file is its own disc file, and the archive beside it is left
     /// alone.
     #[test]
@@ -346,7 +352,7 @@ mod tests {
         assert_eq!(built.rebuilt, Vec::<String>::new());
     }
 
-    /// `base/` is the disc. A build that read somebody's edit out of it would
+    /// `vanilla/` is the disc. A build that read somebody's edit out of it would
     /// pack that edit as though it had shipped.
     #[test]
     fn an_edited_base_stops_the_build() {
@@ -354,7 +360,7 @@ mod tests {
         fs::write(
             &Project::discover(scratch.path())
                 .unwrap()
-                .base()
+                .vanilla()
                 .join("files/outer.arc/wrapped.bin"),
             b"tampered",
         );
@@ -362,7 +368,7 @@ mod tests {
 
         let error = run(scratch.path(), Target::Patch, None).unwrap_err();
         assert!(
-            matches!(&error, Error::Project(tpmt_project::Error::BaseModified(path)) if path == "files/outer.arc/wrapped.bin"),
+            matches!(&error, Error::Project(tpmt_project::Error::VanillaModified(path)) if path == "files/outer.arc/wrapped.bin"),
             "{error}"
         );
     }
@@ -378,7 +384,7 @@ mod tests {
         fs::write(
             &Project::discover(scratch.path())
                 .unwrap()
-                .base()
+                .vanilla()
                 .join("files/outer.arc/wrapped.bin"),
             b"tampered",
         );

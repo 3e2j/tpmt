@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-# `formats` and `compression.toml` name file kinds and wrappers.
+# `payloads` and `compression.toml` name file kinds and wrappers.
 tpmt-binary = { workspace = true, features = ["serde"] }
 
 thiserror.workspace = true

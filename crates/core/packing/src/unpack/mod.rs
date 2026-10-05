@@ -1,5 +1,5 @@
-//! Walks a disc and explodes each file (see [`explode`]), handing every leaf
-//! to the caller to store. See [`crate::unpack`].
+//! Walks a disc and explodes each file (see [`explode`]).
+//! Hands every file the project keeps to the caller to store (see [`unpack()`](crate::unpack())).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,7 +16,7 @@ pub mod explode;
 /// One file a project stores: a plain file, an archive member, or an
 /// archive's sidecar. Archives and compression wrappers never arrive as one.
 #[derive(Debug, Clone, Copy)]
-pub struct Leaf<'a> {
+pub struct File<'a> {
     /// Its project path.
     pub path: &'a str,
     /// What its magic says it is, if anything.
@@ -24,7 +24,7 @@ pub struct Leaf<'a> {
     pub bytes: &'a [u8],
 }
 
-/// What a disc holds besides its leaves, and what `store` made of each leaf.
+/// What a disc holds besides its files, and what `store` made of each file.
 pub struct Unpacked<T> {
     /// The preamble values a build cannot derive.
     pub metadata: Metadata,
@@ -32,22 +32,16 @@ pub struct Unpacked<T> {
     pub directories: Vec<String>,
     /// The disc files that arrived compressed, and with which wrapper.
     pub compressed: BTreeMap<String, Compression>,
-    /// What `store` returned for each leaf, in the order files finish.
+    /// What `store` returned for each file, in the order files finish.
     pub stored: Vec<T>,
 }
 
-/// Reads the disc once, in order, and calls `store` with every leaf. Every
-/// drive handles that pattern well, and nothing relies on the page cache
-/// holding the disc for a second pass.
-///
-/// Reports [`Step::Unpack`] across the whole image. Each file's reports go
-/// to `progress` as soon as that file is walked.
-///
-/// `store` runs on several threads at once, one disc file per thread.
+/// Reads the disc once, in on-disc order, so a hard drive never seeks back.
+/// Nothing relies on the page cache holding the disc for a second pass.
 pub fn run<T, E>(
     iso: &Path,
     progress: &Progress,
-    store: impl Fn(Leaf<'_>) -> Result<T, E> + Sync,
+    store: impl Fn(File<'_>) -> Result<T, E> + Sync,
 ) -> Result<Unpacked<T>, E>
 where
     T: Send,
@@ -81,8 +75,8 @@ where
                 path,
                 &data,
                 &mut |layer| -> Result<(), E> {
-                    if layer.leaf {
-                        stored.push(store(Leaf {
+                    if layer.stored {
+                        stored.push(store(File {
                             path: layer.path,
                             kind: layer.kind,
                             bytes: layer.bytes,
@@ -102,9 +96,9 @@ where
 
     let mut compressed = BTreeMap::new();
     let mut stored = Vec::new();
-    for (wrapped, leaves) in files {
+    for (wrapped, files) in files {
         compressed.extend(wrapped);
-        stored.extend(leaves);
+        stored.extend(files);
     }
 
     Ok(Unpacked {

@@ -8,15 +8,17 @@
 //! A project is two directories, edited in place:
 //!
 //! ```text
-//! base/                read-only unpack of the ISO, decoded index for the UI to browse
+//! vanilla/             read-only unpack of the ISO, decoded index for the UI to browse
 //!   disc.toml          the preamble values a build cannot derive
 //!   compression.toml   which loose files arrived wrapped, and in what
 //!   sys/               apploader.img, main.dol
 //!   files/             game content, archives as directories
 //! mod/                 the mod project; the only directory a modder edits
-//!   changes/           whole-file / archive-member replacements, real paths
+//! changes/             files a build writes into the disc, at their disc paths:
+//!                      patches (`<file>.toml`), replacements, and new files
 //!   textures/          texture replacements, named by their Dolphin hash
-//!   res/               authored user-made content, shipped to Dusklight as is
+//!   res/               content a runtime target loads beside the disc; a build
+//!                      copies it as is and never writes it into the disc
 //!     scripts/         Luau scripts, never parsed, copied into a build untouched
 //!   mod.json           mod metadata (id, name, version, author, description, icon, banner)
 //! build/
@@ -24,7 +26,7 @@
 //!     <target>/        what one build target produced, cleared and rewritten by it
 //! ```
 //!
-//! Every unpack rewrites `base/` whole, and writes `mod/` only if it is
+//! Every unpack rewrites `vanilla/` whole, and writes `mod/` only if it is
 //! missing.
 //!
 //! Facts a decoded file can't carry, like a wrapper that came off it or
@@ -49,18 +51,14 @@
 // one disc today.
 // Nothing here decides which regions an edit applies to yet.
 //
-// A modder who edits `base/` directly should have those edits moved into
-// `mod/changes/` automatically, and `base/` restored. Hashing all of `base/`
+// A modder who edits `vanilla/` directly should have those edits moved into
+// `mod/changes/` automatically, and `vanilla/` restored. Hashing all of `vanilla/`
 // on every build is too slow, so record each file's size and mtime at unpack
 // and hash only the files whose size or mtime changed.
 //
-// `mod/` is meant to be a git repo, so it can't hold game data. `changes/`
-// should store a patch against `base/` for each format that has one (BMG
-// first), and a whole file only for what the modder made from scratch.
-//
 // Nothing reads `textures/` yet. Every target should: `dusk` copies it, and a
 // disc build re-encodes each replacement into every file that holds a texture
-// with that hash, found through an index of `base/` taken at unpack.
+// with that hash, found through an index of `vanilla/` taken at unpack.
 //
 // A native mod adds Dusklight's SDK template (`src/`, `CMakeLists.txt`,
 // `cmake/`) to `mod/`. `dusk` should build it through the SDK and put the
@@ -68,23 +66,23 @@
 
 use std::path::{Path, PathBuf};
 
-use layout::{base, modding, store};
+use layout::{modding, store, vanilla};
 
 mod build;
 mod discover;
 mod io;
-mod layers;
 mod layout;
+mod overlay;
 mod path;
 mod unpack;
 
 pub use discover::is_project;
 pub use io::Staging;
-pub use layers::{Change, ChangeKind, Comparison, Layer, Layers};
-pub use layout::base::Base;
-pub use layout::store::{Digests, Formats, Source, Store};
-pub use tpmt_binary::FileKind;
-pub use unpack::{NewBase, Written};
+pub use layout::store::{Digests, Payloads, Source, Store};
+pub use layout::vanilla::Vanilla;
+pub use overlay::{Change, ChangeKind, Comparison, Overlay, PATCH_SUFFIX, Stored, patch_path};
+pub use tpmt_binary::{FileKind, Payload};
+pub use unpack::{NewVanilla, Written};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -118,13 +116,16 @@ pub enum Error {
     #[error("`{}` is not a name a project path can hold", .0.display())]
     UnusablePath(PathBuf),
 
-    #[error("nothing in `base/` or `mod/changes/` holds `{0}`")]
+    #[error("nothing in `vanilla/` or `mod/changes/` holds `{0}`")]
     MissingFile(String),
+
+    #[error("`mod/changes/` holds `{0}` both whole and as a patch; keep one")]
+    PatchConflict(String),
 
     /// A vanilla file is no longer what the unpack recorded, so a build off
     /// it would pack somebody's edit as though the disc had shipped it.
-    #[error("`{0}` in `base/` is not what was unpacked; re-unpack the disc, or put it back")]
-    BaseModified(String),
+    #[error("`{0}` in `vanilla/` is not what was unpacked; re-unpack the disc, or put it back")]
+    VanillaModified(String),
 }
 
 impl Error {
@@ -180,62 +181,58 @@ impl Project {
 
     /// The read-only unpack of the disc.
     #[must_use]
-    pub fn base(&self) -> PathBuf {
-        self.root.join(base::DIR)
+    pub fn vanilla(&self) -> PathBuf {
+        self.root.join(vanilla::DIR)
     }
 
-    /// The modder's whole-file and archive-member replacements, addressed by
-    /// the same project paths [`base`](Self::base) holds.
+    /// `mod/changes/` over `vanilla/`, the way a build reads them.
     #[must_use]
-    pub fn changes(&self) -> PathBuf {
-        modding::changes(&self.root.join(modding::DIR))
-    }
-
-    /// `mod/changes/` over `base/`, the way a build reads them.
-    #[must_use]
-    pub fn layers(&self) -> Layers {
-        Layers::new(self.base(), self.changes())
+    pub fn overlay(&self) -> Overlay {
+        Overlay::new(
+            self.vanilla(),
+            modding::changes(&self.root.join(modding::DIR)),
+        )
     }
 
     fn store(&self) -> PathBuf {
         self.root.join(store::DIR)
     }
 
-    /// Every file the unpack recognised a leaf format in, by project path
-    /// under `base/`, grouped by [`FileKind`]. Read from `.tpmt/formats`, so
-    /// no file in `base/` is opened.
+    /// Every file the unpack recognised as a [`Payload`], by project path
+    /// under `vanilla/`, grouped by payload. Read from `.tpmt/payloads`, so
+    /// no file in `vanilla/` is opened.
     ///
     /// Go through this, not file extensions, to find files of one kind. Names
     /// on the disc lie; the kinds here came from each file's magic.
     ///
     /// # Errors
     ///
-    /// - [`Error::Io`] if `.tpmt/formats` is missing
+    /// - [`Error::Io`] if `.tpmt/payloads` is missing
     /// - [`Error::Parse`] if it is not what an unpack wrote, or names a kind
-    ///   this build doesn't know
-    pub fn formats(&self) -> Result<Formats> {
-        store::read_formats(&self.store())
+    ///   that isn't a payload
+    pub fn payloads(&self) -> Result<Payloads> {
+        store::read_payloads(&self.store())
     }
 
-    /// `base/disc.toml`, as whatever type wrote it.
+    /// `vanilla/disc.toml`, as whatever type wrote it.
     ///
     /// # Errors
     ///
-    /// - [`Error::Io`] if `base/disc.toml` is missing
+    /// - [`Error::Io`] if `vanilla/disc.toml` is missing
     /// - [`Error::Parse`] if it is not a `D`
     pub fn read_disc<D: serde::de::DeserializeOwned>(&self) -> Result<D> {
-        base::read_disc(&self.base())
+        vanilla::read_disc(&self.vanilla())
     }
 
-    /// Everything `base/` says about itself, with `disc.toml` as whatever
+    /// Everything `vanilla/` says about itself, with `disc.toml` as whatever
     /// type wrote it.
     ///
     /// # Errors
     ///
     /// - [`Error::Io`] if `disc.toml` or `compression.toml` is missing
     /// - [`Error::Parse`] if either is not what an unpack wrote
-    pub fn read_base<D: serde::de::DeserializeOwned>(&self) -> Result<Base<D>> {
-        base::read(&self.base())
+    pub fn read_vanilla<D: serde::de::DeserializeOwned>(&self) -> Result<Vanilla<D>> {
+        vanilla::read(&self.vanilla())
     }
 
     /// The source disc and vanilla digests from `.tpmt/`.
@@ -248,39 +245,42 @@ impl Project {
         store::read(&self.store())
     }
 
-    /// One project file's bytes, from `mod/changes/` when it holds `path` and
-    /// from `base/` otherwise. `path` is a project path, as
-    /// [`formats`](Self::formats) lists.
+    /// What the project holds for one file: whole from `mod/changes/`, a
+    /// patch there with its `vanilla/` copy, or the `vanilla/` copy alone. `path`
+    /// is a project path, as [`payloads`](Self::payloads) lists.
     ///
-    /// A `base/` copy isn't checked against its vanilla digest here, since
+    /// A `vanilla/` copy isn't checked against its digest here, since
     /// that means reading every digest the unpack recorded. A build refuses
     /// one that drifted.
     ///
     /// # Errors
     ///
     /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
-    /// - [`Error::MissingFile`] if neither layer holds a file at `path`
-    /// - [`Error::Io`] if the file can't be read
-    pub fn read(&self, path: &str) -> Result<Vec<u8>> {
-        Ok(self.layers().read(path)?.1)
+    /// - [`Error::MissingFile`] if neither directory holds a file at `path`
+    /// - [`Error::PatchConflict`] if `changes/` holds it whole and as a patch
+    /// - [`Error::Io`] if a file can't be read
+    pub fn read(&self, path: &str) -> Result<Stored> {
+        self.overlay().read(path)
     }
 
-    /// Writes `data` to `path` under `mod/changes/`, creating any missing
-    /// directories. `base/` is never written.
+    /// Writes `data` to `path` under `mod/changes/` whole, creating any
+    /// missing directories. `vanilla/` is never written.
     ///
     /// # Errors
     ///
     /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
+    /// - [`Error::PatchConflict`] if `changes/` holds a patch for `path`
     /// - [`Error::Io`] on the write
     pub fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        self.layers().write(path, data)
+        self.overlay().write(path, data)
     }
 
-    /// Hashes `mod/changes/` against the vanilla digests taken at unpack,
-    /// and reports whatever doesn't match, sorted by path.
+    /// Hashes `mod/changes/` against the vanilla `digests` file stored from an
+    /// unpack, and reports whatever doesn't match, sorted by path.
     ///
-    /// A file in `changes/` identical to vanilla is not a change. `base/` is
-    /// not checked; a build refuses drift there when it reads the file.
+    /// A file in `changes/` identical to vanilla is not a change, and a patch
+    /// is a change to the file it patches. `vanilla/` is not checked; a build
+    /// refuses drift there when it reads the file.
     ///
     /// # Errors
     ///
@@ -289,6 +289,6 @@ impl Project {
     /// - [`Error::UnusablePath`] if a name in the project is not UTF-8
     pub fn diff(&self) -> Result<Vec<Change>> {
         let store::Store { digests, .. } = self.read_store()?;
-        Ok(self.layers().compare(&digests)?.changes)
+        Ok(self.overlay().compare(&digests)?.changes)
     }
 }

@@ -4,13 +4,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::io::refuse_unowned;
-use crate::layout::{base, modding, store};
+use crate::layout::{modding, store, vanilla};
 use crate::{Error, Result, build};
 
 /// Every top-level name this crate writes. A directory holding nothing but
 /// these and their [`Staging`](crate::io::Staging) copies is ours, however
 /// far an unpack got before it failed.
-const OWNED: [&str; 4] = [base::DIR, modding::DIR, build::DIR, store::DIR];
+const OWNED: [&str; 4] = [vanilla::DIR, modding::DIR, build::DIR, store::DIR];
 
 /// Whether `dir` is a finished unpack: it has the `.tpmt/` that an unpack
 /// writes last, once everything else is in place.
@@ -70,7 +70,7 @@ mod tests {
         mark_project(scratch.path());
         let nested = scratch
             .path()
-            .join(base::DIR)
+            .join(vanilla::DIR)
             .join("files")
             .join("thing.arc");
         fs::create_dir_all(&nested).unwrap();
@@ -122,9 +122,17 @@ mod tests {
     #[test]
     fn accepts_a_half_finished_unpack() {
         let scratch = tempfile::tempdir().unwrap();
-        write(&scratch.path().join(base::DIR).join("files").join("a"), b"").unwrap();
         write(
-            &scratch.path().join("base.tpmt-tmp").join("files").join("a"),
+            &scratch.path().join(vanilla::DIR).join("files").join("a"),
+            b"",
+        )
+        .unwrap();
+        write(
+            &scratch
+                .path()
+                .join("vanilla.tpmt-tmp")
+                .join("files")
+                .join("a"),
             b"",
         )
         .unwrap();

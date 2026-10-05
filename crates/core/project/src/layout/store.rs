@@ -3,8 +3,8 @@
 //!
 //! ```text
 //! source.toml      Source    where the ISO was last seen, and which game
-//! digests.xxh128   Digests   vanilla digest of every base/ file
-//! formats          Formats   which base/ files hold a known leaf format
+//! digests.xxh128   Digests   digest of every vanilla/ file
+//! payloads         Payloads  which vanilla/ files hold each payload
 //! ```
 //!
 //! None of it is safe to edit by hand: every unpack rewrites it. Its presence
@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::{Xxh3, xxh3_128};
 
 use crate::io::fs::{self, read_toml, write_toml};
-use crate::{Error, FileKind, Result};
+use crate::{Error, FileKind, Payload, Result};
 
 pub const DIR: &str = ".tpmt";
-const FORMATS: &str = "formats";
+const PAYLOADS: &str = "payloads";
 const DIGESTS: &str = "digests.xxh128";
 const SOURCE_TOML: &str = "source.toml";
 
@@ -37,8 +37,9 @@ pub struct Source {
     pub revision: u8,
 }
 
-/// What `.tpmt/` holds: the disc this project came from, and what every file
-/// the unpack wrote hashed to.
+/// `source.toml` and `digests`, which a build and a diff read together.
+/// `payloads` isn't included, so looking up files by payload never parses
+/// the digest of every `vanilla/` file.
 pub struct Store {
     pub source: Source,
     pub digests: Digests,
@@ -50,11 +51,11 @@ pub fn write(
     id: &str,
     revision: u8,
     digests: &Digests,
-    formats: &Formats,
+    payloads: &Payloads,
 ) -> Result<()> {
     let iso = iso.canonicalize().map_err(Error::io(iso))?;
     write_digests(&dir.join(DIGESTS), digests)?;
-    write_formats(&dir.join(FORMATS), formats)?;
+    write_payloads(&dir.join(PAYLOADS), payloads)?;
     write_toml(
         &dir.join(SOURCE_TOML),
         &Source {
@@ -115,8 +116,8 @@ fn read_digests(path: &Path) -> Result<Digests> {
         .collect()
 }
 
-/// `formats`: every `base/` file whose magic a [`FileKind`] recognised,
-/// grouped by kind. A file no kind recognises isn't listed.
+/// `payloads`: every `vanilla/` file whose magic names a [`Payload`],
+/// grouped by it. Any other file isn't listed.
 ///
 /// On disk each kind is a `[name]` line with its paths one per line under
 /// it, sorted by kind and then path.
@@ -124,14 +125,14 @@ fn read_digests(path: &Path) -> Result<Digests> {
 /// It exists because a name on the disc can't be trusted: some files carry
 /// no extension, or one that doesn't match what's inside. Only the magic
 /// can. Unpack already holds every file's bytes, so it reads each magic once
-/// and records it here, and a lookup by kind never reopens `base/`.
-pub type Formats = BTreeMap<FileKind, BTreeSet<String>>;
+/// and records it here, and a lookup by kind never reopens `vanilla/`.
+pub type Payloads = BTreeMap<Payload, BTreeSet<String>>;
 
-fn write_formats(path: &Path, formats: &Formats) -> Result<()> {
+fn write_payloads(path: &Path, payloads: &Payloads) -> Result<()> {
     let mut text = String::new();
-    for (kind, files) in formats {
+    for (payload, files) in payloads {
         text.push('[');
-        text.push_str(kind.name());
+        text.push_str(payload.kind().name());
         text.push_str("]\n");
         for file in files {
             text.push_str(one_line(file)?);
@@ -141,20 +142,19 @@ fn write_formats(path: &Path, formats: &Formats) -> Result<()> {
     fs::write(path, text.as_bytes())
 }
 
-/// Reads `formats` alone, since a lookup by kind has no use for 27,000
-/// digests.
-pub fn read_formats(dir: &Path) -> Result<Formats> {
-    let path = dir.join(FORMATS);
-    let mut formats = Formats::new();
+pub fn read_payloads(dir: &Path) -> Result<Payloads> {
+    let path = dir.join(PAYLOADS);
+    let mut payloads = Payloads::new();
     let mut files = None;
     for line in read_text(&path)?.lines() {
         if let Some(name) = line
             .strip_prefix('[')
             .and_then(|line| line.strip_suffix(']'))
         {
-            let kind = FileKind::from_name(name)
-                .ok_or_else(|| Error::parse(&path)(format!("no file kind is named `{name}`")))?;
-            files = Some(formats.entry(kind).or_default());
+            let payload = FileKind::from_name(name)
+                .and_then(FileKind::payload)
+                .ok_or_else(|| Error::parse(&path)(format!("no payload is named `{name}`")))?;
+            files = Some(payloads.entry(payload).or_default());
         } else {
             files
                 .as_mut()
@@ -162,11 +162,11 @@ pub fn read_formats(dir: &Path) -> Result<Formats> {
                 .insert(line.to_string());
         }
     }
-    Ok(formats)
+    Ok(payloads)
 }
 
 /// `file`, if it reads back as itself from a line of its own. A newline would
-/// split it in two, and a leading `[` would read as a `formats` group.
+/// split it in two, and a leading `[` would read as a `payloads` group.
 fn one_line(file: &str) -> Result<&str> {
     if file.contains('\n') || file.starts_with('[') {
         return Err(Error::UnusablePath(file.into()));
@@ -205,17 +205,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_read_back_as_written() {
+    fn payloads_read_back_as_written() {
         let scratch = tempfile::tempdir().unwrap();
-        let formats = Formats::from([
-            (
-                FileKind::Mesg,
-                BTreeSet::from(["files/a.arc/b.bmg".to_string(), "files/c.bmg".to_string()]),
-            ),
-            (FileKind::Rarc, BTreeSet::from(["files/d.arc".to_string()])),
-        ]);
-        write_formats(&scratch.path().join(FORMATS), &formats).unwrap();
+        let payloads = Payloads::from([(
+            Payload::Mesg,
+            BTreeSet::from(["files/a.arc/b.bmg".to_string(), "files/c.bmg".to_string()]),
+        )]);
+        write_payloads(&scratch.path().join(PAYLOADS), &payloads).unwrap();
 
-        assert_eq!(read_formats(scratch.path()).unwrap(), formats);
+        assert_eq!(read_payloads(scratch.path()).unwrap(), payloads);
     }
 }

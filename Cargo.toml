@@ -24,7 +24,7 @@ license = "CC0-1.0"
 tpmt-binary = { path = "crates/formats/binary", version = "0.1.0" }
 tpmt-report = { path = "crates/formats/report", version = "0.1.0" }
 tpmt-tables = { path = "crates/formats/tables", version = "0.1.0" }
-# Payloads: the leaf files left after unpacking.
+# Payloads: formats of the files packaging wraps, which unpacking leaves byte for byte.
 tpmt-message = { path = "crates/formats/payloads/message", version = "0.1.0" }
 # Packaging: what unpacking removes and building puts back.
 tpmt-disc = { path = "crates/formats/packaging/disc", version = "0.1.0" }

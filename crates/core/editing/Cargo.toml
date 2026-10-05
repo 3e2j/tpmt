@@ -1,6 +1,6 @@
 [package]
 name = "tpmt-editing"
-description = "Editing a format's files, with edits as values and undo."
+description = "Opening a format's files, making undoable changes, and saving them as a patch against vanilla."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -11,6 +11,9 @@ tpmt-binary.workspace = true
 tpmt-tables.workspace = true
 tpmt-message.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+encoding_rs.workspace = true # message text, in the file's own encoding
 
 [lints]
 workspace = true

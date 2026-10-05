@@ -133,28 +133,28 @@ mod tests {
     #[test]
     fn dropped_staging_leaves_no_trace() {
         let scratch = tempfile::tempdir().unwrap();
-        let staging = Staging::begin(&scratch.path().join("base")).unwrap();
-        assert_eq!(staging.dir(), scratch.path().join("base.tpmt-tmp"));
+        let staging = Staging::begin(&scratch.path().join("vanilla")).unwrap();
+        assert_eq!(staging.dir(), scratch.path().join("vanilla.tpmt-tmp"));
         fs::write(staging.dir().join("half"), b"written").unwrap();
         drop(staging);
 
-        assert!(!scratch.path().join("base.tpmt-tmp").exists());
-        assert!(!scratch.path().join("base").exists());
+        assert!(!scratch.path().join("vanilla.tpmt-tmp").exists());
+        assert!(!scratch.path().join("vanilla").exists());
     }
 
     #[test]
     fn promoted_staging_replaces_the_target() {
         let scratch = tempfile::tempdir().unwrap();
-        let base = scratch.path().join("base");
-        write(&base.join("stale"), b"old").unwrap();
+        let vanilla = scratch.path().join("vanilla");
+        write(&vanilla.join("stale"), b"old").unwrap();
 
-        let staging = Staging::begin(&base).unwrap();
+        let staging = Staging::begin(&vanilla).unwrap();
         write(&staging.dir().join("fresh"), b"new").unwrap();
         staging.promote().unwrap();
 
-        assert_eq!(read(&base.join("fresh")).unwrap(), b"new");
-        assert!(!base.join("stale").exists());
-        assert!(!scratch.path().join("base.tpmt-tmp").exists());
-        assert!(!scratch.path().join("base.tpmt-old").exists());
+        assert_eq!(read(&vanilla.join("fresh")).unwrap(), b"new");
+        assert!(!vanilla.join("stale").exists());
+        assert!(!scratch.path().join("vanilla.tpmt-tmp").exists());
+        assert!(!scratch.path().join("vanilla.tpmt-old").exists());
     }
 }

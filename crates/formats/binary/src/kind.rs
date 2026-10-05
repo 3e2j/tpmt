@@ -4,7 +4,9 @@
 //! Every file's opening magic lives in [`FileKind`] and is checked only here.
 //! Magics inside a file, like section tags, belong to that format's crate.
 //!
-//! [`Compression`] groups the kinds that wrap another file.
+//! Every kind is `packaging` or a `payload`. Packaging holds other files
+//! ([`Compression`], archives) and an unpack takes it off. A [`Payload`] is
+//! what's left, stored in the project byte for byte (game assets).
 
 /// Data handed to a decoder that doesn't open with its magic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,13 +104,30 @@ impl FileKind {
         }
     }
 
-    /// Whether this kind packages other files, as a compression wrapper or an
-    /// archive does, and isn't a payload itself.
+    /// The payload this kind is, if it isn't packaging.
     #[must_use]
-    pub const fn is_packaging(self) -> bool {
-        // disc crate excluded from here as it doesn't have a consistent magic
-        // nor does it implement the Format trait
-        self.compression().is_some() || matches!(self, Self::Rarc)
+    pub const fn payload(self) -> Option<Payload> {
+        match self {
+            Self::Mesg => Some(Payload::Mesg),
+            Self::Rarc | Self::Yaz0 | Self::Yay0 => None,
+        }
+    }
+}
+
+/// A kind the disc ships inside packaging and an unpack stores byte for byte.
+/// Only kinds tpmt recognises. A sidecar isn't one; tpmt writes those to
+/// record the packaging it took off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Payload {
+    Mesg,
+}
+
+impl Payload {
+    #[must_use]
+    pub const fn kind(self) -> FileKind {
+        match self {
+            Self::Mesg => FileKind::Mesg,
+        }
     }
 }
 

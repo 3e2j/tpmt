@@ -1,25 +1,26 @@
-//! Editing a format's files, one type per format: where a decoded file meets
-//! the game's tables.
+//! Editing a format's decoded files, with undo, and saving the edits as a
+//! patch against vanilla.
 //!
-//! An editable file wraps a decoded one and changes only through edits, which
-//! are plain values. Performing an edit hands back the edit that undoes it, so
-//! undo and redo are two stacks of edits ([`History`]) rather than snapshots.
+//! This crate does three things:
+//! 1. Provide a interface for editing formats (in packing and project)
+//! 2. Associate game data tables with the formats
+//! 3. Provide a [`Session`] that opens a file, edits it with history, and saves
+//!    it with a patch
 //!
-//! An edit fails only when the format can't hold the result. Anything the
-//! format accepts goes through, even if the game wouldn't expect it, since a
-//! mod can change what the game expects. Those edits warn instead, like a
-//! branch node in a message flow with more answers than its query returns.
-//! An edit built on the game's tables, like setting a named record field, has
-//! a raw counterpart that skips them.
+//! An edit the format can't hold is refused.
+//! Going against the game's tables is only warned.
 //!
-//! An editable file knows nothing about paths. It opens from bytes and saves to
-//! bytes, and `tpmt-ops` decides where those go: `mod/changes/`, never
-//! `base/`.
-//!
-//! No UI framework here, so editing can be tested headless and reused by the
-//! CLI or an export.
+//! Performing an edit returns the edit that undoes it, so [`History`] keeps
+//! two stacks of edits instead of snapshots.
 
 pub mod message;
+mod session;
+
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+
+pub use session::{Error, Saved, Session, Source, apply};
+pub use tpmt_tables::{Edition, Version};
 
 /// A decoded file that changes only through edits.
 pub trait Editable {
@@ -34,6 +35,56 @@ pub trait Editable {
     /// When the edit doesn't fit the file, such as one naming something
     /// the file doesn't hold.
     fn perform(&mut self, edit: Self::Edit) -> Result<Self::Edit, Self::Error>;
+}
+
+/// How a record of an edited file compares with its vanilla copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Unchanged,
+    Changed,
+    Added,
+    Removed,
+}
+
+/// Each record of `vanilla` and `edited` with its [`Status`], matched by `key`.
+///
+/// Vanilla's records come first, then the added ones.
+///
+/// An edit must not change a record's key, or the record shows as removed and
+/// a new one as added.
+pub fn compare<R: PartialEq, K: Copy + Eq + Hash>(
+    vanilla: &[R],
+    edited: &[R],
+    key: impl Fn(&R) -> K,
+) -> Vec<(K, Status)> {
+    // Where two records share a key, only the first counts.
+    let mut by_key = HashMap::with_capacity(edited.len());
+    for record in edited {
+        by_key.entry(key(record)).or_insert(record);
+    }
+
+    let mut seen = HashSet::with_capacity(vanilla.len());
+    let mut changes = Vec::with_capacity(vanilla.len().max(edited.len()));
+    for record in vanilla {
+        let key = key(record);
+        if !seen.insert(key) {
+            continue;
+        }
+        let status = match by_key.get(&key) {
+            None => Status::Removed,
+            Some(edited) if *edited == record => Status::Unchanged,
+            Some(_) => Status::Changed,
+        };
+        changes.push((key, status));
+    }
+
+    for record in edited {
+        let key = key(record);
+        if seen.insert(key) {
+            changes.push((key, Status::Added));
+        }
+    }
+    changes
 }
 
 /// Undo and redo for one file, as stacks of the edits that reverse each
@@ -103,5 +154,25 @@ impl<E> History<E> {
     #[must_use]
     pub const fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_match_by_key_not_position() {
+        let vanilla = [(1, 'a'), (2, 'b'), (3, 'c')];
+        let edited = [(4, 'd'), (3, 'c'), (1, 'z')];
+        assert_eq!(
+            compare(&vanilla, &edited, |record| record.0),
+            [
+                (1, Status::Changed),
+                (2, Status::Removed),
+                (3, Status::Unchanged),
+                (4, Status::Added),
+            ]
+        );
     }
 }

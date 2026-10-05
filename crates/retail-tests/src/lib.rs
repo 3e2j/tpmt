@@ -2,6 +2,8 @@
 //!
 //! A retail test checks our code against what the disc holds. A test whose
 //! expected value comes from our own code belongs in that code's crate.
+//! IE: patches and their TOML translation exist only in our tooling, not on
+//! the disc, so their tests live in `tpmt-editing`.
 //!
 //! A [`Check::File`] sees every file of its kind at any depth, one at a time.
 //!
@@ -13,9 +15,9 @@
 //! in and a note says why, so a run without discs never looks like a pass.
 //!
 //! Checks read an unpack of each disc, cached in the OS temp directory and
-//! kept between runs for faster test results. A check on a packaging kind
-//! (see [`FileKind::is_packaging`]) walks the image each run instead, since
-//! an unpack doesn't keep packaging.
+//! kept between runs for faster test results. A check on a kind that isn't a
+//! [`Payload`] walks the image each run instead, since an unpack doesn't keep
+//! packaging.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read as _, Seek as _, Write as _};
@@ -25,7 +27,7 @@ use std::process::ExitCode;
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
 use tpmt_disc::{Boot, Disc, Metadata};
-use tpmt_project::{FileKind, Project};
+use tpmt_project::{FileKind, Payload, Project};
 use tpmt_report::Progress;
 use tpmt_tables::Version;
 
@@ -147,8 +149,10 @@ fn trial(name: &str, check: Check, iso: &Path) -> Trial {
     let name = format!("{name}::{}", file_name(iso));
     let iso = iso.to_path_buf();
     Trial::test(name, move || match check {
-        Check::File(kind, check) if kind.is_packaging() => report(walked(&iso, kind, check)?),
-        Check::File(kind, check) => report(stored(&iso, kind, check)?),
+        Check::File(kind, check) => match kind.payload() {
+            Some(payload) => report(stored(&iso, payload, check)?),
+            None => report(walked(&iso, kind, check)?),
+        },
         Check::Disc(check) => whole(&iso, check),
     })
 }
@@ -162,17 +166,17 @@ fn whole(iso: &Path, check: fn(Version, &Project) -> Vec<String>) -> Result<(), 
     failed(&problems, "on the disc").map_or(Ok(()), Err)
 }
 
-/// `check` over every file of `kind` in the unpack of `iso`.
-fn stored(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
+/// `check` over every file holding `payload` in the unpack of `iso`.
+fn stored(iso: &Path, payload: Payload, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
     let project = unpacked(iso)?;
     let version = version(&project.read_disc::<Metadata>()?.boot)?;
-    let base = project.base();
-    let paths = project.formats()?.remove(&kind).unwrap_or_default();
+    let vanilla = project.vanilla();
+    let paths = project.payloads()?.remove(&payload).unwrap_or_default();
     let tally = paths
         .par_iter()
         .map(|path| {
             let mut bytes = Vec::new();
-            fs::File::open(base.join(path))?.read_to_end(&mut bytes)?;
+            fs::File::open(vanilla.join(path))?.read_to_end(&mut bytes)?;
             let mut tally = Tally::default();
             tally.check(
                 check,

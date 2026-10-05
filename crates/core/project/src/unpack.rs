@@ -1,4 +1,4 @@
-//! What an unpack writes into a project: a fresh `base/`, then `.tpmt/`,
+//! What an unpack writes into a project: a fresh `vanilla/`, then `.tpmt/`,
 //! then `mod/` if it is missing.
 
 use std::collections::BTreeMap;
@@ -8,16 +8,16 @@ use serde::Serialize;
 use tpmt_binary::Compression;
 
 use crate::io::{Staging, fs};
-use crate::layout::{base, modding, store};
+use crate::layout::{modding, store, vanilla};
 use crate::path::checked;
 use crate::{FileKind, Project, Result};
 
-/// A `base/` being written beside the old one, swapped in by
-/// [`finish`](Self::finish). Dropping it unfinished leaves the old `base/`
+/// A `vanilla/` being written beside the old one, swapped in by
+/// [`finish`](Self::finish). Dropping it unfinished leaves the old `vanilla/`
 /// as it was.
 ///
 /// Takes writes from several threads at once.
-pub struct NewBase {
+pub struct NewVanilla {
     staging: Staging,
 }
 
@@ -31,7 +31,7 @@ pub struct Written {
     pub kind: Option<FileKind>,
 }
 
-impl NewBase {
+impl NewVanilla {
     /// Writes one file at its project path.
     ///
     /// # Errors
@@ -58,7 +58,7 @@ impl NewBase {
         fs::create_dir_all(&self.staging.dir().join(checked(path)?))
     }
 
-    /// Writes `disc.toml` and `compression.toml`, then swaps the new `base/`
+    /// Writes `disc.toml` and `compression.toml`, then swaps the new `vanilla/`
     /// in for the old one.
     ///
     /// `disc` is whatever the disc's preamble holds that a build can't derive.
@@ -74,7 +74,7 @@ impl NewBase {
         disc: &impl Serialize,
         compressed: &BTreeMap<String, Compression>,
     ) -> Result<()> {
-        base::write(self.staging.dir(), disc, compressed)?;
+        vanilla::write(self.staging.dir(), disc, compressed)?;
         self.staging.promote()
     }
 }
@@ -84,7 +84,7 @@ impl Project {
     /// is not a project but already holds files.
     ///
     /// A project passes whatever else it holds (notes, fixtures, `.git`), since
-    /// a re-unpack replaces only `base/`. An empty or missing directory passes,
+    /// a re-unpack replaces only `vanilla/`. An empty or missing directory passes,
     /// as does one holding only names this crate writes, from an unpack that
     /// failed part way.
     ///
@@ -100,15 +100,15 @@ impl Project {
         })
     }
 
-    /// Starts a fresh `base/` beside the current one.
+    /// Starts a fresh `vanilla/` beside the current one.
     ///
     /// # Errors
     ///
     /// - [`Error::Io`](crate::Error::Io) if the staging directory cannot be
     ///   made
-    pub fn new_base(&self) -> Result<NewBase> {
-        Ok(NewBase {
-            staging: Staging::begin(&self.base())?,
+    pub fn new_vanilla(&self) -> Result<NewVanilla> {
+        Ok(NewVanilla {
+            staging: Staging::begin(&self.vanilla())?,
         })
     }
 
@@ -135,18 +135,18 @@ impl Project {
         written: Vec<Written>,
     ) -> Result<()> {
         let mut digests = store::Digests::new();
-        let mut formats = store::Formats::new();
+        let mut payloads = store::Payloads::new();
         for Written { path, digest, kind } in written {
-            if let Some(kind) = kind {
-                formats.entry(kind).or_default().insert(path.clone());
+            if let Some(payload) = kind.and_then(FileKind::payload) {
+                payloads.entry(payload).or_default().insert(path.clone());
             }
             digests.insert(path, digest);
         }
-        store::write(&self.store(), iso, id, revision, &digests, &formats)
+        store::write(&self.store(), iso, id, revision, &digests, &payloads)
     }
 
     /// Writes the `mod/` skeleton (`changes/`, `textures/`, `res/scripts/`, a
-    /// starter `mod.json`) alongside `base/`. Skips an existing `mod/`, so
+    /// starter `mod.json`) alongside `vanilla/`. Skips an existing `mod/`, so
     /// re-unpacking a project never clobbers a modder's edits.
     ///
     /// # Errors

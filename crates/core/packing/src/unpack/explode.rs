@@ -62,7 +62,7 @@ pub struct Layer<'a> {
     pub bytes: &'a [u8],
     /// Whether the project stores it. A wrapper and an archive aren't
     /// stored, only what they hold and an archive's sidecar.
-    pub leaf: bool,
+    pub stored: bool,
 }
 
 /// Peels `data`, then hands it to whichever format's magic it opens with.
@@ -98,7 +98,7 @@ pub fn file<E: From<Error>>(
                 path,
                 kind,
                 bytes: data,
-                leaf: false,
+                stored: false,
             })?;
             Cow::Owned(tpmt_compression::decompress(compression, data).map_err(at(path))?)
         }
@@ -107,13 +107,13 @@ pub fn file<E: From<Error>>(
 
     let inner = FileKind::identify(&bare);
     let is_archive = inner == Some(FileKind::Rarc);
-    // Leaf formats pass through as raw bytes. Decoding one is a separate,
+    // Payloads pass through as raw bytes. Decoding one is a separate,
     // on-demand call.
     sink(Layer {
         path,
         kind: inner,
         bytes: &bare,
-        leaf: !is_archive,
+        stored: !is_archive,
     })?;
     if is_archive {
         let decoded = Archive::decode(&bare).map_err(at(path))?;
@@ -159,7 +159,7 @@ fn archive<E: From<Error>>(
         path: &format!("{path}/{SIDECAR}"),
         kind: None,
         bytes: toml.as_bytes(),
-        leaf: true,
+        stored: true,
     })
 }
 
@@ -217,7 +217,7 @@ mod tests {
             path,
             data,
             &mut |layer| -> Result<()> {
-                if layer.leaf {
+                if layer.stored {
                     outputs.insert(layer.path.to_string(), layer.bytes.to_vec());
                 }
                 Ok(())
@@ -316,7 +316,7 @@ mod tests {
     }
 
     /// The sink sees every wrapper and archive on the way down, outermost
-    /// first, with only what the project stores marked as a leaf.
+    /// first, with only what the project stores marked as stored.
     #[test]
     fn every_layer_reaches_the_sink() {
         let member = wrap(Compression::Yaz0, b"member");
@@ -330,14 +330,14 @@ mod tests {
             "files/outer.arc",
             &outer,
             &mut |layer| -> Result<()> {
-                layers.push((layer.path.to_string(), layer.kind, layer.leaf));
+                layers.push((layer.path.to_string(), layer.kind, layer.stored));
                 Ok(())
             },
             &mut Vec::new(),
         )
         .unwrap();
 
-        let layer = |path: &str, kind, leaf| (path.to_string(), kind, leaf);
+        let layer = |path: &str, kind, stored| (path.to_string(), kind, stored);
         assert_eq!(
             layers,
             [

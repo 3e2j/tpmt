@@ -33,7 +33,7 @@ pub trait Files<E>: Sync {
     /// # Errors
     ///
     /// Whatever the caller fails with, like a file in neither copy.
-    fn read(&self, path: &str) -> Result<Vec<u8>, E>;
+    fn read(&self, path: &str) -> Result<Box<[u8]>, E>;
 
     /// Whether either copy holds a file at `path`.
     fn is_file(&self, path: &str) -> bool;

@@ -75,6 +75,23 @@ pub fn remove_dir_all_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+/// Like [`fs::remove_file`], but a missing `path` is not an error, since
+/// there is nothing to remove.
+///
+/// # Errors
+///
+/// - [`Error::Io`] if `path` exists and cannot be removed
+pub fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(Error::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// Reads a whole file. The workspace disallows `std::fs::read` because an ISO
 /// will not fit in memory. Everything this is used for is a project file,
 /// where the largest thing on the disc is a 137 MB video.

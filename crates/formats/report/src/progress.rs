@@ -23,10 +23,10 @@ use crate::Report;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Step {
-    /// Reading the disc once and taking every file apart into `base/` on the
+    /// Reading the disc once and taking every file apart into `vanilla/` on the
     /// way, counted in file bytes read.
     Unpack = 1,
-    /// Writing the project's own files and swapping `base/` in. No total.
+    /// Writing the project's own files and swapping `vanilla/` in. No total.
     Save,
     /// Re-encoding each changed disc file, counted in files.
     Rebuild,

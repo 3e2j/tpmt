@@ -1,6 +1,6 @@
-//! Project paths: UTF-8, `/`-separated, relative to a layer root, the same
-//! in `base/` and `mod/changes/`. `files/res/Msgus/bmgres3.arc/zel_00.bmg` is
-//! one.
+//! Project paths: UTF-8, `/`-separated, and the same relative to `vanilla/`
+//! and `mod/changes/`.
+//! IE: `files/res/Msgus/bmgres3.arc/zel_00.bmg` is one.
 
 use std::fs;
 use std::path::{Component, Path};
@@ -48,7 +48,7 @@ pub fn files(dir: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
-/// `path` as a relative path that stays inside the layer it's joined to.
+/// `path` as a relative path that stays inside the directory it's joined to.
 pub fn checked(path: &str) -> Result<&Path> {
     let at = Path::new(path);
     let inside = !path.is_empty()

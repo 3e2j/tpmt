@@ -1,7 +1,7 @@
 //! Putting one disc file back together, the inverse of
 //! [`explode`](crate::unpack::explode).
 //!
-//! Builds leaves first. An archive's header records each member's offset and
+//! Builds members first. An archive's header records each member's offset and
 //! size, so the archive can't encode until every member's bytes are final.
 //! The recursion assembles each member, wraps it if its entry says so,
 //! then encodes the archive. A disc file's own wrapper goes on last, because
@@ -59,7 +59,7 @@ where
     if tree.is_archive(path) {
         archive(tree, path)
     } else {
-        tree.file(path)
+        tree.file(path).map(Vec::from)
     }
 }
 

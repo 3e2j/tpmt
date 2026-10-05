@@ -1,4 +1,4 @@
-//! `base/`: the read-only unpack of the disc, and the two files that record
+//! `vanilla/`: the read-only unpack of the disc, and the two files that record
 //! what its unpacked files can't:
 //!
 //! ```text
@@ -6,7 +6,7 @@
 //! compression.toml   which loose files arrived wrapped, in what (path = "yaz0")
 //! ```
 //!
-//! `disc.toml` is safe to edit by hand. Every unpack rewrites `base/` whole.
+//! `disc.toml` is safe to edit by hand. Every unpack rewrites `vanilla/` whole.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -18,15 +18,15 @@ use tpmt_binary::Compression;
 use crate::Result;
 use crate::io::fs::{read_toml, write_toml};
 
-pub const DIR: &str = "base";
+pub const DIR: &str = "vanilla";
 const DISC_TOML: &str = "disc.toml";
 /// Recorded here because a loose file never records its own wrapper (unlike
 /// an archive member, whose sidecar does).
 const COMPRESSION_TOML: &str = "compression.toml";
 
-/// What `base/` says about itself, which is everything a rebuild needs that
+/// What `vanilla/` says about itself, which is everything a rebuild needs that
 /// the unpacked files do not carry.
-pub struct Base<D> {
+pub struct Vanilla<D> {
     /// The preamble values a build cannot derive.
     pub disc: D,
     /// Which disc files arrived compressed, so a rebuild puts the same
@@ -34,11 +34,11 @@ pub struct Base<D> {
     pub compressed: BTreeMap<String, Compression>,
 }
 
-/// Writes `disc.toml` and `compression.toml` into `dir`, a `base/` being
+/// Writes `disc.toml` and `compression.toml` into `dir`, a `vanilla/` being
 /// staged.
 ///
-/// The one call site for everything under `base/` that isn't a copied file,
-/// so nothing else reaches into `base/` to write a TOML of its own.
+/// The one call site for everything under `vanilla/` that isn't a copied file,
+/// so nothing else reaches into `vanilla/` to write a TOML of its own.
 ///
 /// # Errors
 ///
@@ -53,8 +53,8 @@ pub fn write(
     write_toml(&dir.join(COMPRESSION_TOML), compressed)
 }
 
-pub fn read<D: DeserializeOwned>(dir: &Path) -> Result<Base<D>> {
-    Ok(Base {
+pub fn read<D: DeserializeOwned>(dir: &Path) -> Result<Vanilla<D>> {
+    Ok(Vanilla {
         disc: read_disc(dir)?,
         compressed: read_toml(&dir.join(COMPRESSION_TOML))?,
     })

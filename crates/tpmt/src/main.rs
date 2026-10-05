@@ -126,8 +126,7 @@ fn project(dir: Option<&PathBuf>) -> Result<Project, Error> {
     Ok(tpmt_ops::discover(start)?)
 }
 
-/// Prints a status listing, colored yellow/green for modified and added when
-/// standard out is a terminal somebody is looking at.
+/// Prints a status listing, colored for terminals.
 fn print_status(changes: &[Change]) {
     if changes.is_empty() {
         println!("nothing changed from vanilla");
@@ -137,8 +136,9 @@ fn print_status(changes: &[Change]) {
     let color = io::stdout().is_terminal();
     for change in changes {
         let (tag, code) = match change.kind {
-            ChangeKind::Added => ("A", "32"),
-            ChangeKind::Modified => ("M", "33"),
+            ChangeKind::Added => ("A", "32"),    // green
+            ChangeKind::Replaced => ("R", "33"), // yellow
+            ChangeKind::Patched => ("P", "36"),  // cyan
         };
         if color {
             println!("\x1b[{code}m{tag}\x1b[0m {}", change.path);

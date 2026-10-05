@@ -1,4 +1,4 @@
-//! Editing a BMG message file.
+//! Editing a BMG message file through edits that are plain values.
 //!
 //! Text is kept as `tpmt-message`'s segments, so nothing is re-parsed on save.
 //!
@@ -6,18 +6,20 @@
 //! removed message a text node still shows, a removed node an edge still
 //! reaches. Malformed text is left to [`EditableBmg::save`], which refuses
 //! it the same way the encoder does.
+//!
+//! A new message or node always gets an id past every one the file opened
+//! with. [`patch`](super::patch) relies on that to tell vanilla items from
+//! new ones.
 
 use std::mem;
-use std::ops::Range;
 
 use tpmt_binary::Format;
-use tpmt_message::{
-    Bmg, Flow, Message, MessageId, Node, NodeId, Root, TEXT_OFFSET_LEN, TextSegment,
-};
+use tpmt_message::{Bmg, Flow, Message, MessageId, Node, NodeId, Root, TextSegment};
 use tpmt_tables::Edition;
-use tpmt_tables::message::{self, Field, Layout};
+use tpmt_tables::message::Field;
 
-use crate::Editable;
+use super::tables::{Tables, field_bytes, read_field, write_field};
+use crate::{Editable, Status, compare};
 
 /// One change to a message file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,13 +194,50 @@ pub enum EditError {
     FlowNotEmpty,
 }
 
+/// How each record of an edited message file compares with vanilla, as
+/// [`compare`] orders them. Against no vanilla file, every record is added.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BmgChanges {
+    pub messages: Vec<(MessageId, Status)>,
+    pub nodes: Vec<(NodeId, Status)>,
+    /// By public id, since that's how a patch names a root.
+    pub roots: Vec<(u16, Status)>,
+}
+
+impl BmgChanges {
+    #[must_use]
+    pub fn new(vanilla: Option<&Bmg>, edited: &Bmg) -> Self {
+        let vanilla_flow = vanilla.and_then(|bmg| bmg.flow.as_ref());
+        let edited_flow = edited.flow.as_ref();
+        Self {
+            messages: compare(
+                vanilla.map_or(&[][..], |bmg| &bmg.messages),
+                &edited.messages,
+                |message| message.id,
+            ),
+            nodes: compare(
+                vanilla_flow.map_or(&[][..], |flow| &flow.nodes),
+                edited_flow.map_or(&[][..], |flow| &flow.nodes),
+                Node::id,
+            ),
+            roots: compare(
+                vanilla_flow.map_or(&[][..], |flow| &flow.roots),
+                edited_flow.map_or(&[][..], |flow| &flow.roots),
+                |root| root.public_id,
+            ),
+        }
+    }
+}
+
 /// A message file open for editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditableBmg {
     bmg: Bmg,
-    /// The version and language the file is from, which pick the layouts
-    /// its records can have.
-    edition: Edition,
+    tables: Tables,
+    /// The lowest ids a new message and a new node may take: past every one
+    /// the file opened with, so an id freed by a removal is never handed out
+    /// again.
+    first_new: (MessageId, NodeId),
 }
 
 impl EditableBmg {
@@ -208,7 +247,7 @@ impl EditableBmg {
     /// record holds a different id than its MID1 entry.
     pub fn open(bytes: &[u8], edition: Edition) -> Result<Self, OpenError> {
         let file = Self::new(Bmg::decode(bytes)?, edition);
-        if let Some(id) = file.id_field() {
+        if let Some(id) = file.tables.id {
             for message in &file.bmg.messages {
                 if let Some(record) = read_field(&message.attributes, &id)
                     && record != message.public_id
@@ -226,8 +265,12 @@ impl EditableBmg {
 
     /// An already decoded file, with no id check.
     #[must_use]
-    pub const fn new(bmg: Bmg, edition: Edition) -> Self {
-        Self { bmg, edition }
+    pub fn new(bmg: Bmg, edition: Edition) -> Self {
+        Self {
+            tables: Tables::new(&bmg, edition),
+            first_new: (next_message_id(&bmg), next_node_id(&bmg)),
+            bmg,
+        }
     }
 
     /// The file as bytes, for `tpmt-ops` to write into `changes/`.
@@ -245,64 +288,38 @@ impl EditableBmg {
         &self.bmg
     }
 
+    /// What the game's tables say about this file.
+    #[must_use]
+    pub const fn tables(&self) -> &Tables {
+        &self.tables
+    }
+
     #[must_use]
     pub fn message(&self, id: MessageId) -> Option<&Message> {
         self.bmg.messages.iter().find(|message| message.id == id)
     }
 
-    /// The layout of this file's records, or `None` when its
-    /// edition reads none as wide. See [`message::layout`].
-    #[must_use]
-    pub fn layout(&self) -> Option<&'static Layout> {
-        message::layout(self.edition, self.bmg.record_len)
-    }
-
-    /// An internal id no message holds yet, for [`MessageEdit::Insert`].
+    /// An internal id no message holds or held, for [`MessageEdit::Insert`].
     #[must_use]
     pub fn unused_message_id(&self) -> MessageId {
-        let highest = self.bmg.messages.iter().map(|message| message.id.0).max();
-        MessageId(highest.map_or(0, |id| id + 1))
+        MessageId(next_message_id(&self.bmg).0.max(self.first_new.0.0))
     }
 
-    /// A node id no node holds yet, for [`NodeEdit::Insert`].
+    /// A node id no node holds or held, for [`NodeEdit::Insert`].
     #[must_use]
     pub fn unused_node_id(&self) -> NodeId {
-        let highest = self
-            .bmg
-            .flow
-            .iter()
-            .flat_map(|flow| &flow.nodes)
-            .map(|node| node.id().0)
-            .max();
-        NodeId(highest.map_or(0, |id| id + 1))
-    }
-
-    /// The field that repeats [`Message::public_id`], which only a layout
-    /// with an id has, and only in a file with a MID1.
-    fn id_field(&self) -> Option<Field> {
-        self.bmg.mid1?;
-        self.layout()?.id
-    }
-
-    fn id_bytes(&self) -> Option<Range<usize>> {
-        field_bytes(&self.id_field()?)
-    }
-
-    fn attributes_len(&self) -> usize {
-        usize::from(self.bmg.record_len.saturating_sub(TEXT_OFFSET_LEN))
+        NodeId(next_node_id(&self.bmg).0.max(self.first_new.1.0))
     }
 
     /// Checks `attributes` for width and copies `public_id` over the id in
     /// them, where they hold one.
     fn fit(&self, public_id: u16, attributes: &mut [u8]) -> Result<(), EditError> {
-        let expected = self.attributes_len();
+        let expected = self.tables.attributes_len;
         let actual = attributes.len();
         if actual != expected {
             return Err(EditError::AttributeWidth { expected, actual });
         }
-        if let Some(id) = self.id_bytes().and_then(|bytes| attributes.get_mut(bytes)) {
-            id.copy_from_slice(&public_id.to_be_bytes());
-        }
+        self.tables.set_id(attributes, public_id);
         Ok(())
     }
 
@@ -403,11 +420,8 @@ impl EditableBmg {
         field: Field,
         value: u16,
     ) -> Result<MessageChange, EditError> {
-        let bytes = field_bytes(&field).ok_or(EditError::FieldOutOfRange(field.offset))?;
-        if let Some(id) = self.id_bytes()
-            && bytes.start < id.end
-            && id.start < bytes.end
-        {
+        field_bytes(&field).ok_or(EditError::FieldOutOfRange(field.offset))?;
+        if self.tables.is_id(&field) {
             return Err(EditError::IdField);
         }
         let attributes = &mut self.message_mut(message)?.attributes;
@@ -438,11 +452,9 @@ impl EditableBmg {
         message: MessageId,
         public_id: u16,
     ) -> Result<MessageChange, EditError> {
-        let id_bytes = self.id_bytes();
+        let tables = self.tables;
         let slot = self.message_mut(message)?;
-        if let Some(id) = id_bytes.and_then(|bytes| slot.attributes.get_mut(bytes)) {
-            id.copy_from_slice(&public_id.to_be_bytes());
-        }
+        tables.set_id(&mut slot.attributes, public_id);
         Ok(MessageChange::PublicId(mem::replace(
             &mut slot.public_id,
             public_id,
@@ -721,6 +733,19 @@ impl Editable for EditableBmg {
     }
 }
 
+/// The id past every message `bmg` holds.
+pub(crate) fn next_message_id(bmg: &Bmg) -> MessageId {
+    let highest = bmg.messages.iter().map(|message| message.id.0).max();
+    MessageId(highest.map_or(0, |id| id + 1))
+}
+
+/// The id past every node `bmg` holds.
+pub(crate) fn next_node_id(bmg: &Bmg) -> NodeId {
+    let nodes = bmg.flow.iter().flat_map(|flow| &flow.nodes);
+    let highest = nodes.map(|node| node.id().0).max();
+    NodeId(highest.map_or(0, |id| id + 1))
+}
+
 /// Every node `node` leads to, dead ends left out.
 fn edges(node: &Node) -> impl Iterator<Item = NodeId> + '_ {
     let (single, children) = match node {
@@ -730,42 +755,9 @@ fn edges(node: &Node) -> impl Iterator<Item = NodeId> + '_ {
     single.into_iter().chain(children.iter().flatten().copied())
 }
 
-/// Where a record field sits in a message's attributes, or `None` when it
-/// sits in the text offset.
-fn field_bytes(field: &Field) -> Option<Range<usize>> {
-    let at = field.offset.checked_sub(usize::from(TEXT_OFFSET_LEN))?;
-    Some(at..at + field.len)
-}
-
-/// A record field's value out of a message's attributes, or `None` when the
-/// attributes are too short to hold it.
-#[must_use]
-pub fn read_field(attributes: &[u8], field: &Field) -> Option<u16> {
-    match attributes.get(field_bytes(field)?)? {
-        [byte] => Some(u16::from(*byte)),
-        [high, low] => Some(u16::from_be_bytes([*high, *low])),
-        _ => None,
-    }
-}
-
-/// Writes a record field's value into a message's attributes. `None` when the
-/// attributes are too short, or `value` doesn't fit a 1-byte field.
-///
-/// In a file with a MID1, the message id field repeats
-/// [`Message::public_id`], so set that instead.
-#[must_use]
-pub fn write_field(attributes: &mut [u8], field: &Field, value: u16) -> Option<()> {
-    match attributes.get_mut(field_bytes(field)?)? {
-        [byte] => *byte = u8::try_from(value).ok()?,
-        [high, low] => [*high, *low] = value.to_be_bytes(),
-        _ => return None,
-    }
-    Some(())
-}
-
 #[cfg(test)]
 mod tests {
-    use tpmt_message::{Encoding, Mid1Header};
+    use tpmt_message::{Encoding, Mid1Header, TEXT_OFFSET_LEN};
     use tpmt_tables::Version;
     use tpmt_tables::message::{record, unit};
 
@@ -1175,7 +1167,7 @@ mod tests {
         ] {
             let edition = Edition::default_language(version);
             let file = unit_file(edition, layout.len);
-            assert_eq!(file.layout(), Some(&layout));
+            assert_eq!(file.tables().layout, Some(&layout));
             assert_eq!(
                 EditableBmg::open(&file.save().unwrap(), edition).unwrap(),
                 file
@@ -1187,7 +1179,7 @@ mod tests {
     #[test]
     fn a_layout_from_another_region_is_not_used() {
         let file = unit_file(EDITION, unit::JPN_LAYOUT.len);
-        assert_eq!(file.layout(), None);
+        assert_eq!(file.tables().layout, None);
     }
 
     /// A unit record's first field sits where the story record keeps its id,
@@ -1216,15 +1208,48 @@ mod tests {
     }
 
     #[test]
-    fn fields_read_and_write_big_endian() {
-        let label = field(0x06);
-        let box_kind = field(0x09);
-        let mut attributes = vec![0; 16];
+    fn changes_name_each_record_touched() {
+        let mut file = file();
+        let vanilla = file.bmg().clone();
+        let new = file.unused_message_id();
+        let mut history = History::default();
+        for edit in [
+            set_message(MessageId(0), MessageChange::Text(text(b"Goodbye"))),
+            MessageEdit::Remove(MessageId(1)).into(),
+            MessageEdit::Insert {
+                at: 1,
+                message: message(new.0, b"New"),
+            }
+            .into(),
+            root(ListEdit::Insert {
+                at: 1,
+                value: Root {
+                    public_id: 2,
+                    node: NodeId(0),
+                },
+            }),
+        ] {
+            history.apply(&mut file, edit).unwrap();
+        }
 
-        write_field(&mut attributes, &label, 0x1234).unwrap();
-        write_field(&mut attributes, &box_kind, 13).unwrap();
-        assert_eq!(&attributes[2..6], &[0x12, 0x34, 0, 13]);
-        assert_eq!(read_field(&attributes, &box_kind), Some(13));
-        assert_eq!(write_field(&mut attributes, &box_kind, 256), None);
+        let changes = BmgChanges::new(Some(&vanilla), file.bmg());
+        assert_eq!(
+            changes.messages,
+            [
+                (MessageId(0), Status::Changed),
+                (MessageId(1), Status::Removed),
+                (new, Status::Added),
+            ]
+        );
+        assert_eq!(changes.nodes, [(NodeId(0), Status::Unchanged)]);
+        assert_eq!(changes.roots, [(1, Status::Unchanged), (2, Status::Added)]);
+
+        let whole = BmgChanges::new(None, file.bmg());
+        assert!(
+            whole
+                .messages
+                .iter()
+                .all(|(_, status)| *status == Status::Added)
+        );
     }
 }
