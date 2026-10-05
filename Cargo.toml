@@ -2,15 +2,14 @@
 resolver = "3"
 members = [
     "crates/tpmt",
-    "crates/pipeline",
-    "crates/project",
-    "crates/report",
     "crates/retail-tests",
-    "crates/game/binary",
-    "crates/game/packaging/*",
-    "crates/game/payload/formats/*",
-    "crates/game/payload/tables",
-    "crates/game/payload/documents",
+    "crates/ops",
+    "crates/core/*",
+    "crates/formats/binary",
+    "crates/formats/report",
+    "crates/formats/tables",
+    "crates/formats/payloads/*",
+    "crates/formats/packaging/*",
 ]
 
 [workspace.package]
@@ -20,25 +19,25 @@ repository = "https://github.com/3e2j/tpmt"
 license = "CC0-1.0"
 
 [workspace.dependencies]
-# Shared by every format: byte cursors and the Format trait.
-tpmt-binary = { path = "crates/game/binary", version = "0.1.0" }
-
+# Formats: the game's file formats, the tables that name their values, and
+# what every format shares (byte cursors, reporting).
+tpmt-binary = { path = "crates/formats/binary", version = "0.1.0" }
+tpmt-report = { path = "crates/formats/report", version = "0.1.0" }
+tpmt-tables = { path = "crates/formats/tables", version = "0.1.0" }
+# Payloads: the leaf files left after unpacking.
+tpmt-message = { path = "crates/formats/payloads/message", version = "0.1.0" }
 # Packaging: what unpacking removes and building puts back.
-tpmt-disc = { path = "crates/game/packaging/disc", version = "0.1.0" }
-tpmt-archive = { path = "crates/game/packaging/archive", version = "0.1.0" }
-tpmt-compression = { path = "crates/game/packaging/compression", version = "0.1.0" }
+tpmt-disc = { path = "crates/formats/packaging/disc", version = "0.1.0" }
+tpmt-archive = { path = "crates/formats/packaging/archive", version = "0.1.0" }
+tpmt-compression = { path = "crates/formats/packaging/compression", version = "0.1.0" }
 
-# Payload: the files left after unpacking, their values, and editing them.
-tpmt-message = { path = "crates/game/payload/formats/message", version = "0.1.0" }
-tpmt-tables = { path = "crates/game/payload/tables", version = "0.1.0" }
-tpmt-documents = { path = "crates/game/payload/documents", version = "0.1.0" }
+# Core: one job each, and none depends on another.
+tpmt-project = { path = "crates/core/project", version = "0.1.0" }
+tpmt-documents = { path = "crates/core/documents", version = "0.1.0" }
+tpmt-packing = { path = "crates/core/packing", version = "0.1.0" }
 
-# Entry points into game/: the project folder, and unpacking and building one.
-tpmt-project = { path = "crates/project", version = "0.1.0" }
-tpmt-pipeline = { path = "crates/pipeline", version = "0.1.0" }
-
-# Common reporting levels
-tpmt-report = { path = "crates/report", version = "0.1.0" }
+# Ops: every operation a frontend runs, through the core crates.
+tpmt-ops = { path = "crates/ops", version = "0.1.0" }
 
 thiserror = "2"
 rayon = "1"

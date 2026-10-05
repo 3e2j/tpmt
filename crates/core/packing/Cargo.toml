@@ -1,5 +1,5 @@
 [package]
-name = "tpmt-pipeline"
+name = "tpmt-packing"
 description = "Taking a disc apart into files, and putting changed files back into a disc."
 version.workspace = true
 edition.workspace = true

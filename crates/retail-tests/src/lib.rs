@@ -24,7 +24,7 @@ use std::process::ExitCode;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
-use tpmt_disc::{Boot, Disc};
+use tpmt_disc::{Boot, Disc, Metadata};
 use tpmt_project::{FileKind, Project};
 use tpmt_report::Progress;
 use tpmt_tables::Version;
@@ -156,7 +156,7 @@ fn trial(name: &str, check: Check, iso: &Path) -> Trial {
 /// `check` over the unpack of `iso` as a whole.
 fn whole(iso: &Path, check: fn(Version, &Project) -> Vec<String>) -> Result<(), Failed> {
     let project = unpacked(iso)?;
-    let version = version(&project.boot()?)?;
+    let version = version(&project.read_disc::<Metadata>()?.boot)?;
     let mut problems = check(version, &project);
     problems.sort();
     failed(&problems, "on the disc").map_or(Ok(()), Err)
@@ -165,7 +165,7 @@ fn whole(iso: &Path, check: fn(Version, &Project) -> Vec<String>) -> Result<(), 
 /// `check` over every file of `kind` in the unpack of `iso`.
 fn stored(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
     let project = unpacked(iso)?;
-    let version = version(&project.boot()?)?;
+    let version = version(&project.read_disc::<Metadata>()?.boot)?;
     let base = project.base();
     let paths = project.formats()?.remove(&kind).unwrap_or_default();
     let tally = paths
@@ -191,7 +191,7 @@ fn stored(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result
 }
 
 /// `check` over every layer of `kind` on the image `iso`, walked with
-/// [`tpmt_pipeline::explode`], since the unpack never stores packaging.
+/// [`tpmt_packing::explode`], since the unpack never stores packaging.
 ///
 /// Runs inside the walk's sink, so only one disc file's layers are held at a
 /// time.
@@ -205,10 +205,10 @@ fn walked(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result
         .map(|(path, span)| {
             let data = disc.read(span)?;
             let mut tally = Tally::default();
-            let walked = tpmt_pipeline::explode(
+            let walked = tpmt_packing::explode(
                 path,
                 &data,
-                &mut |layer| -> tpmt_pipeline::Result<()> {
+                &mut |layer| -> tpmt_packing::Result<()> {
                     if layer.kind == Some(kind) {
                         let file = File {
                             version,
@@ -375,7 +375,7 @@ fn unpacked(iso: &Path) -> Result<Project, Failed> {
     }
 
     file.set_len(0)?;
-    let project = Project::unpack(iso, &project, &Progress::default())?;
+    let project = tpmt_ops::unpack(iso, &project, &Progress::default())?;
     file.rewind()?;
     file.write_all(stamp.as_bytes())?;
     Ok(project)

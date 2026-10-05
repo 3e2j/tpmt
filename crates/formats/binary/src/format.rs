@@ -3,7 +3,7 @@
 //!
 //! Each format crate implements [`Format`] on its decoded struct, so
 //! `Archive::decode(bytes)` and `archive.encode()` read the same everywhere.
-//! Knows nothing about projects or pipelines.
+//! Knows nothing about projects or packing.
 //!
 //! Formats are true to the file, not to the game's logic, so they hold
 //! whatever a mod puts in them. A mod that changes the game past what a

@@ -230,7 +230,7 @@ impl BmgDocument {
         Self { bmg, edition }
     }
 
-    /// The file as bytes, for the pipeline to write into `changes/`.
+    /// The file as bytes, for `tpmt-ops` to write into `changes/`.
     ///
     /// # Errors
     ///

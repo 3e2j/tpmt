@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-use tpmt_report::{Level, Progress, Report, Snapshot, Unit};
+use tpmt_ops::report::{Level, Progress, Report, Snapshot, Unit};
 
 const FRAME: Duration = Duration::from_millis(100);
 const BAR_CELLS: u64 = 20;

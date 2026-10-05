@@ -5,7 +5,7 @@
 //! strategies aren't checked here.
 //!
 //! An archive round trip encodes the ids it decoded, so it stays exact once a
-//! build links ids itself. That linking happens in the pipeline before an
+//! build links ids itself. That linking happens in packing before an
 //! archive is encoded, so a test of it should compare where references land,
 //! not bytes.
 

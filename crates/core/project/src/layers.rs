@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::io::fs;
-use crate::layout::store::{Digests, digest_file};
+use crate::layout::store::{Digests, digest, digest_file};
 use crate::path::{checked, files};
 use crate::{Error, Result};
 
@@ -68,6 +68,27 @@ impl Layers {
             }
         }
         Err(Error::MissingFile(path.to_string()))
+    }
+
+    /// [`read`](Self::read), holding a `base/` copy to the vanilla digest the
+    /// unpack recorded for it.
+    ///
+    /// A rebuild reads every unedited member straight out of `base/`, so a
+    /// file edited there in place would be packed as though the disc had
+    /// shipped it. A path the unpack never wrote fails the same way: either
+    /// answer means `base/` is no longer the disc it came from.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::BaseModified`] if the `base/` copy doesn't match its digest
+    /// - as [`read`](Self::read)
+    pub fn read_checked(&self, path: &str, digests: &Digests) -> Result<Vec<u8>> {
+        let (layer, data) = self.read(path)?;
+        let vanilla = digests.get(path).is_some_and(|want| *want == digest(&data));
+        if layer == Layer::Base && !vanilla {
+            return Err(Error::BaseModified(path.to_string()));
+        }
+        Ok(data)
     }
 
     /// Writes `data` to `path` in `changes/`. `base/` is never written.

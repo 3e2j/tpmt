@@ -13,7 +13,7 @@
 //! a raw counterpart that skips them.
 //!
 //! A document knows nothing about paths. It opens from bytes and saves to
-//! bytes, and the pipeline decides where those go: `mod/changes/`, never
+//! bytes, and `tpmt-ops` decides where those go: `mod/changes/`, never
 //! `base/`.
 //!
 //! No UI framework here, so documents can be tested headless and reused by the

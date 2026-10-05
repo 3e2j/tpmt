@@ -47,7 +47,8 @@ pub struct Store {
 pub fn write(
     dir: &Path,
     iso: &Path,
-    boot: &tpmt_disc::Boot,
+    id: &str,
+    revision: u8,
     digests: &Digests,
     formats: &Formats,
 ) -> Result<()> {
@@ -58,8 +59,8 @@ pub fn write(
         &dir.join(SOURCE_TOML),
         &Source {
             iso,
-            id: boot.id.clone(),
-            revision: boot.revision,
+            id: id.to_string(),
+            revision,
         },
     )
 }
@@ -71,7 +72,7 @@ pub fn read(dir: &Path) -> Result<Store> {
     })
 }
 
-/// `digests`: the vanilla [`digest`] of every project file, keyed by project
+/// `digests`: the vanilla XXH3-128 digest of every project file, keyed by project
 /// path. Around 27,000 entries for one disc.
 ///
 /// On disk it is one `<32 hex digits>  <path>` line per file, sorted by path.

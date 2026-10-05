@@ -1,64 +1,165 @@
-//! Making a project from a disc: `tpmt-pipeline` walks it, and every file it
-//! hands over lands in `base/`.
+//! What an unpack writes into a project: a fresh `base/`, then `.tpmt/`,
+//! then `mod/` if it is missing.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use tpmt_report::{Progress, Step};
+use serde::Serialize;
+use tpmt_binary::Compression;
 
 use crate::io::{Staging, fs};
-use crate::layout::base;
-use crate::layout::store::{Digests, Formats, digest};
-use crate::{Project, Result};
+use crate::layout::{base, modding, store};
+use crate::path::checked;
+use crate::{FileKind, Project, Result};
 
-impl Project {
-    /// Unpacks the disc at `iso` into a project at `root`, and returns it.
-    ///
-    /// Writes `base/` and `.tpmt/`, and scaffolds an empty `mod/` next to
-    /// them. `root` may be an existing project. In that case the unpack
-    /// replaces only `base/` and leaves `mod/` alone. It commits only once
-    /// every file is written, so a failure part way through leaves no
-    /// half-made project.
-    ///
-    /// Reports [`Step::Unpack`] across the whole image, then [`Step::Save`],
-    /// through `progress`. Each file's reports go to `progress` as soon as
-    /// that file is unpacked.
+/// A `base/` being written beside the old one, swapped in by
+/// [`finish`](Self::finish). Dropping it unfinished leaves the old `base/`
+/// as it was.
+///
+/// Takes writes from several threads at once.
+pub struct NewBase {
+    staging: Staging,
+}
+
+/// What an unpack wrote for one file, for [`Project::write_store`] to record.
+#[derive(Debug)]
+pub struct Written {
+    /// Its project path.
+    pub path: String,
+    pub digest: u128,
+    /// What its magic says it is, if anything.
+    pub kind: Option<FileKind>,
+}
+
+impl NewBase {
+    /// Writes one file at its project path.
     ///
     /// # Errors
     ///
-    /// - [`Error::ForeignDirectory`](crate::Error::ForeignDirectory) if
-    ///   `root` holds something else
-    /// - [`Error::Pipeline`](crate::Error::Pipeline) if the ISO can't be read,
-    ///   or a file on it isn't what its bytes claim
-    /// - [`Error::Io`](crate::Error::Io) on any write
-    pub fn unpack(iso: &Path, root: &Path, progress: &Progress) -> Result<Self> {
-        let project = Self::claim(root)?;
-        let staging = Staging::begin(&project.base())?;
-        let base = staging.dir();
+    /// - [`Error::UnusablePath`](crate::Error::UnusablePath) if `path` is
+    ///   empty, absolute, or climbs out
+    /// - [`Error::Io`](crate::Error::Io) on the write
+    pub fn write(&self, path: &str, kind: Option<FileKind>, bytes: &[u8]) -> Result<Written> {
+        fs::write(&self.staging.dir().join(checked(path)?), bytes)?;
+        Ok(Written {
+            path: path.to_string(),
+            digest: store::digest(bytes),
+            kind,
+        })
+    }
 
-        let unpacked = tpmt_pipeline::unpack(iso, progress, |leaf| -> Result<_> {
-            fs::write(&base.join(leaf.path), leaf.bytes)?;
-            Ok((leaf.path.to_string(), digest(leaf.bytes), leaf.kind))
-        })?;
-        // Writing a file already made its parents. This catches the empty ones.
-        for dir in &unpacked.directories {
-            fs::create_dir_all(&base.join(dir))?;
-        }
+    /// Makes a directory at its project path. Writing a file already makes
+    /// its parents, so this is only needed for an empty one.
+    ///
+    /// # Errors
+    ///
+    /// As [`write`](Self::write).
+    pub fn create_dir(&self, path: &str) -> Result<()> {
+        fs::create_dir_all(&self.staging.dir().join(checked(path)?))
+    }
 
-        progress.begin(Step::Save, 0);
-        base::write(base, &unpacked.metadata, &unpacked.compressed)?;
-        staging.promote()?;
+    /// Writes `disc.toml` and `compression.toml`, then swaps the new `base/`
+    /// in for the old one.
+    ///
+    /// `disc` is whatever the disc's preamble holds that a build can't derive.
+    /// This crate stores it without knowing its shape.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Serialize`](crate::Error::Serialize) if either will not
+    ///   serialize
+    /// - [`Error::Io`](crate::Error::Io) on any write or the swap
+    pub fn finish(
+        self,
+        disc: &impl Serialize,
+        compressed: &BTreeMap<String, Compression>,
+    ) -> Result<()> {
+        base::write(self.staging.dir(), disc, compressed)?;
+        self.staging.promote()
+    }
+}
 
-        let mut digests = Digests::new();
-        let mut formats = Formats::new();
-        for (path, digest, kind) in unpacked.stored {
+impl Project {
+    /// Takes `root` for an unpack to write a project into, refusing it if it
+    /// is not a project but already holds files.
+    ///
+    /// A project passes whatever else it holds (notes, fixtures, `.git`), since
+    /// a re-unpack replaces only `base/`. An empty or missing directory passes,
+    /// as does one holding only names this crate writes, from an unpack that
+    /// failed part way.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ForeignDirectory`](crate::Error::ForeignDirectory) if it
+    ///   holds anything else
+    /// - [`Error::Io`](crate::Error::Io) if it cannot be listed
+    pub fn claim(root: &Path) -> Result<Self> {
+        crate::discover::refuse_foreign(root)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+        })
+    }
+
+    /// Starts a fresh `base/` beside the current one.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`](crate::Error::Io) if the staging directory cannot be
+    ///   made
+    pub fn new_base(&self) -> Result<NewBase> {
+        Ok(NewBase {
+            staging: Staging::begin(&self.base())?,
+        })
+    }
+
+    /// Writes `.tpmt/`, which is what makes this a project, from what the
+    /// unpack wrote. Run it last, once every other file is in place.
+    ///
+    /// Stores the ISO path canonicalized so later commands can read files off
+    /// the original disc without asking the user where it is again. `id` and
+    /// `revision` are the game id and revision the disc held.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`](crate::Error::Io) if `iso` cannot be canonicalized, or
+    ///   on any write
+    /// - [`Error::UnusablePath`](crate::Error::UnusablePath) if a path would
+    ///   not read back from a line of its own
+    /// - [`Error::Serialize`](crate::Error::Serialize) if a file will not
+    ///   serialize
+    pub fn write_store(
+        &self,
+        iso: &Path,
+        id: &str,
+        revision: u8,
+        written: Vec<Written>,
+    ) -> Result<()> {
+        let mut digests = store::Digests::new();
+        let mut formats = store::Formats::new();
+        for Written { path, digest, kind } in written {
             if let Some(kind) = kind {
                 formats.entry(kind).or_default().insert(path.clone());
             }
             digests.insert(path, digest);
         }
-        project.write_store(iso, &unpacked.metadata.boot, &digests, &formats)?;
-        project.scaffold_mod()?;
+        store::write(&self.store(), iso, id, revision, &digests, &formats)
+    }
 
-        Self::discover(root)
+    /// Writes the `mod/` skeleton (`changes/`, `textures/`, `res/scripts/`, a
+    /// starter `mod.json`) alongside `base/`. Skips an existing `mod/`, so
+    /// re-unpacking a project never clobbers a modder's edits.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Io`](crate::Error::Io) if any of it cannot be written
+    /// - [`Error::Serialize`](crate::Error::Serialize) if `mod.json` will not
+    ///   serialize
+    pub fn scaffold_mod(&self) -> Result<()> {
+        let id = self
+            .root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("mod");
+        modding::scaffold(&self.root.join(modding::DIR), id)
     }
 }

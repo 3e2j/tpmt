@@ -1,0 +1,24 @@
+[package]
+name = "tpmt-ops"
+description = "What a frontend does with a project: unpack, status, build."
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+tpmt-project.workspace = true
+tpmt-packing.workspace = true
+tpmt-report.workspace = true
+
+thiserror.workspace = true
+
+[dev-dependencies]
+# The build tests unpack a small archive by hand.
+tpmt-archive.workspace = true
+tpmt-binary.workspace = true
+tpmt-disc.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

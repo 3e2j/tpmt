@@ -92,7 +92,7 @@ pub struct Member {
     // somebody else's file to suit an archive is a bigger claim to make than
     // repacking one.
     //
-    // Resolving references belongs in tpmt-pipeline, not here, same as the
+    // Resolving references belongs in tpmt-packing, not here, same as the
     // sidecar itself: it takes seeing every format to know who references
     // what. This crate would only claim an id it's handed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

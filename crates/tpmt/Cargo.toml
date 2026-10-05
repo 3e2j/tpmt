@@ -7,8 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-tpmt-project.workspace = true
-tpmt-report.workspace = true
+tpmt-ops.workspace = true
 
 thiserror.workspace = true
 clap.workspace = true

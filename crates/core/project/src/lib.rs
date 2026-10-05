@@ -1,9 +1,9 @@
-//! Everything a frontend does with a project: unpack a disc into one, read
-//! and write its files, and build it.
+//! The project folder: where things live, what tpmt records, and every file
+//! read or written inside it.
 //!
-//! This crate knows the project folder: where things live and what tpmt records.
-//! It doesn't know what's inside a file. `tpmt-pipeline` takes the disc
-//! apart and puts it back, and the format crates decode files.
+//! This crate doesn't know what's inside a file. `tpmt-packing` takes the
+//! disc apart and puts it back, `tpmt-documents` edits what comes out, and
+//! `tpmt-ops` runs each operation through all three.
 //!
 //! A project is two directories, edited in place:
 //!
@@ -78,12 +78,13 @@ mod layout;
 mod path;
 mod unpack;
 
-pub use build::Built;
 pub use discover::is_project;
+pub use io::Staging;
 pub use layers::{Change, ChangeKind, Comparison, Layer, Layers};
-pub use layout::store::Formats;
+pub use layout::base::Base;
+pub use layout::store::{Digests, Formats, Source, Store};
 pub use tpmt_binary::FileKind;
-pub use tpmt_pipeline::Target;
+pub use unpack::{NewBase, Written};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -124,9 +125,6 @@ pub enum Error {
     /// it would pack somebody's edit as though the disc had shipped it.
     #[error("`{0}` in `base/` is not what was unpacked; re-unpack the disc, or put it back")]
     BaseModified(String),
-
-    #[error(transparent)]
-    Pipeline(#[from] tpmt_pipeline::Error),
 }
 
 impl Error {
@@ -154,7 +152,7 @@ impl Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A project directory. One from [`discover`](Self::discover) is a finished
-/// unpack, by its canonical root. Inside [`unpack`](Self::unpack), it is one
+/// unpack, by its canonical root. One from [`claim`](Self::claim) is one
 /// still being written.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Project {
@@ -172,25 +170,6 @@ impl Project {
     pub fn discover(dir: &Path) -> Result<Self> {
         Ok(Self {
             root: discover::discover(dir)?,
-        })
-    }
-
-    /// Takes `root` for an unpack to write a project into, refusing it if it
-    /// is not a project but already holds files.
-    ///
-    /// A project passes whatever else it holds (notes, fixtures, `.git`), since
-    /// a re-unpack replaces only `base/`. An empty or missing directory passes,
-    /// as does one holding only names this crate writes, from an unpack that
-    /// failed part way.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::ForeignDirectory`] if it holds anything else
-    /// - [`Error::Io`] if it cannot be listed
-    pub(crate) fn claim(root: &Path) -> Result<Self> {
-        discover::refuse_foreign(root)?;
-        Ok(Self {
-            root: root.to_path_buf(),
         })
     }
 
@@ -218,17 +197,6 @@ impl Project {
         Layers::new(self.base(), self.changes())
     }
 
-    /// Where one build target writes what it produced. A target owns its
-    /// directory outright and clears it on every build, so two targets never
-    /// read each other's leftovers.
-    #[must_use]
-    pub fn target_output(&self, target: &str) -> PathBuf {
-        self.root
-            .join(build::DIR)
-            .join(build::TARGETS_DIR)
-            .join(target)
-    }
-
     fn store(&self) -> PathBuf {
         self.root.join(store::DIR)
     }
@@ -249,24 +217,24 @@ impl Project {
         store::read_formats(&self.store())
     }
 
-    /// Who the unpacked disc says it is, from `base/disc.toml`. Its game id
-    /// and revision pick the version, through `tpmt_tables::Version::from_disc`.
+    /// `base/disc.toml`, as whatever type wrote it.
     ///
     /// # Errors
     ///
     /// - [`Error::Io`] if `base/disc.toml` is missing
-    /// - [`Error::Parse`] if it is not what an unpack wrote
-    pub fn boot(&self) -> Result<tpmt_disc::Boot> {
-        base::read_boot(&self.base())
+    /// - [`Error::Parse`] if it is not a `D`
+    pub fn read_disc<D: serde::de::DeserializeOwned>(&self) -> Result<D> {
+        base::read_disc(&self.base())
     }
 
-    /// Everything `base/` says about itself.
+    /// Everything `base/` says about itself, with `disc.toml` as whatever
+    /// type wrote it.
     ///
     /// # Errors
     ///
     /// - [`Error::Io`] if `disc.toml` or `compression.toml` is missing
     /// - [`Error::Parse`] if either is not what an unpack wrote
-    pub(crate) fn read_base(&self) -> Result<base::Base> {
+    pub fn read_base<D: serde::de::DeserializeOwned>(&self) -> Result<Base<D>> {
         base::read(&self.base())
     }
 
@@ -276,46 +244,8 @@ impl Project {
     ///
     /// - [`Error::Io`] if `source.toml` or `digests` is missing
     /// - [`Error::Parse`] if either is not what an unpack wrote
-    pub(crate) fn read_store(&self) -> Result<store::Store> {
+    pub fn read_store(&self) -> Result<Store> {
         store::read(&self.store())
-    }
-
-    /// Writes `.tpmt/`, which is what makes this a project. The caller
-    /// runs this last, once every other file is in place.
-    ///
-    /// Stores the ISO path canonicalized so later commands can read files off
-    /// the original disc without asking the user where it is again.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::Io`] if `iso` cannot be canonicalized, or on any write
-    /// - [`Error::UnusablePath`] if a path would not read back from a line of its own
-    /// - [`Error::Serialize`] if a file will not serialize
-    pub(crate) fn write_store(
-        &self,
-        iso: &Path,
-        boot: &tpmt_disc::Boot,
-        digests: &store::Digests,
-        formats: &store::Formats,
-    ) -> Result<()> {
-        store::write(&self.store(), iso, boot, digests, formats)
-    }
-
-    /// Writes the `mod/` skeleton (`changes/`, `textures/`, `res/scripts/`, a
-    /// starter `mod.json`) alongside `base/`. Skips an existing `mod/`, so
-    /// re-unpacking a project never clobbers a modder's edits.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::Io`] if any of it cannot be written
-    /// - [`Error::Serialize`] if `mod.json` will not serialize
-    pub(crate) fn scaffold_mod(&self) -> Result<()> {
-        let id = self
-            .root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("mod");
-        modding::scaffold(&self.root.join(modding::DIR), id)
     }
 
     /// One project file's bytes, from `mod/changes/` when it holds `path` and

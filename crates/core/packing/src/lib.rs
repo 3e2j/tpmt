@@ -33,6 +33,7 @@ mod fs;
 mod unpack;
 
 pub use build::{Built, EncodeError, Files, Job, Source, Target};
+pub use tpmt_disc::Metadata;
 pub use unpack::explode::{DecodeError, Layer, file as explode};
 pub use unpack::{Leaf, Unpacked};
 

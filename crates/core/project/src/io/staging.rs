@@ -50,6 +50,12 @@ impl Staging {
         &self.dir
     }
 
+    /// What [`promote`](Self::promote) replaces.
+    #[must_use]
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
     /// Swaps the staged tree in as the target. Moves the old one aside
     /// rather than deleting it first, so a failure between the two renames
     /// leaves it recoverable under a `.tpmt-old` name.

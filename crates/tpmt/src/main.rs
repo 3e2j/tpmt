@@ -1,6 +1,6 @@
 //! CLI frontend for the Twilight Princess Modding Toolkit.
 //!
-//! Reads an invocation and hands it to the project to deal with.
+//! Reads an invocation and hands it to `tpmt-ops` to run.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
-use tpmt_project::{Built, Change, ChangeKind, Project, Target};
+use tpmt_ops::{Built, Change, ChangeKind, Project, Target};
 
 mod progress;
 
@@ -86,7 +86,7 @@ fn run(command: Command) -> Result<(), Error> {
                     .ok_or_else(|| Error::NamelessIso(iso.clone()))?,
             };
 
-            if project.exists() && tpmt_project::is_project(&project) {
+            if project.exists() && tpmt_ops::is_project(&project) {
                 let overwrite = yes
                     || ask(&format!(
                         "`{}` is already a project. Overwrite it? [y/N] ",
@@ -97,11 +97,11 @@ fn run(command: Command) -> Result<(), Error> {
                 }
             }
 
-            progress::show(|progress| Project::unpack(&iso, &project, progress))?;
+            progress::show(|progress| tpmt_ops::unpack(&iso, &project, progress))?;
             println!("unpacked {} into {}", iso.display(), project.display());
         }
         Command::Status { dir } => {
-            let changes = project(dir.as_ref())?.diff()?;
+            let changes = tpmt_ops::status(&project(dir.as_ref())?)?;
             print_status(&changes);
         }
         Command::Build {
@@ -110,8 +110,9 @@ fn run(command: Command) -> Result<(), Error> {
             output,
         } => {
             let project = project(dir.as_ref())?;
-            let built =
-                progress::show(|progress| project.build(target, output.as_deref(), progress))?;
+            let built = progress::show(|progress| {
+                tpmt_ops::build(&project, target, output.as_deref(), progress)
+            })?;
             print_built(&built);
         }
     }
@@ -122,7 +123,7 @@ fn run(command: Command) -> Result<(), Error> {
 /// directory if none was named.
 fn project(dir: Option<&PathBuf>) -> Result<Project, Error> {
     let start = dir.map_or_else(|| Path::new("."), PathBuf::as_path);
-    Ok(Project::discover(start)?)
+    Ok(tpmt_ops::discover(start)?)
 }
 
 /// Prints a status listing, colored yellow/green for modified and added when
@@ -178,7 +179,7 @@ fn ask(prompt: &str) -> Result<bool, Error> {
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error(transparent)]
-    Project(#[from] tpmt_project::Error),
+    Ops(#[from] tpmt_ops::Error),
 
     // PathBuf has no Display, and lossy is the right call in an error message.
     #[error("`{}` has no filename to borrow, so name the project directory yourself", .0.display())]
