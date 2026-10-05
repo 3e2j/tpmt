@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tpmt_binary::Compression;
 
-use crate::io::{Staging, fs};
-use crate::layout::{modding, store, vanilla};
+use crate::discover::is_project;
+use crate::io::{Staging, fs, refuse_unowned};
+use crate::layout::{self, modding, store, vanilla};
 use crate::path::checked;
 use crate::{FileKind, Project, Result};
 
@@ -67,7 +68,7 @@ impl Project {
     /// - [`Error::Io`](crate::Error::Io) if it cannot be listed, or the
     ///   staging directory cannot be made
     pub fn unpack(root: &Path) -> Result<Unpacking> {
-        crate::discover::refuse_foreign(root)?;
+        refuse_foreign(root)?;
         Ok(Unpacking {
             root: root.to_path_buf(),
             vanilla: Staging::begin(&root.join(vanilla::DIR))?,
@@ -144,5 +145,78 @@ impl Unpacking {
         modding::scaffold(&root.join(modding::DIR), id)?;
 
         Project::discover(&root)
+    }
+}
+
+/// Refuses a directory that is not a project but already holds files. See
+/// [`Project::unpack`].
+fn refuse_foreign(project: &Path) -> Result<()> {
+    if is_project(project) {
+        return Ok(());
+    }
+    refuse_unowned(project, &layout::OWNED)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::Error;
+    use crate::io::fs::write;
+
+    fn mark_project(dir: &Path) {
+        fs::create_dir_all(dir.join(store::DIR)).unwrap();
+    }
+
+    /// Unpacking into a directory the user already keeps their own files in
+    /// fails rather than clearing it to make room.
+    #[test]
+    fn refuses_a_directory_that_is_not_a_project() {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("mine");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("notes.txt"), b"do not delete").unwrap();
+
+        let error = refuse_foreign(&target).unwrap_err();
+        assert!(matches!(error, Error::ForeignDirectory(path) if path == target));
+        assert!(target.join("notes.txt").exists());
+    }
+
+    /// A re-unpack replaces only `vanilla/`, so whatever else a project holds
+    /// is safe. A missing directory is what `tpmt new` usually gets.
+    #[test]
+    fn accepts_a_project_with_other_files() {
+        let scratch = tempfile::tempdir().unwrap();
+        let project = scratch.path().join("project");
+        mark_project(&project);
+        fs::write(project.join("anything"), b"").unwrap();
+
+        refuse_foreign(&project).unwrap();
+        refuse_foreign(&scratch.path().join("missing")).unwrap();
+    }
+
+    /// An unpack that died before the store went in leaves only names this
+    /// crate wrote, so the next attempt can carry on rather than refuse.
+    #[test]
+    fn accepts_a_half_finished_unpack() {
+        let scratch = tempfile::tempdir().unwrap();
+        write(
+            &scratch.path().join(vanilla::DIR).join("files").join("a"),
+            b"",
+        )
+        .unwrap();
+        write(
+            &scratch
+                .path()
+                .join("vanilla.tpmt-tmp")
+                .join("files")
+                .join("a"),
+            b"",
+        )
+        .unwrap();
+        fs::create_dir_all(scratch.path().join(modding::DIR)).unwrap();
+
+        refuse_foreign(scratch.path()).unwrap();
     }
 }

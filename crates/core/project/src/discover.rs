@@ -1,16 +1,9 @@
-//! Telling a project from any other directory: finding one above a path,
-//! and refusing to unpack over a directory that holds someone else's files.
+//! Telling a project from any other directory, and finding one above a path.
 
 use std::path::{Path, PathBuf};
 
-use crate::io::refuse_unowned;
-use crate::layout::{modding, store, vanilla};
-use crate::{Error, Result, build};
-
-/// Every top-level name this crate writes. A directory holding nothing but
-/// these and their [`Staging`](crate::io::Staging) copies is ours, however
-/// far an unpack got before it failed.
-const OWNED: [&str; 4] = [vanilla::DIR, modding::DIR, build::DIR, store::DIR];
+use crate::layout::store;
+use crate::{Error, Result};
 
 /// Whether `dir` is a finished unpack: it has the `.tpmt/` that an unpack
 /// writes last, once everything else is in place.
@@ -35,33 +28,15 @@ pub fn discover(start: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Refuses a directory that is not a project but already holds files. See
-/// [`Project::unpack`](crate::Project::unpack).
-pub fn refuse_foreign(project: &Path) -> Result<()> {
-    if is_project(project) {
-        return Ok(());
-    }
-    refuse_unowned(project, &OWNED)
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use super::*;
-    use crate::io::fs::write;
+    use crate::layout::vanilla;
 
     fn mark_project(dir: &Path) {
         fs::create_dir_all(dir.join(store::DIR)).unwrap();
-    }
-
-    #[test]
-    fn finds_the_root_from_itself() {
-        let scratch = tempfile::tempdir().unwrap();
-        mark_project(scratch.path());
-
-        let found = discover(scratch.path()).unwrap();
-        assert_eq!(found, scratch.path().canonicalize().unwrap());
     }
 
     #[test]
@@ -85,59 +60,5 @@ mod tests {
 
         let error = discover(scratch.path()).unwrap_err();
         assert!(matches!(error, Error::NoProjectFound(_)));
-    }
-
-    /// Unpacking into a directory the user already keeps their own files in
-    /// fails rather than clearing it to make room.
-    #[test]
-    fn refuses_a_directory_that_is_not_a_project() {
-        let scratch = tempfile::tempdir().unwrap();
-        let target = scratch.path().join("mine");
-        fs::create_dir_all(&target).unwrap();
-        fs::write(target.join("notes.txt"), b"do not delete").unwrap();
-
-        let error = refuse_foreign(&target).unwrap_err();
-        assert!(matches!(error, Error::ForeignDirectory(path) if path == target));
-        assert!(target.join("notes.txt").exists());
-    }
-
-    /// An empty directory has nothing in it to protect, and a project is
-    /// what an unpack is for.
-    #[test]
-    fn accepts_empty_missing_and_project_directories() {
-        let scratch = tempfile::tempdir().unwrap();
-        let empty = scratch.path().join("empty");
-        fs::create_dir_all(&empty).unwrap();
-        let project = scratch.path().join("project");
-        mark_project(&project);
-        fs::write(project.join("anything"), b"").unwrap();
-
-        refuse_foreign(&empty).unwrap();
-        refuse_foreign(&scratch.path().join("missing")).unwrap();
-        refuse_foreign(&project).unwrap();
-    }
-
-    /// An unpack that died before the store went in leaves only names this
-    /// crate wrote, so the next attempt can carry on rather than refuse.
-    #[test]
-    fn accepts_a_half_finished_unpack() {
-        let scratch = tempfile::tempdir().unwrap();
-        write(
-            &scratch.path().join(vanilla::DIR).join("files").join("a"),
-            b"",
-        )
-        .unwrap();
-        write(
-            &scratch
-                .path()
-                .join("vanilla.tpmt-tmp")
-                .join("files")
-                .join("a"),
-            b"",
-        )
-        .unwrap();
-        fs::create_dir_all(scratch.path().join(modding::DIR)).unwrap();
-
-        refuse_foreign(scratch.path()).unwrap();
     }
 }

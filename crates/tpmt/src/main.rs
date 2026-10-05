@@ -1,4 +1,4 @@
-//! CLI frontend for the Twilight Princess Modding Toolkit.
+//! CLI frontend for Twilight Princess Modding Toolkit.
 //!
 //! Reads an invocation and hands it to `tpmt-ops` to run.
 
