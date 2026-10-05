@@ -1,10 +1,10 @@
-//! A BMG message file as an editable document.
+//! Editing a BMG message file.
 //!
 //! Text is kept as `tpmt-message`'s segments, so nothing is re-parsed on save.
 //!
 //! Edits are checked for what would leave the graph pointing at nothing: a
 //! removed message a text node still shows, a removed node an edge still
-//! reaches. Malformed text is left to [`BmgDocument::save`], which refuses
+//! reaches. Malformed text is left to [`EditableBmg::save`], which refuses
 //! it the same way the encoder does.
 
 use std::mem;
@@ -17,7 +17,7 @@ use tpmt_message::{
 use tpmt_tables::Edition;
 use tpmt_tables::message::{self, Field, Layout};
 
-use crate::Document;
+use crate::Editable;
 
 /// One change to a message file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,22 +194,22 @@ pub enum EditError {
 
 /// A message file open for editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BmgDocument {
+pub struct EditableBmg {
     bmg: Bmg,
     /// The version and language the file is from, which pick the layouts
     /// its records can have.
     edition: Edition,
 }
 
-impl BmgDocument {
+impl EditableBmg {
     /// # Errors
     ///
     /// When the bytes aren't a BMG, or are a broken one, or a message's
     /// record holds a different id than its MID1 entry.
     pub fn open(bytes: &[u8], edition: Edition) -> Result<Self, OpenError> {
-        let document = Self::new(Bmg::decode(bytes)?, edition);
-        if let Some(id) = document.id_field() {
-            for message in &document.bmg.messages {
+        let file = Self::new(Bmg::decode(bytes)?, edition);
+        if let Some(id) = file.id_field() {
+            for message in &file.bmg.messages {
                 if let Some(record) = read_field(&message.attributes, &id)
                     && record != message.public_id
                 {
@@ -221,10 +221,10 @@ impl BmgDocument {
                 }
             }
         }
-        Ok(document)
+        Ok(file)
     }
 
-    /// A document over an already decoded file, with no id check.
+    /// An already decoded file, with no id check.
     #[must_use]
     pub const fn new(bmg: Bmg, edition: Edition) -> Self {
         Self { bmg, edition }
@@ -250,7 +250,7 @@ impl BmgDocument {
         self.bmg.messages.iter().find(|message| message.id == id)
     }
 
-    /// The layout of this file's records, or `None` when the document's
+    /// The layout of this file's records, or `None` when its
     /// edition reads none as wide. See [`message::layout`].
     #[must_use]
     pub fn layout(&self) -> Option<&'static Layout> {
@@ -709,7 +709,7 @@ impl BmgDocument {
     }
 }
 
-impl Document for BmgDocument {
+impl Editable for EditableBmg {
     type Edit = BmgEdit;
     type Error = EditError;
 
@@ -815,8 +815,8 @@ mod tests {
     }
 
     /// Two messages, and a flow whose one root shows the first.
-    fn document() -> BmgDocument {
-        BmgDocument::new(
+    fn file() -> EditableBmg {
+        EditableBmg::new(
             Bmg {
                 encoding: Encoding::ShiftJis,
                 record_len: record::LAYOUT.len,
@@ -841,9 +841,9 @@ mod tests {
 
     /// A unit file shaped like `zel_unit.bmg`, from `edition`: records
     /// `record_len` wide, no MID1 or flow, and a string pool.
-    fn unit_document(edition: Edition, record_len: u16) -> BmgDocument {
+    fn unit_file(edition: Edition, record_len: u16) -> EditableBmg {
         let attributes = usize::from(record_len - TEXT_OFFSET_LEN);
-        BmgDocument::new(
+        EditableBmg::new(
             Bmg {
                 encoding: Encoding::ShiftJis,
                 record_len,
@@ -867,48 +867,48 @@ mod tests {
 
     #[test]
     fn undo_and_redo_walk_the_edits_back_and_forth() {
-        let original = document();
-        let mut document = original.clone();
+        let original = file();
+        let mut file = original.clone();
         let mut history = History::default();
 
         history
             .apply(
-                &mut document,
+                &mut file,
                 set_message(MessageId(0), MessageChange::Text(text(b"Goodbye"))),
             )
             .unwrap();
         history
-            .apply(&mut document, MessageEdit::Remove(MessageId(1)).into())
+            .apply(&mut file, MessageEdit::Remove(MessageId(1)).into())
             .unwrap();
-        let edited = document.clone();
-        assert_eq!(document.bmg().messages.len(), 1);
+        let edited = file.clone();
+        assert_eq!(file.bmg().messages.len(), 1);
 
-        assert!(history.undo(&mut document).unwrap());
-        assert!(history.undo(&mut document).unwrap());
+        assert!(history.undo(&mut file).unwrap());
+        assert!(history.undo(&mut file).unwrap());
         // Can't undo any further
-        assert!(!history.undo(&mut document).unwrap());
-        assert_eq!(document, original);
+        assert!(!history.undo(&mut file).unwrap());
+        assert_eq!(file, original);
 
-        assert!(history.redo(&mut document).unwrap());
-        assert!(history.redo(&mut document).unwrap());
-        assert_eq!(document, edited);
+        assert!(history.redo(&mut file).unwrap());
+        assert!(history.redo(&mut file).unwrap());
+        assert_eq!(file, edited);
     }
 
     #[test]
     fn a_new_edit_drops_the_redo_stack() {
-        let mut document = document();
+        let mut file = file();
         let mut history = History::default();
         let set_text = |body: &[u8]| set_message(MessageId(0), MessageChange::Text(text(body)));
-        history.apply(&mut document, set_text(b"A")).unwrap();
-        history.undo(&mut document).unwrap();
-        history.apply(&mut document, set_text(b"B")).unwrap();
+        history.apply(&mut file, set_text(b"A")).unwrap();
+        history.undo(&mut file).unwrap();
+        history.apply(&mut file, set_text(b"B")).unwrap();
         assert!(!history.can_redo());
     }
 
     #[test]
     fn a_refused_edit_changes_nothing() {
-        let original = document();
-        let mut document = original.clone();
+        let original = file();
+        let mut file = original.clone();
         let mut history = History::default();
         let refused = [
             (
@@ -974,9 +974,9 @@ mod tests {
             (FlowEdit::Create.into(), EditError::HasFlow),
         ];
         for (edit, error) in refused {
-            assert_eq!(history.apply(&mut document, edit), Err(error));
+            assert_eq!(history.apply(&mut file, edit), Err(error));
         }
-        assert_eq!(document, original);
+        assert_eq!(file, original);
         assert!(!history.can_undo());
     }
 
@@ -984,55 +984,51 @@ mod tests {
     /// back a file with no flow at all rather than an empty one.
     #[test]
     fn a_flow_built_and_undone_leaves_no_flow_behind() {
-        let mut document = document();
+        let mut file = file();
         let mut history = History::default();
         history
-            .apply(&mut document, root(ListEdit::Remove { at: 0 }))
+            .apply(&mut file, root(ListEdit::Remove { at: 0 }))
             .unwrap();
         history
-            .apply(&mut document, NodeEdit::Remove(NodeId(0)).into())
+            .apply(&mut file, NodeEdit::Remove(NodeId(0)).into())
             .unwrap();
-        history
-            .apply(&mut document, FlowEdit::Delete.into())
-            .unwrap();
-        let original = document.clone();
+        history.apply(&mut file, FlowEdit::Delete.into()).unwrap();
+        let original = file.clone();
 
-        let node = document.unused_node_id();
-        history
-            .apply(&mut document, FlowEdit::Create.into())
-            .unwrap();
+        let node = file.unused_node_id();
+        history.apply(&mut file, FlowEdit::Create.into()).unwrap();
         let text = Node::Text {
             id: node,
             message: MessageId(1),
             next: Some(node),
         };
         history
-            .apply(&mut document, NodeEdit::Insert { at: 0, node: text }.into())
+            .apply(&mut file, NodeEdit::Insert { at: 0, node: text }.into())
             .unwrap();
         history
             .apply(
-                &mut document,
+                &mut file,
                 root(ListEdit::Insert {
                     at: 0,
                     value: Root { public_id: 7, node },
                 }),
             )
             .unwrap();
-        assert!(document.save().is_ok());
+        assert!(file.save().is_ok());
 
         for _ in 0..3 {
-            history.undo(&mut document).unwrap();
+            history.undo(&mut file).unwrap();
         }
-        assert_eq!(document, original);
-        assert_eq!(document.bmg().flow, None);
+        assert_eq!(file, original);
+        assert_eq!(file.bmg().flow, None);
     }
 
     #[test]
     fn a_branch_is_rewired_one_answer_at_a_time() {
-        let original = document();
-        let mut document = original.clone();
+        let original = file();
+        let mut file = original.clone();
         let mut history = History::default();
-        let branch = document.unused_node_id();
+        let branch = file.unused_node_id();
         let edits = [
             NodeEdit::Insert {
                 at: 1,
@@ -1063,9 +1059,9 @@ mod tests {
             set_node(NodeId(0), NodeChange::Next(Some(branch))),
         ];
         for edit in edits.clone() {
-            history.apply(&mut document, edit).unwrap();
+            history.apply(&mut file, edit).unwrap();
         }
-        let flow = document.bmg().flow.as_ref().unwrap();
+        let flow = file.bmg().flow.as_ref().unwrap();
         assert_eq!(
             flow.nodes[1],
             Node::Branch {
@@ -1077,40 +1073,40 @@ mod tests {
         );
         assert_eq!(
             history.apply(
-                &mut document,
+                &mut file,
                 answer(branch, ListEdit::Set { at: 2, value: None }),
             ),
             Err(EditError::OutOfRange(2))
         );
 
         for _ in edits {
-            history.undo(&mut document).unwrap();
+            history.undo(&mut file).unwrap();
         }
-        assert_eq!(document, original);
+        assert_eq!(file, original);
     }
 
     #[test]
     fn setting_the_public_id_rewrites_its_copy_in_the_attributes() {
-        let mut document = document();
+        let mut file = file();
         let mut history = History::default();
         history
             .apply(
-                &mut document,
+                &mut file,
                 set_message(MessageId(1), MessageChange::PublicId(0x1234)),
             )
             .unwrap();
-        let message = document.message(MessageId(1)).unwrap();
+        let message = file.message(MessageId(1)).unwrap();
         assert_eq!(
             &message.attributes[field_bytes(&record::ID).unwrap()],
             &[0x12, 0x34]
         );
         assert_eq!(
-            BmgDocument::open(&document.save().unwrap(), EDITION).unwrap(),
-            document
+            EditableBmg::open(&file.save().unwrap(), EDITION).unwrap(),
+            file
         );
 
-        history.undo(&mut document).unwrap();
-        let message = document.message(MessageId(1)).unwrap();
+        history.undo(&mut file).unwrap();
+        let message = file.message(MessageId(1)).unwrap();
         assert_eq!(message.public_id, 1);
         assert_eq!(
             &message.attributes[field_bytes(&record::ID).unwrap()],
@@ -1120,18 +1116,15 @@ mod tests {
 
     #[test]
     fn a_field_edit_undoes_to_the_old_value() {
-        let mut document = document();
+        let mut file = file();
         let mut history = History::default();
         let box_kind = field(0x09);
-        let read = |document: &BmgDocument| {
-            read_field(
-                &document.message(MessageId(0)).unwrap().attributes,
-                &box_kind,
-            )
+        let read = |file: &EditableBmg| {
+            read_field(&file.message(MessageId(0)).unwrap().attributes, &box_kind)
         };
         history
             .apply(
-                &mut document,
+                &mut file,
                 set_message(
                     MessageId(0),
                     MessageChange::Field {
@@ -1141,18 +1134,18 @@ mod tests {
                 ),
             )
             .unwrap();
-        assert_eq!(read(&document), Some(13));
-        history.undo(&mut document).unwrap();
-        assert_eq!(read(&document), Some(0));
+        assert_eq!(read(&file), Some(13));
+        history.undo(&mut file).unwrap();
+        assert_eq!(read(&file), Some(0));
     }
 
     #[test]
     fn a_record_id_that_disagrees_with_mid1_is_refused() {
-        let mut bmg = document().bmg;
+        let mut bmg = file().bmg;
         bmg.messages[1].attributes[field_bytes(&record::ID).unwrap()]
             .copy_from_slice(&7u16.to_be_bytes());
         assert!(matches!(
-            BmgDocument::open(&bmg.encode().unwrap(), EDITION),
+            EditableBmg::open(&bmg.encode().unwrap(), EDITION),
             Err(OpenError::IdMismatch {
                 message: MessageId(1),
                 public_id: 1,
@@ -1162,15 +1155,15 @@ mod tests {
 
         // Without a MID1 the record's id is the game's to use.
         bmg.mid1 = None;
-        assert!(BmgDocument::open(&bmg.encode().unwrap(), EDITION).is_ok());
+        assert!(EditableBmg::open(&bmg.encode().unwrap(), EDITION).is_ok());
     }
 
     #[test]
-    fn saving_and_opening_gives_the_same_document() {
-        let document = document();
+    fn saving_and_opening_gives_the_same_file() {
+        let file = file();
         assert_eq!(
-            BmgDocument::open(&document.save().unwrap(), EDITION).unwrap(),
-            document
+            EditableBmg::open(&file.save().unwrap(), EDITION).unwrap(),
+            file
         );
     }
 
@@ -1181,11 +1174,11 @@ mod tests {
             (Version::GcnJpn, unit::JPN_LAYOUT),
         ] {
             let edition = Edition::default_language(version);
-            let document = unit_document(edition, layout.len);
-            assert_eq!(document.layout(), Some(&layout));
+            let file = unit_file(edition, layout.len);
+            assert_eq!(file.layout(), Some(&layout));
             assert_eq!(
-                BmgDocument::open(&document.save().unwrap(), edition).unwrap(),
-                document
+                EditableBmg::open(&file.save().unwrap(), edition).unwrap(),
+                file
             );
         }
     }
@@ -1193,15 +1186,15 @@ mod tests {
     /// A JPN unit file in a USA project isn't named with the JPN layout.
     #[test]
     fn a_layout_from_another_region_is_not_used() {
-        let document = unit_document(EDITION, unit::JPN_LAYOUT.len);
-        assert_eq!(document.layout(), None);
+        let file = unit_file(EDITION, unit::JPN_LAYOUT.len);
+        assert_eq!(file.layout(), None);
     }
 
     /// A unit record's first field sits where the story record keeps its id,
     /// so setting it and the public id must leave each other alone.
     #[test]
     fn a_unit_field_is_not_the_id() {
-        let mut document = unit_document(EDITION, unit::LAYOUT.len);
+        let mut file = unit_file(EDITION, unit::LAYOUT.len);
         let mut history = History::default();
         let singular = unit::LAYOUT.fields[0];
         let edits = [
@@ -1215,9 +1208,9 @@ mod tests {
             set_message(MessageId(0), MessageChange::PublicId(9)),
         ];
         for edit in edits {
-            history.apply(&mut document, edit).unwrap();
+            history.apply(&mut file, edit).unwrap();
         }
-        let message = document.message(MessageId(0)).unwrap();
+        let message = file.message(MessageId(0)).unwrap();
         assert_eq!(read_field(&message.attributes, &singular), Some(7));
         assert_eq!(message.public_id, 9);
     }

@@ -570,7 +570,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tpmt-documents"
+name = "tpmt-editing"
 version = "0.1.0"
 dependencies = [
  "thiserror",

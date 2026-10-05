@@ -2,7 +2,7 @@
 //! read or written inside it.
 //!
 //! This crate doesn't know what's inside a file. `tpmt-packing` takes the
-//! disc apart and puts it back, `tpmt-documents` edits what comes out, and
+//! disc apart and puts it back, `tpmt-editing` edits what comes out, and
 //! `tpmt-ops` runs each operation through all three.
 //!
 //! A project is two directories, edited in place:

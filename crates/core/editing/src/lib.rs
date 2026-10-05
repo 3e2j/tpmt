@@ -1,7 +1,7 @@
-//! Editable documents, one per format: where a decoded file meets the game's
-//! tables.
+//! Editing a format's files, one type per format: where a decoded file meets
+//! the game's tables.
 //!
-//! A document wraps a decoded file and changes it only through edits, which
+//! An editable file wraps a decoded one and changes only through edits, which
 //! are plain values. Performing an edit hands back the edit that undoes it, so
 //! undo and redo are two stacks of edits ([`History`]) rather than snapshots.
 //!
@@ -12,31 +12,31 @@
 //! An edit built on the game's tables, like setting a named record field, has
 //! a raw counterpart that skips them.
 //!
-//! A document knows nothing about paths. It opens from bytes and saves to
+//! An editable file knows nothing about paths. It opens from bytes and saves to
 //! bytes, and `tpmt-ops` decides where those go: `mod/changes/`, never
 //! `base/`.
 //!
-//! No UI framework here, so documents can be tested headless and reused by the
+//! No UI framework here, so editing can be tested headless and reused by the
 //! CLI or an export.
 
 pub mod message;
 
 /// A decoded file that changes only through edits.
-pub trait Document {
+pub trait Editable {
     type Edit;
     type Error;
 
     /// Applies `edit` and returns the edit that undoes it. On error the
-    /// document is unchanged.
+    /// file is unchanged.
     ///
     /// # Errors
     ///
-    /// When the edit doesn't fit the document, such as one naming something
-    /// the document doesn't hold.
+    /// When the edit doesn't fit the file, such as one naming something
+    /// the file doesn't hold.
     fn perform(&mut self, edit: Self::Edit) -> Result<Self::Edit, Self::Error>;
 }
 
-/// Undo and redo for one document, as stacks of the edits that reverse each
+/// Undo and redo for one file, as stacks of the edits that reverse each
 /// step.
 #[derive(Debug)]
 pub struct History<E> {
@@ -54,18 +54,14 @@ impl<E> Default for History<E> {
 }
 
 impl<E> History<E> {
-    /// Performs `edit` on `document` and records how to undo it. Clears the
+    /// Performs `edit` on `file` and records how to undo it. Clears the
     /// redo stack, since what it held branched off before this edit.
     ///
     /// # Errors
     ///
-    /// When the document refuses the edit. Nothing is recorded then.
-    pub fn apply<D: Document<Edit = E>>(
-        &mut self,
-        document: &mut D,
-        edit: E,
-    ) -> Result<(), D::Error> {
-        let inverse = document.perform(edit)?;
+    /// When the file refuses the edit. Nothing is recorded then.
+    pub fn apply<D: Editable<Edit = E>>(&mut self, file: &mut D, edit: E) -> Result<(), D::Error> {
+        let inverse = file.perform(edit)?;
         self.undo.push(inverse);
         self.redo.clear();
         Ok(())
@@ -75,13 +71,13 @@ impl<E> History<E> {
     ///
     /// # Errors
     ///
-    /// When the document refuses the inverse, which means its `perform`
+    /// When the file refuses the inverse, which means its `perform`
     /// handed back an inverse it can't apply. The step is dropped then.
-    pub fn undo<D: Document<Edit = E>>(&mut self, document: &mut D) -> Result<bool, D::Error> {
+    pub fn undo<D: Editable<Edit = E>>(&mut self, file: &mut D) -> Result<bool, D::Error> {
         let Some(edit) = self.undo.pop() else {
             return Ok(false);
         };
-        self.redo.push(document.perform(edit)?);
+        self.redo.push(file.perform(edit)?);
         Ok(true)
     }
 
@@ -91,11 +87,11 @@ impl<E> History<E> {
     /// # Errors
     ///
     /// As [`undo`](Self::undo).
-    pub fn redo<D: Document<Edit = E>>(&mut self, document: &mut D) -> Result<bool, D::Error> {
+    pub fn redo<D: Editable<Edit = E>>(&mut self, file: &mut D) -> Result<bool, D::Error> {
         let Some(edit) = self.redo.pop() else {
             return Ok(false);
         };
-        self.undo.push(document.perform(edit)?);
+        self.undo.push(file.perform(edit)?);
         Ok(true)
     }
 

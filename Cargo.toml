@@ -33,7 +33,7 @@ tpmt-compression = { path = "crates/formats/packaging/compression", version = "0
 
 # Core: one job each, and none depends on another.
 tpmt-project = { path = "crates/core/project", version = "0.1.0" }
-tpmt-documents = { path = "crates/core/documents", version = "0.1.0" }
+tpmt-editing = { path = "crates/core/editing", version = "0.1.0" }
 tpmt-packing = { path = "crates/core/packing", version = "0.1.0" }
 
 # Ops: every operation a frontend runs, through the core crates.

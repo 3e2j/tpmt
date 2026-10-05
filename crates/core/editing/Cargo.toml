@@ -1,6 +1,6 @@
 [package]
-name = "tpmt-documents"
-description = "Editable documents, one per format, with edits as values and undo."
+name = "tpmt-editing"
+description = "Editing a format's files, with edits as values and undo."
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
