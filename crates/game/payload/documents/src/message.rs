@@ -230,7 +230,7 @@ impl BmgDocument {
         Self { bmg, edition }
     }
 
-    /// The file as bytes, for the pipeline to write into the overlay.
+    /// The file as bytes, for the pipeline to write into `changes/`.
     ///
     /// # Errors
     ///

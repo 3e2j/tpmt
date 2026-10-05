@@ -1,5 +1,5 @@
 //! Project paths: UTF-8, `/`-separated, relative to a layer root, the same
-//! in `base/` and `mod/overlay/`. `files/res/Msgus/bmgres3.arc/zel_00.bmg` is
+//! in `base/` and `mod/changes/`. `files/res/Msgus/bmgres3.arc/zel_00.bmg` is
 //! one.
 
 use std::fs;

@@ -9,16 +9,17 @@ use crate::Result;
 use crate::io::Staging;
 use crate::io::fs::{create_dir_all, write_json};
 
-/// The mod project: `overlay/`, `res/`, `mod.json`.
+/// The mod project: `changes/`, `textures/`, `res/`, `mod.json`.
 pub const DIR: &str = "mod";
-const OVERLAY_DIR: &str = "overlay";
+const CHANGES_DIR: &str = "changes";
+const TEXTURES_DIR: &str = "textures";
 const RES_DIR: &str = "res";
 const SCRIPTS_DIR: &str = "scripts";
 const MOD_JSON: &str = "mod.json";
 
-/// `overlay/` under the `mod/` at `mod_dir`.
-pub fn overlay(mod_dir: &Path) -> PathBuf {
-    mod_dir.join(OVERLAY_DIR)
+/// `changes/` under the `mod/` at `mod_dir`.
+pub fn changes(mod_dir: &Path) -> PathBuf {
+    mod_dir.join(CHANGES_DIR)
 }
 
 /// `mod.json`: what a mod says about itself.
@@ -48,7 +49,8 @@ pub fn scaffold(mod_dir: &Path, id: &str) -> Result<()> {
     // Staged, so a failure part way cannot leave a `mod/` without its
     // `mod.json` that the check above would then skip forever.
     let staging = Staging::begin(mod_dir)?;
-    create_dir_all(&overlay(staging.dir()))?;
+    create_dir_all(&changes(staging.dir()))?;
+    create_dir_all(&staging.dir().join(TEXTURES_DIR))?;
     create_dir_all(&staging.dir().join(RES_DIR).join(SCRIPTS_DIR))?;
     write_json(
         &staging.dir().join(MOD_JSON),

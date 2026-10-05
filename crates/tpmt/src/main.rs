@@ -149,16 +149,16 @@ fn print_status(changes: &[Change]) {
 
 /// Prints what a build wrote.
 ///
-/// An overlay file that matches vanilla goes to standard error rather than
-/// standard out: it is not what was asked for, and somebody who put it there
-/// meant to change something.
+/// A file in `changes/` that matches vanilla goes to standard error rather
+/// than standard out: it is not what was asked for, and somebody who put it
+/// there meant to change something.
 fn print_built(built: &Built) {
     for path in &built.unchanged {
         eprintln!("tpmt: `{path}` is identical to vanilla, so it changes nothing");
     }
 
     if built.rebuilt.is_empty() {
-        println!("nothing in the overlay to build");
+        println!("nothing in changes/ to build");
     }
     for path in &built.rebuilt {
         println!("rebuilt {path}");

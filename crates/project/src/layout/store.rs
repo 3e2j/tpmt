@@ -187,7 +187,7 @@ pub fn digest(data: &[u8]) -> u128 {
 }
 
 /// [`digest`] of a file, streamed rather than read whole. A diff hashes
-/// every overlay file, videos included.
+/// every file in `changes/`, videos included.
 ///
 /// # Errors
 ///

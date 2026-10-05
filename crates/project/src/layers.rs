@@ -1,5 +1,5 @@
-//! `mod/overlay/` laid over `base/`. Both hold files at the same project
-//! paths, and a file comes from the overlay if it's there and from `base/`
+//! `mod/changes/` laid over `base/`. Both hold files at the same project
+//! paths, and a file comes from `changes/` if it's there and from `base/`
 //! otherwise.
 
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use crate::{Error, Result};
 /// One file that differs from vanilla.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Change {
-    /// A project path, under `mod/overlay/`.
+    /// A project path, under `mod/changes/`.
     pub path: String,
     pub kind: ChangeKind,
 }
@@ -28,16 +28,16 @@ pub enum ChangeKind {
 /// Which layer a file was read from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
-    Overlay,
+    Changes,
     Base,
 }
 
-/// Every overlay file, split by whether it differs from vanilla. Both halves
-/// are sorted by path.
+/// Every file in `changes/`, split by whether it differs from vanilla. Both
+/// halves are sorted by path.
 #[derive(Debug, Default)]
 pub struct Comparison {
     pub changes: Vec<Change>,
-    /// Overlay files byte for byte what the unpack wrote at the same path.
+    /// Files in `changes/` byte for byte what the unpack wrote at the same path.
     pub identical: Vec<String>,
 }
 
@@ -45,15 +45,15 @@ pub struct Comparison {
 /// [`Project::layers`](crate::Project::layers).
 pub struct Layers {
     base: PathBuf,
-    overlay: PathBuf,
+    changes: PathBuf,
 }
 
 impl Layers {
-    pub(crate) const fn new(base: PathBuf, overlay: PathBuf) -> Self {
-        Self { base, overlay }
+    pub(crate) const fn new(base: PathBuf, changes: PathBuf) -> Self {
+        Self { base, changes }
     }
 
-    /// One file's bytes and the layer they came from, the overlay first.
+    /// One file's bytes and the layer they came from, `changes/` first.
     ///
     /// # Errors
     ///
@@ -62,7 +62,7 @@ impl Layers {
     /// - [`Error::Io`] if the file can't be read
     pub fn read(&self, path: &str) -> Result<(Layer, Vec<u8>)> {
         let at = checked(path)?;
-        for (layer, dir) in [(Layer::Overlay, &self.overlay), (Layer::Base, &self.base)] {
+        for (layer, dir) in [(Layer::Changes, &self.changes), (Layer::Base, &self.base)] {
             if let Some(data) = fs::read_if_exists(&dir.join(at))? {
                 return Ok((layer, data));
             }
@@ -70,24 +70,25 @@ impl Layers {
         Err(Error::MissingFile(path.to_string()))
     }
 
-    /// Writes `data` to `path` in the overlay. `base/` is never written.
+    /// Writes `data` to `path` in `changes/`. `base/` is never written.
     ///
     /// # Errors
     ///
     /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
     /// - [`Error::Io`] on the write
     pub fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        fs::write(&self.overlay.join(checked(path)?), data)
+        fs::write(&self.changes.join(checked(path)?), data)
     }
 
     /// Whether either layer holds a file at `path`.
     #[must_use]
     pub fn is_file(&self, path: &str) -> bool {
         checked(path)
-            .is_ok_and(|at| self.overlay.join(at).is_file() || self.base.join(at).is_file())
+            .is_ok_and(|at| self.changes.join(at).is_file() || self.base.join(at).is_file())
     }
 
-    /// Hashes every overlay file against the digests its unpack recorded.
+    /// Hashes every file in `changes/` against the digests the unpack
+    /// recorded.
     ///
     /// `base/` is not checked. A build refuses a `base/` file that drifted
     /// when it reads one, and hashing all of `base/` here would cost as much
@@ -95,13 +96,13 @@ impl Layers {
     ///
     /// # Errors
     ///
-    /// - [`Error::Io`] if the overlay cannot be walked or a file read
+    /// - [`Error::Io`] if `changes/` cannot be walked or a file read
     /// - [`Error::UnusablePath`] if a name in it is not UTF-8
     pub fn compare(&self, digests: &Digests) -> Result<Comparison> {
-        let compared = files(&self.overlay)?
+        let compared = files(&self.changes)?
             .into_par_iter()
             .map(|path| {
-                let kind = change(&self.overlay.join(&path), &path, digests)?;
+                let kind = change(&self.changes.join(&path), &path, digests)?;
                 Ok((path, kind))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -135,7 +136,7 @@ mod tests {
     const PATH: &str = "files/res/a.arc/m.bmg";
 
     fn layers(scratch: &TempDir) -> Layers {
-        Layers::new(scratch.path().join("base"), scratch.path().join("overlay"))
+        Layers::new(scratch.path().join("base"), scratch.path().join("changes"))
     }
 
     fn project() -> TempDir {
@@ -145,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_takes_the_overlay_over_base() {
+    fn a_read_takes_changes_over_base() {
         let scratch = project();
         let layers = layers(&scratch);
         assert_eq!(
@@ -156,7 +157,7 @@ mod tests {
         layers.write(PATH, b"edited").unwrap();
         assert_eq!(
             layers.read(PATH).unwrap(),
-            (Layer::Overlay, b"edited".to_vec())
+            (Layer::Changes, b"edited".to_vec())
         );
         assert_eq!(fs::read(&layers.base.join(PATH)).unwrap(), b"vanilla");
     }
@@ -204,7 +205,7 @@ mod tests {
             fs::write(&layers.base.join(path), data).unwrap();
             digests.insert(path.to_string(), digest(data));
         }
-        fs::create_dir_all(&layers.overlay).unwrap();
+        fs::create_dir_all(&layers.changes).unwrap();
         digests
     }
 
@@ -224,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_edits_and_additions_are_reported() {
+    fn edits_and_additions_are_reported() {
         let scratch = tempfile::tempdir().unwrap();
         let layers = layers(&scratch);
         let digests = unpacked(&layers);
@@ -240,9 +241,9 @@ mod tests {
         );
     }
 
-    /// An overlay copy of a vanilla file changes nothing on the disc.
+    /// A copy of a vanilla file in `changes/` changes nothing on the disc.
     #[test]
-    fn an_overlay_file_identical_to_vanilla_is_not_a_change() {
+    fn a_file_identical_to_vanilla_is_not_a_change() {
         let scratch = tempfile::tempdir().unwrap();
         let layers = layers(&scratch);
         let digests = unpacked(&layers);

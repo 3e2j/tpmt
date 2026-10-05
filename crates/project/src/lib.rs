@@ -14,8 +14,9 @@
 //!   sys/               apploader.img, main.dol
 //!   files/             game content, archives as directories
 //! mod/                 the mod project; the only directory a modder edits
-//!   overlay/           whole-file / archive-member replacements, real paths
-//!   res/               authored user-made content
+//!   changes/           whole-file / archive-member replacements, real paths
+//!   textures/          texture replacements, named by their Dolphin hash
+//!   res/               authored user-made content, shipped to Dusklight as is
 //!     scripts/         Luau scripts, never parsed, copied into a build untouched
 //!   mod.json           mod metadata (id, name, version, author, description, icon, banner)
 //! build/
@@ -49,9 +50,21 @@
 // Nothing here decides which regions an edit applies to yet.
 //
 // A modder who edits `base/` directly should have those edits moved into
-// `mod/overlay/` automatically, and `base/` restored. Hashing all of `base/`
+// `mod/changes/` automatically, and `base/` restored. Hashing all of `base/`
 // on every build is too slow, so record each file's size and mtime at unpack
 // and hash only the files whose size or mtime changed.
+//
+// `mod/` is meant to be a git repo, so it can't hold game data. `changes/`
+// should store a patch against `base/` for each format that has one (BMG
+// first), and a whole file only for what the modder made from scratch.
+//
+// Nothing reads `textures/` yet. Every target should: `dusk` copies it, and a
+// disc build re-encodes each replacement into every file that holds a texture
+// with that hash, found through an index of `base/` taken at unpack.
+//
+// A native mod adds Dusklight's SDK template (`src/`, `CMakeLists.txt`,
+// `cmake/`) to `mod/`. `dusk` should build it through the SDK and put the
+// library under `lib/<platform>/` in the bundle.
 
 use std::path::{Path, PathBuf};
 
@@ -104,7 +117,7 @@ pub enum Error {
     #[error("`{}` is not a name a project path can hold", .0.display())]
     UnusablePath(PathBuf),
 
-    #[error("nothing in `base/` or `mod/overlay/` holds `{0}`")]
+    #[error("nothing in `base/` or `mod/changes/` holds `{0}`")]
     MissingFile(String),
 
     /// A vanilla file is no longer what the unpack recorded, so a build off
@@ -195,14 +208,14 @@ impl Project {
     /// The modder's whole-file and archive-member replacements, addressed by
     /// the same project paths [`base`](Self::base) holds.
     #[must_use]
-    pub fn overlay(&self) -> PathBuf {
-        modding::overlay(&self.root.join(modding::DIR))
+    pub fn changes(&self) -> PathBuf {
+        modding::changes(&self.root.join(modding::DIR))
     }
 
-    /// `mod/overlay/` over `base/`, the way a build reads them.
+    /// `mod/changes/` over `base/`, the way a build reads them.
     #[must_use]
     pub fn layers(&self) -> Layers {
-        Layers::new(self.base(), self.overlay())
+        Layers::new(self.base(), self.changes())
     }
 
     /// Where one build target writes what it produced. A target owns its
@@ -288,9 +301,9 @@ impl Project {
         store::write(&self.store(), iso, boot, digests, formats)
     }
 
-    /// Writes the `mod/` skeleton (`overlay/`, `res/scripts/`, a starter
-    /// `mod.json`) alongside `base/`. Skips an existing `mod/`, so re-unpacking
-    /// a project never clobbers a modder's edits.
+    /// Writes the `mod/` skeleton (`changes/`, `textures/`, `res/scripts/`, a
+    /// starter `mod.json`) alongside `base/`. Skips an existing `mod/`, so
+    /// re-unpacking a project never clobbers a modder's edits.
     ///
     /// # Errors
     ///
@@ -305,7 +318,7 @@ impl Project {
         modding::scaffold(&self.root.join(modding::DIR), id)
     }
 
-    /// One project file's bytes, from `mod/overlay/` when it holds `path` and
+    /// One project file's bytes, from `mod/changes/` when it holds `path` and
     /// from `base/` otherwise. `path` is a project path, as
     /// [`formats`](Self::formats) lists.
     ///
@@ -322,7 +335,7 @@ impl Project {
         Ok(self.layers().read(path)?.1)
     }
 
-    /// Writes `data` to `path` under `mod/overlay/`, creating any missing
+    /// Writes `data` to `path` under `mod/changes/`, creating any missing
     /// directories. `base/` is never written.
     ///
     /// # Errors
@@ -333,11 +346,11 @@ impl Project {
         self.layers().write(path, data)
     }
 
-    /// Hashes `mod/overlay/` against the vanilla digests taken at unpack,
+    /// Hashes `mod/changes/` against the vanilla digests taken at unpack,
     /// and reports whatever doesn't match, sorted by path.
     ///
-    /// An overlay file identical to vanilla is not a change. `base/` is not
-    /// checked; a build refuses drift there when it reads the file.
+    /// A file in `changes/` identical to vanilla is not a change. `base/` is
+    /// not checked; a build refuses drift there when it reads the file.
     ///
     /// # Errors
     ///

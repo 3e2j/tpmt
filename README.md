@@ -76,7 +76,7 @@ To compile TPMT, you will need [Rust](https://www.rust-lang.org/tools/install) i
 git clone https://github.com/3e2j/tpmt
 cargo install --path tpmt/crates/tpmt
 tpmt new game.iso        # unpack into ./game
-cd game                  # copy files from base/ into mod/overlay/ and edit them
+cd game                  # copy files from base/ into mod/changes/ and edit them
 tpmt status              # list edited files
 tpmt build image         # or: patch, dusk
 ```

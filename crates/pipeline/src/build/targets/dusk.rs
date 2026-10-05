@@ -1,5 +1,6 @@
-//! A Dusklight mod bundle: `mod.json`, an `overlay/` remapped to Dusklight's
-//! own naming, and `res/` carried across.
+//! A Dusklight mod bundle: `mod.json`, an `overlay/` built from `mod/changes/`
+//! and remapped to Dusklight's own naming, and `textures/` and `res/` carried
+//! across.
 //!
 //! Not implemented. It rebuilds the changed files the same way `patch` does.
 //!
@@ -20,7 +21,7 @@ use crate::build::{Context, Target};
 // writing only what each one does. Worth revisiting once those services
 // mature.
 
-// TODO: warn on game code in the overlay: `.dol`, `.rel`, `.str` and `.map`.
+// TODO: warn on game code in `changes/`: `.dol`, `.rel`, `.str` and `.map`.
 // Dusklight compiles the game in and never loads these, so replaced code
 // won't run. Point the modder at hooks instead.
 

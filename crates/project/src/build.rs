@@ -1,12 +1,13 @@
-//! Building a project: works out what `mod/overlay/` changed, and hands it to
-//! `tpmt-pipeline` for a target.
+//! Building a project: works out which files in `mod/changes/` differ from
+//! vanilla, and hands them to `tpmt-pipeline` for a target.
 //!
 //! A target writes into a staging directory beside its output, swapped in
 //! only once the whole build succeeded. A build that fails leaves the last
 //! good one where it was.
 
-// TODO: only `mod/overlay/` reaches a build. `dusk` will also need
-// `mod/res/` and `mod.json`, which `Job` has no way to carry yet.
+// TODO: only `mod/changes/` reaches a build. Every target will also need
+// `mod/textures/`, and `dusk` needs `mod/res/` and `mod.json`, none of which
+// `Job` has a way to carry yet.
 
 use std::path::{Path, PathBuf};
 
@@ -28,12 +29,12 @@ pub struct Built {
     pub path: PathBuf,
     /// The disc files that were written again, at their disc paths.
     pub rebuilt: Vec<String>,
-    /// Overlay files identical to vanilla, left out of the build.
+    /// Files in `changes/` identical to vanilla, left out of the build.
     pub unchanged: Vec<String>,
 }
 
 impl Project {
-    /// Re-encodes whatever `mod/overlay/` changed and hands it to `target`,
+    /// Re-encodes whatever `mod/changes/` changed and hands it to `target`,
     /// which decides what to do with it: a tree of the changed disc files, a
     /// whole disc image, or a mod bundle.
     ///
@@ -107,7 +108,7 @@ impl Project {
     }
 }
 
-/// The overlay over `base/`, with every `base/` copy held to its vanilla
+/// `changes/` over `base/`, with every `base/` copy held to its vanilla
 /// digest on the way past.
 ///
 /// A rebuild reads every unedited member straight out of `base/`, so a file
@@ -246,7 +247,7 @@ mod tests {
         scratch
     }
 
-    fn overlay(project: &Path, path: &str, data: &[u8]) {
+    fn change(project: &Path, path: &str, data: &[u8]) {
         Project::discover(project)
             .unwrap()
             .write(path, data)
@@ -282,7 +283,7 @@ mod tests {
     #[test]
     fn an_edited_member_rebuilds_its_archive() {
         let scratch = unpacked();
-        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
+        change(scratch.path(), "files/outer.arc/plain.bin", b"edited");
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.rebuilt, ["files/outer.arc"]);
@@ -298,7 +299,7 @@ mod tests {
     #[test]
     fn members_keep_the_wrapper_they_arrived_with() {
         let scratch = unpacked();
-        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
+        change(scratch.path(), "files/outer.arc/plain.bin", b"edited");
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
         let outputs = exploded(&built.path, "files/outer.arc");
@@ -323,11 +324,11 @@ mod tests {
     }
 
     /// A file the sidecar never mentioned is still a member, so somebody can
-    /// add one by dropping it in the overlay.
+    /// add one by dropping it in `changes/`.
     #[test]
     fn an_added_file_becomes_a_member() {
         let scratch = unpacked();
-        overlay(scratch.path(), "files/outer.arc/extra.bin", b"extra");
+        change(scratch.path(), "files/outer.arc/extra.bin", b"extra");
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
         let outputs = exploded(&built.path, "files/outer.arc");
@@ -340,7 +341,7 @@ mod tests {
     #[test]
     fn a_loose_file_is_its_own_disc_file() {
         let scratch = unpacked();
-        overlay(scratch.path(), "files/loose.bin", b"replaced");
+        change(scratch.path(), "files/loose.bin", b"replaced");
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.rebuilt, ["files/loose.bin"]);
@@ -351,12 +352,12 @@ mod tests {
         assert!(!built.path.join("files/outer.arc").exists());
     }
 
-    /// An overlay file that matches vanilla is reported and left out of the
+    /// A file in `changes/` that matches vanilla is reported and left out of the
     /// build.
     #[test]
     fn an_edit_that_changes_nothing_is_reported() {
         let scratch = unpacked();
-        overlay(scratch.path(), "files/loose.bin", b"loose");
+        change(scratch.path(), "files/loose.bin", b"loose");
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.unchanged, ["files/loose.bin"]);
@@ -376,7 +377,7 @@ mod tests {
             b"tampered",
         )
         .unwrap();
-        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
+        change(scratch.path(), "files/outer.arc/plain.bin", b"edited");
 
         let error = run(scratch.path(), Target::Patch, None).unwrap_err();
         assert!(
@@ -390,7 +391,7 @@ mod tests {
     #[test]
     fn a_failed_build_keeps_the_last_one() {
         let scratch = unpacked();
-        overlay(scratch.path(), "files/loose.bin", b"replaced");
+        change(scratch.path(), "files/loose.bin", b"replaced");
         let built = run(scratch.path(), Target::Patch, None).unwrap();
 
         fs::write(
@@ -401,7 +402,7 @@ mod tests {
             b"tampered",
         )
         .unwrap();
-        overlay(scratch.path(), "files/outer.arc/plain.bin", b"edited");
+        change(scratch.path(), "files/outer.arc/plain.bin", b"edited");
         run(scratch.path(), Target::Patch, None).unwrap_err();
 
         assert_eq!(
@@ -412,9 +413,9 @@ mod tests {
         assert_eq!(std::fs::read_dir(targets).unwrap().count(), 1);
     }
 
-    /// An empty overlay is not an error. There is simply nothing to write.
+    /// An empty `changes/` is not an error. There is simply nothing to write.
     #[test]
-    fn an_empty_overlay_builds_nothing() {
+    fn empty_changes_build_nothing() {
         let scratch = unpacked();
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
@@ -427,7 +428,7 @@ mod tests {
     #[test]
     fn a_target_clears_what_it_left_last_time() {
         let scratch = unpacked();
-        overlay(scratch.path(), "files/loose.bin", b"replaced");
+        change(scratch.path(), "files/loose.bin", b"replaced");
         let built = run(scratch.path(), Target::Patch, None).unwrap();
 
         let stale = built.path.join("files/gone.bin");
@@ -460,7 +461,7 @@ mod tests {
     fn an_output_directory_is_never_replaced() {
         let scratch = unpacked();
         let out = scratch.path().join("elsewhere");
-        overlay(scratch.path(), "files/loose.bin", b"replaced");
+        change(scratch.path(), "files/loose.bin", b"replaced");
 
         run(scratch.path(), Target::Patch, Some(&out)).unwrap();
         let error = run(scratch.path(), Target::Patch, Some(&out)).unwrap_err();
