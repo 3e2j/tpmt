@@ -10,7 +10,7 @@
 //!
 //! This crate stores patches without reading them. `tpmt-ops` applies them.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rayon::prelude::*;
 
@@ -206,19 +206,28 @@ impl Overlay {
         let mut compared = files(&self.changes)?
             .into_par_iter()
             .map(|path| {
-                let target = path.strip_suffix(PATCH_SUFFIX);
-                if let Some(target) = target.filter(|target| digests.contains_key(*target)) {
-                    if self.changes.join(target).is_file() {
-                        return Err(Error::PatchConflict(target.to_string()));
-                    }
+                // A patch is reported under the vanilla path it patches, since
+                // that's the file a build has to rebuild.
+                if let Some(target) = path.strip_suffix(PATCH_SUFFIX)
+                    && digests.contains_key(target)
+                {
                     return Ok((target.to_string(), Some(ChangeKind::Patched)));
                 }
-                let kind = change(&self.changes.join(&path), &path, digests)?;
-                Ok((path, kind))
+
+                let Some(want) = digests.get(&path) else {
+                    return Ok((path, Some(ChangeKind::Added)));
+                };
+
+                let replaced = digest_file(&self.changes.join(&path))? != *want;
+                Ok((path, replaced.then_some(ChangeKind::Replaced)))
             })
             .collect::<Result<Vec<_>>>()?;
-        // A patch sorts by the file it patches, which drops its suffix.
+        // A patch sorts by the file it patches, which drops its suffix. So a
+        // patch and a whole file at the same path end up next to each other.
         compared.sort_by(|(a, _), (b, _)| a.cmp(b));
+        if let Some([(path, _), _]) = compared.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            return Err(Error::PatchConflict(path.clone()));
+        }
 
         let mut comparison = Comparison::default();
         for (path, kind) in compared {
@@ -229,15 +238,6 @@ impl Overlay {
         }
         Ok(comparison)
     }
-}
-
-/// What the file at `file` is next to what the unpack wrote at `path`, or
-/// `None` if it is the same bytes.
-fn change(file: &Path, path: &str, digests: &Digests) -> Result<Option<ChangeKind>> {
-    let Some(want) = digests.get(path) else {
-        return Ok(Some(ChangeKind::Added));
-    };
-    Ok((digest_file(file)? != *want).then_some(ChangeKind::Replaced))
 }
 
 #[cfg(test)]
