@@ -1,4 +1,4 @@
-//! Building a project's edits into what a target asked for.
+//! Building a project's changes into what a target asked for.
 //!
 //! The caller lists every project file that differs from vanilla, and hands
 //! over a way to read any file, edited copy first. An edited file sits at the
@@ -60,7 +60,7 @@ impl Source<'_> {
 pub struct Job<'a, E> {
     pub files: &'a dyn Files<E>,
     /// Every project file that differs from vanilla, sorted.
-    pub edits: &'a [String],
+    pub changes: &'a [String],
     /// The preamble values a build cannot derive.
     pub metadata: &'a Metadata,
     /// The disc files that arrived compressed, so a rebuild puts the same
@@ -83,21 +83,21 @@ pub struct Built {
     pub rebuilt: Vec<String>,
 }
 
-/// A job, with the disc files its edits touch worked out.
+/// A job, with the disc files its changes touch worked out.
 struct Context<'a, E> {
     job: &'a Job<'a, E>,
     tree: Tree<'a, E>,
-    /// The disc files the edits touched, each to be rebuilt.
-    changed: BTreeSet<String>,
+    /// The disc files the changes touch, each to be rebuilt.
+    rebuilt: BTreeSet<String>,
 }
 
 pub fn run<E>(target: Target, job: &Job<'_, E>, out: &Path) -> Result<Built, E>
 where
     E: From<Error> + Send,
 {
-    let tree = Tree::new(job.files, job.edits);
-    let changed = tree.changed();
-    let context = Context { job, tree, changed };
+    let tree = Tree::new(job.files, job.changes);
+    let rebuilt = tree.rebuilt();
+    let context = Context { job, tree, rebuilt };
 
     let path = match target {
         Target::Patch => targets::patch::write(&context, out)?,
@@ -107,11 +107,11 @@ where
 
     Ok(Built {
         path,
-        rebuilt: context.changed.into_iter().collect(),
+        rebuilt: context.rebuilt.into_iter().collect(),
     })
 }
 
-/// Assembles every disc file the edits changed, writing each into `into` at
+/// Assembles every disc file the changes touch, writing each into `into` at
 /// its own project path.
 ///
 /// One disc file has nothing to do with the next, so they go in parallel, the
@@ -123,9 +123,9 @@ where
     let job = context.job;
     let rebuilding = job
         .progress
-        .begin(Step::Rebuild, context.changed.len() as u64);
+        .begin(Step::Rebuild, context.rebuilt.len() as u64);
     context
-        .changed
+        .rebuilt
         .par_iter()
         .map(|path| {
             let compression = job.compressed.get(path).copied();

@@ -19,7 +19,9 @@ pub enum Error {
     Bmg(#[from] SessionError),
 }
 
-/// What the project holds for a file.
+/// What the project holds for a file. The same two shapes `tpmt-project`
+/// reads out of `mod/changes/`, borrowed, so neither crate depends on the
+/// other.
 #[derive(Debug, Clone, Copy)]
 pub enum Source<'a> {
     /// The modder's own file, with no vanilla copy.
@@ -31,7 +33,8 @@ pub enum Source<'a> {
     },
 }
 
-/// What the project should store for a file after a save.
+/// What the project should store for a file after a save, one variant per
+/// way `tpmt-project` writes to `mod/changes/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Saved {
     Whole(Vec<u8>),

@@ -35,7 +35,7 @@ where
     let disc = open(&job.source)?;
     let staged = out.join(STAGING);
     rebuild(context, &staged)?;
-    Ok(lay_out(job, &disc, &staged, &context.changed, out)?)
+    Ok(lay_out(job, &disc, &staged, &context.rebuilt, out)?)
 }
 
 /// Writes the image around the rebuilt files under `staged`, then clears

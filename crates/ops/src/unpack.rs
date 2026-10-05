@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use tpmt_project::Project;
+use tpmt_project::{Project, Record};
 use tpmt_report::{Progress, Step};
 
 use crate::Result;
@@ -25,22 +25,21 @@ use crate::Result;
 /// - [`tpmt_packing::Error`] if the ISO can't be read, or a file on it isn't
 ///   what its bytes claim
 /// - [`tpmt_project::Error::Io`] on any write
-pub fn unpack(iso: &Path, root: &Path, progress: &Progress) -> Result<Project> {
-    let project = Project::claim(root)?;
-    let vanilla = project.new_vanilla()?;
-
-    let unpacked = tpmt_packing::unpack(iso, progress, |file| -> Result<_> {
-        Ok(vanilla.write(file.path, file.kind, file.bytes)?)
+pub fn unpack(disc: &Path, root: &Path, progress: &Progress) -> Result<Project> {
+    let unpacking = Project::unpack(root)?;
+    let unpacked = tpmt_packing::unpack(disc, progress, |file| -> Result<_> {
+        Ok(unpacking.write(file.path, file.kind, file.bytes)?)
     })?;
-    for dir in &unpacked.directories {
-        vanilla.create_dir(dir)?;
-    }
 
     progress.begin(Step::Save, 0);
-    vanilla.finish(&unpacked.metadata, &unpacked.compressed)?;
     let boot = &unpacked.metadata.boot;
-    project.write_store(iso, &boot.id, boot.revision, unpacked.stored)?;
-    project.scaffold_mod()?;
-
-    Ok(Project::discover(root)?)
+    let record = Record {
+        disc,
+        id: &boot.id,
+        revision: boot.revision,
+        disc_metadata: &unpacked.metadata,
+        compressed: &unpacked.compressed,
+        directories: &unpacked.directories,
+    };
+    Ok(unpacking.finish(&record, unpacked.stored)?)
 }

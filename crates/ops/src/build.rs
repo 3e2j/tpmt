@@ -12,7 +12,7 @@ use tpmt_packing::{Files, Job, Metadata, Source, Target};
 use tpmt_project::{Comparison, Digests, Overlay, Project, Store, Stored, Vanilla};
 use tpmt_report::Progress;
 
-use crate::{Error, Result};
+use crate::{Error, Result, version};
 
 /// What a build produced.
 #[derive(Debug)]
@@ -58,7 +58,7 @@ pub fn build(
     let Vanilla { disc, compressed } = project.read_vanilla::<Metadata>()?;
     let overlay = project.overlay();
     let Comparison { changes, identical } = overlay.compare(&digests)?;
-    let edits: Vec<String> = changes.into_iter().map(|change| change.path).collect();
+    let changes: Vec<String> = changes.into_iter().map(|change| change.path).collect();
 
     let name = project
         .root()
@@ -69,9 +69,9 @@ pub fn build(
         files: &Packed {
             overlay: &overlay,
             digests: &digests,
-            version: Version::from_disc(&disc.boot.id, disc.boot.revision),
+            version: version(&disc),
         },
-        edits: &edits,
+        changes: &changes,
         metadata: &disc,
         compressed: &compressed,
         source: Source {
@@ -106,10 +106,18 @@ struct Packed<'a> {
 impl Files<Error> for Packed<'_> {
     fn read(&self, path: &str) -> Result<Box<[u8]>> {
         match self.overlay.read_checked(path, self.digests)? {
-            Stored::Added(data) | Stored::Replaced(data) | Stored::Vanilla(data) => Ok(data),
-            Stored::Patched { vanilla, edits } => {
+            Stored::Whole(data)
+            | Stored::Vanilla {
+                vanilla: data,
+                patch: None,
+            } => Ok(data),
+
+            Stored::Vanilla {
+                vanilla,
+                patch: Some(patch_file),
+            } => {
                 let version = self.version.ok_or(Error::UnknownVersion)?;
-                tpmt_editing::apply(&vanilla, &edits, version)
+                tpmt_editing::apply(&vanilla, &patch_file, version)
                     .map(Vec::into_boxed_slice)
                     .map_err(Error::file(path))
             }
@@ -172,8 +180,7 @@ mod tests {
     /// ```
     fn unpacked() -> TempDir {
         let scratch = tempfile::tempdir().unwrap();
-        let project = Project::claim(scratch.path()).unwrap();
-        let vanilla = project.new_vanilla().unwrap();
+        let unpacking = Project::unpack(scratch.path()).unwrap();
 
         let sidecar = Sidecar::new(
             "outer".to_string(),
@@ -205,23 +212,21 @@ mod tests {
 
         let written = files
             .iter()
-            .map(|(path, data)| vanilla.write(path, None, data).unwrap())
+            .map(|(path, data)| unpacking.write(path, None, data).unwrap())
             .collect();
-        vanilla
-            .finish(
-                &fixture::metadata(),
-                &BTreeMap::from([("files/outer.arc".to_string(), Compression::Yaz0)]),
-            )
-            .unwrap();
-
-        fixture::finish(&project, scratch.path(), written);
-
+        fixture::finish(
+            unpacking,
+            &scratch,
+            written,
+            &BTreeMap::from([("files/outer.arc".to_string(), Compression::Yaz0)]),
+        );
         scratch
     }
 
     fn change(project: &Path, path: &str, data: &[u8]) {
         Project::discover(project)
             .unwrap()
+            .overlay()
             .write(path, data)
             .unwrap();
     }

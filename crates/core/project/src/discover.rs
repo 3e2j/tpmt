@@ -36,7 +36,7 @@ pub fn discover(start: &Path) -> Result<PathBuf> {
 }
 
 /// Refuses a directory that is not a project but already holds files. See
-/// [`Project::claim`](crate::Project::claim).
+/// [`Project::unpack`](crate::Project::unpack).
 pub fn refuse_foreign(project: &Path) -> Result<()> {
     if is_project(project) {
         return Ok(());

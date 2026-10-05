@@ -82,7 +82,7 @@ pub use layout::store::{Digests, Payloads, Source, Store};
 pub use layout::vanilla::Vanilla;
 pub use overlay::{Change, ChangeKind, Comparison, Overlay, PATCH_SUFFIX, Stored, patch_path};
 pub use tpmt_binary::{FileKind, Payload};
-pub use unpack::{NewVanilla, Written};
+pub use unpack::{Record, Unpacking, Written};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -152,9 +152,11 @@ impl Error {
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// A project directory. One from [`discover`](Self::discover) is a finished
-/// unpack, by its canonical root. One from [`claim`](Self::claim) is one
-/// still being written.
+/// A finished unpack, by its canonical root. Found with
+/// [`discover`](Self::discover), or made by [`unpack`](Self::unpack).
+///
+/// Game files, `vanilla/` and `mod/changes/` alike, are read and written
+/// through its [`overlay`](Self::overlay).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Project {
     root: PathBuf,
@@ -243,52 +245,5 @@ impl Project {
     /// - [`Error::Parse`] if either is not what an unpack wrote
     pub fn read_store(&self) -> Result<Store> {
         store::read(&self.store())
-    }
-
-    /// What the project holds for one file: whole from `mod/changes/`, a
-    /// patch there with its `vanilla/` copy, or the `vanilla/` copy alone. `path`
-    /// is a project path, as [`payloads`](Self::payloads) lists.
-    ///
-    /// A `vanilla/` copy isn't checked against its digest here, since
-    /// that means reading every digest the unpack recorded. A build refuses
-    /// one that drifted.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
-    /// - [`Error::MissingFile`] if neither directory holds a file at `path`
-    /// - [`Error::PatchConflict`] if `changes/` holds it whole and as a patch
-    /// - [`Error::Io`] if a file can't be read
-    pub fn read(&self, path: &str) -> Result<Stored> {
-        self.overlay().read(path)
-    }
-
-    /// Writes `data` to `path` under `mod/changes/` whole, creating any
-    /// missing directories. `vanilla/` is never written.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::UnusablePath`] if `path` is empty, absolute, or climbs out
-    /// - [`Error::PatchConflict`] if `changes/` holds a patch for `path`
-    /// - [`Error::Io`] on the write
-    pub fn write(&self, path: &str, data: &[u8]) -> Result<()> {
-        self.overlay().write(path, data)
-    }
-
-    /// Hashes `mod/changes/` against the vanilla `digests` file stored from an
-    /// unpack, and reports whatever doesn't match, sorted by path.
-    ///
-    /// A file in `changes/` identical to vanilla is not a change, and a patch
-    /// is a change to the file it patches. `vanilla/` is not checked; a build
-    /// refuses drift there when it reads the file.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::Io`] or [`Error::Parse`] if `.tpmt/` cannot be read back
-    /// - [`Error::Io`] if a project file cannot be walked or read
-    /// - [`Error::UnusablePath`] if a name in the project is not UTF-8
-    pub fn diff(&self) -> Result<Vec<Change>> {
-        let store::Store { digests, .. } = self.read_store()?;
-        Ok(self.overlay().compare(&digests)?.changes)
     }
 }

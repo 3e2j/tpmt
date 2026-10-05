@@ -47,20 +47,20 @@ pub enum ChangeKind {
 }
 
 /// The bytes the overlay holds for one path.
+///
+/// Whether a whole file replaces a `vanilla/` copy or adds one is left to
+/// [`Overlay::compare`], since nothing that reads a file needs to know.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Stored {
-    /// Only `changes/` has the file.
-    Added(Box<[u8]>),
-    /// `changes/` holds a whole file in place of the `vanilla/` copy.
+    /// A whole file in `changes/`, in place of the `vanilla/` copy or with
+    /// none.
     // Holds no vanilla copy until the app wants to show one beside a whole replacement.
-    Replaced(Box<[u8]>),
-    /// `changes/` holds a patch against the `vanilla/` copy.
-    Patched {
+    Whole(Box<[u8]>),
+    /// The `vanilla/` copy, with the patch `changes/` holds against it, if any.
+    Vanilla {
         vanilla: Box<[u8]>,
-        edits: Box<[u8]>,
+        patch: Option<Box<[u8]>>,
     },
-    /// Only `vanilla/` has the file.
-    Vanilla(Box<[u8]>),
 }
 
 /// Every file in `changes/`, split by whether it differs from vanilla. Both
@@ -99,18 +99,17 @@ impl Overlay {
         let vanilla = self.vanilla.join(at);
         if !vanilla.is_file() {
             return whole
-                .map(|file| Stored::Added(file.into()))
+                .map(|file| Stored::Whole(file.into()))
                 .ok_or_else(|| Error::MissingFile(path.to_string()));
         }
-        let edits = fs::read_if_exists(&self.changes.join(patch_path(path)))?;
-        match (whole, edits) {
+        let patch_file = fs::read_if_exists(&self.changes.join(patch_path(path)))?;
+        match (whole, patch_file) {
             (Some(_), Some(_)) => Err(Error::PatchConflict(path.to_string())),
-            (Some(file), None) => Ok(Stored::Replaced(file.into())),
-            (None, Some(edits)) => Ok(Stored::Patched {
+            (Some(file), None) => Ok(Stored::Whole(file.into())),
+            (None, patch_file) => Ok(Stored::Vanilla {
                 vanilla: fs::read(&vanilla)?.into(),
-                edits: edits.into(),
+                patch: patch_file.map(Into::into),
             }),
-            (None, None) => Ok(Stored::Vanilla(fs::read(&vanilla)?.into())),
         }
     }
 
@@ -128,11 +127,9 @@ impl Overlay {
     /// - as [`read`](Self::read)
     pub fn read_checked(&self, path: &str, digests: &Digests) -> Result<Stored> {
         let stored = self.read(path)?;
-        let vanilla = match &stored {
-            Stored::Added(_) | Stored::Replaced(_) => return Ok(stored),
-            Stored::Patched { vanilla, .. } | Stored::Vanilla(vanilla) => vanilla,
-        };
-        if digests.get(path) != Some(&digest(vanilla)) {
+        if let Stored::Vanilla { vanilla, .. } = &stored
+            && digests.get(path) != Some(&digest(vanilla))
+        {
             return Err(Error::VanillaModified(path.to_string()));
         }
         Ok(stored)
@@ -153,7 +150,7 @@ impl Overlay {
         fs::write(&self.changes.join(at), data)
     }
 
-    /// Writes `edits` to `changes/` as the patch for the `vanilla/` copy of
+    /// Writes `data` to `changes/` as the patch for the `vanilla/` copy of
     /// `path`.
     ///
     /// # Errors
@@ -162,7 +159,7 @@ impl Overlay {
     /// - [`Error::MissingFile`] if `vanilla/` holds no file at `path`
     /// - [`Error::PatchConflict`] if `changes/` holds `path` whole
     /// - [`Error::Io`] on the write
-    pub fn write_patch(&self, path: &str, edits: &[u8]) -> Result<()> {
+    pub fn write_patch(&self, path: &str, data: &[u8]) -> Result<()> {
         let at = checked(path)?;
         if !self.vanilla.join(at).is_file() {
             return Err(Error::MissingFile(path.to_string()));
@@ -170,7 +167,7 @@ impl Overlay {
         if self.changes.join(at).is_file() {
             return Err(Error::PatchConflict(path.to_string()));
         }
-        fs::write(&self.changes.join(patch_path(path)), edits)
+        fs::write(&self.changes.join(patch_path(path)), data)
     }
 
     /// Removes the patch for `path` from `changes/`, if there is one.
@@ -258,6 +255,14 @@ mod tests {
         )
     }
 
+    /// What the overlay reads for [`PATH`], under `patch`.
+    fn vanilla(patch: Option<&[u8]>) -> Stored {
+        Stored::Vanilla {
+            vanilla: b"vanilla".as_slice().into(),
+            patch: patch.map(Into::into),
+        }
+    }
+
     fn project() -> TempDir {
         let scratch = tempfile::tempdir().unwrap();
         fs::write(&overlay(&scratch).vanilla.join(PATH), b"vanilla").unwrap();
@@ -268,27 +273,24 @@ mod tests {
     fn a_read_takes_changes_over_vanilla() {
         let scratch = project();
         let overlay = overlay(&scratch);
-        assert_eq!(
-            overlay.read(PATH).unwrap(),
-            Stored::Vanilla(b"vanilla".as_slice().into())
-        );
+        assert_eq!(overlay.read(PATH).unwrap(), vanilla(None));
 
         overlay.write(PATH, b"edited").unwrap();
         assert_eq!(
             overlay.read(PATH).unwrap(),
-            Stored::Replaced(b"edited".as_slice().into())
+            Stored::Whole(b"edited".as_slice().into())
         );
         assert_eq!(fs::read(&overlay.vanilla.join(PATH)).unwrap(), b"vanilla");
     }
 
     #[test]
-    fn a_file_only_in_changes_is_added() {
+    fn a_file_only_in_changes_reads_whole() {
         let scratch = project();
         let overlay = overlay(&scratch);
         overlay.write("files/new.bmg", b"new").unwrap();
         assert_eq!(
             overlay.read("files/new.bmg").unwrap(),
-            Stored::Added(b"new".as_slice().into())
+            Stored::Whole(b"new".as_slice().into())
         );
     }
 
@@ -332,27 +334,18 @@ mod tests {
     fn a_read_hands_back_a_patch_with_its_vanilla_copy() {
         let scratch = project();
         let overlay = overlay(&scratch);
-        overlay.write_patch(PATH, b"edits").unwrap();
-        assert_eq!(
-            overlay.read(PATH).unwrap(),
-            Stored::Patched {
-                vanilla: b"vanilla".as_slice().into(),
-                edits: b"edits".as_slice().into(),
-            }
-        );
+        overlay.write_patch(PATH, b"patch").unwrap();
+        assert_eq!(overlay.read(PATH).unwrap(), vanilla(Some(b"patch")));
 
         overlay.remove_patch(PATH).unwrap();
-        assert_eq!(
-            overlay.read(PATH).unwrap(),
-            Stored::Vanilla(b"vanilla".as_slice().into())
-        );
+        assert_eq!(overlay.read(PATH).unwrap(), vanilla(None));
     }
 
     #[test]
     fn a_file_is_never_stored_whole_and_as_a_patch() {
         let scratch = project();
         let overlay = overlay(&scratch);
-        overlay.write_patch(PATH, b"edits").unwrap();
+        overlay.write_patch(PATH, b"patch").unwrap();
         assert!(matches!(
             overlay.write(PATH, b"whole"),
             Err(Error::PatchConflict(_))
@@ -361,7 +354,7 @@ mod tests {
         overlay.remove_patch(PATH).unwrap();
         overlay.write(PATH, b"whole").unwrap();
         assert!(matches!(
-            overlay.write_patch(PATH, b"edits"),
+            overlay.write_patch(PATH, b"patch"),
             Err(Error::PatchConflict(_))
         ));
     }
@@ -371,7 +364,7 @@ mod tests {
     fn a_patch_without_a_vanilla_copy_is_refused() {
         let scratch = project();
         assert!(matches!(
-            overlay(&scratch).write_patch("files/new.bmg", b"edits"),
+            overlay(&scratch).write_patch("files/new.bmg", b"patch"),
             Err(Error::MissingFile(_))
         ));
     }

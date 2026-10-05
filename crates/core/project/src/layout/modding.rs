@@ -40,7 +40,7 @@ struct ModMetadata<'a> {
 
 /// Writes the skeleton at `mod_dir` with a starter `mod.json` naming `id`,
 /// unless something is already there. See
-/// [`Project::scaffold_mod`](crate::Project::scaffold_mod).
+/// [`Unpacking::finish`](crate::Unpacking::finish).
 pub fn scaffold(mod_dir: &Path, id: &str) -> Result<()> {
     if mod_dir.is_dir() {
         return Ok(());

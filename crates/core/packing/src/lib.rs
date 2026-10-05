@@ -113,7 +113,7 @@ where
     unpack::run(iso, progress, store)
 }
 
-/// Rebuilds every disc file [`Job::edits`] touches and hands them to
+/// Rebuilds every disc file [`Job::changes`] touches and hands them to
 /// `target`, which writes what it makes into `out`: a tree of the changed
 /// disc files, a whole disc image, or a mod bundle.
 ///

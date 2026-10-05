@@ -4,6 +4,7 @@
 //! moves what the project stores in and out of a [`Session`].
 
 use tpmt_editing::{Saved, Session, Source};
+use tpmt_packing::Metadata;
 use tpmt_project::{Project, Stored};
 
 use crate::{Error, Result, version};
@@ -46,17 +47,13 @@ impl Open {
 /// - [`Error::File`] if the file has no editor, or it or its patch doesn't
 ///   read
 pub fn open(project: &Project, path: &str) -> Result<Open> {
-    let version = version(project)?.ok_or(Error::UnknownVersion)?;
-    let stored = project.read(path)?;
+    let version = version(&project.read_disc::<Metadata>()?).ok_or(Error::UnknownVersion)?;
+    let stored = project.overlay().read(path)?;
     let source = match &stored {
-        Stored::Added(bytes) | Stored::Replaced(bytes) => Source::Whole(bytes),
-        Stored::Vanilla(vanilla) => Source::Vanilla {
+        Stored::Whole(bytes) => Source::Whole(bytes),
+        Stored::Vanilla { vanilla, patch } => Source::Vanilla {
             vanilla,
-            patch: None,
-        },
-        Stored::Patched { vanilla, edits } => Source::Vanilla {
-            vanilla,
-            patch: Some(edits),
+            patch: patch.as_deref(),
         },
     };
     let session = Session::open(source, version).map_err(Error::file(path))?;
@@ -77,7 +74,7 @@ pub fn save(project: &Project, open: &mut Open) -> Result<()> {
     let path = open.path.as_str();
     let overlay = project.overlay();
     match open.session.save().map_err(Error::file(path))? {
-        Saved::Whole(bytes) => project.write(path, &bytes)?,
+        Saved::Whole(bytes) => overlay.write(path, &bytes)?,
         Saved::Patch(text) => overlay.write_patch(path, text.as_bytes())?,
         Saved::Vanilla => overlay.remove_patch(path)?,
     }
@@ -109,8 +106,8 @@ mod tests {
 
     /// The file `mod/changes/` holds whole at `path`, if any.
     fn changes(project: &Project, path: &str) -> Option<Vec<u8>> {
-        match project.read(path) {
-            Ok(Stored::Added(data) | Stored::Replaced(data)) => Some(data.into_vec()),
+        match project.overlay().read(path) {
+            Ok(Stored::Whole(data)) => Some(data.into_vec()),
             _ => None,
         }
     }
@@ -148,7 +145,10 @@ mod tests {
     #[test]
     fn a_file_the_modder_made_saves_whole() {
         let (_scratch, project) = fixture::project(&[]);
-        project.write(PATH, &message_file(b"Hello")).unwrap();
+        project
+            .overlay()
+            .write(PATH, &message_file(b"Hello"))
+            .unwrap();
         let mut file = open(&project, PATH).unwrap();
         bmg(&mut file).apply(set_text(b"Goodbye")).unwrap();
         save(&project, &mut file).unwrap();

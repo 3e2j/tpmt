@@ -9,7 +9,7 @@
 //! `image` and `patch` assign the next free id, `dusk` gets one from
 //! Dusklight at load.
 //!
-//! An edit a target can't express is reported as unsupported for it, never
+//! A change a target can't express is reported as unsupported for it, never
 //! worked around.
 
 use std::fmt;

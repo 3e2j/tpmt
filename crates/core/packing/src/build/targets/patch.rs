@@ -1,4 +1,4 @@
-//! Every disc file the edits changed, at the path the disc holds it under,
+//! Every disc file the changes touch, at the path the disc holds it under,
 //! so the output drops over an extracted game.
 
 use std::path::{Path, PathBuf};
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 use crate::build::{Context, rebuild};
 
-/// Writes the changed disc files into `out`, which is itself the result, so
+/// Writes the rebuilt disc files into `out`, which is itself the result, so
 /// the path returned is empty.
 ///
 /// # Errors

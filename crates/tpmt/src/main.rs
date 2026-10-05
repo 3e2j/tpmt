@@ -86,7 +86,7 @@ fn run(command: Command) -> Result<(), Error> {
                     .ok_or_else(|| Error::NamelessIso(iso.clone()))?,
             };
 
-            if project.exists() && tpmt_ops::is_project(&project) {
+            if tpmt_ops::is_project(&project) {
                 let overwrite = yes
                     || ask(&format!(
                         "`{}` is already a project. Overwrite it? [y/N] ",
