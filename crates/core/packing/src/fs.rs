@@ -2,7 +2,7 @@
 //! naming the path it hit.
 
 use std::fs::{self, File};
-use std::io::{BufReader, ErrorKind, Read};
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 
 use crate::{Error, Result};
@@ -22,13 +22,11 @@ pub fn write(path: &Path, data: &[u8]) -> Result<()> {
     fs::write(path, data).map_err(io(path))
 }
 
-/// Reads a whole file. The workspace disallows `std::fs::read`, since an ISO
-/// won't fit in memory, and nothing read here is one.
+/// Reads a whole file.
 pub fn read(path: &Path) -> Result<Vec<u8>> {
-    let file = File::open(path).map_err(io(path))?;
     let mut data = Vec::new();
-    BufReader::new(file)
-        .read_to_end(&mut data)
+    File::open(path)
+        .and_then(|mut file| file.read_to_end(&mut data))
         .map_err(io(path))?;
     Ok(data)
 }

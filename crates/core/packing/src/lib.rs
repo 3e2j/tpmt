@@ -73,9 +73,9 @@ pub enum Error {
 
     /// The source disc now holds another version. Its unchanged files would
     /// not match the ones the unpack produced.
-    #[error("`{}` holds {found}, but this project was unpacked from {unpacked}", .iso.display())]
+    #[error("`{}` holds {found}, but this project was unpacked from {unpacked}", .game_image.display())]
     SourceChanged {
-        iso: PathBuf,
+        game_image: PathBuf,
         unpacked: String,
         found: String,
     },
@@ -96,11 +96,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 ///
 /// # Errors
 ///
-/// - [`Error::Disc`] if the ISO can't be opened or read
+/// - [`Error::Disc`] if the game image can't be opened or read
 /// - [`Error::Decode`] if a file on it isn't what its bytes claim
 /// - whatever `store` returns
 pub fn unpack<T, E>(
-    iso: &Path,
+    game_image: &Path,
     progress: &Progress,
     store: impl Fn(File<'_>) -> Result<T, E> + Sync,
 ) -> Result<Unpacked<T>, E>
@@ -108,7 +108,7 @@ where
     T: Send,
     E: From<Error> + Send,
 {
-    unpack::run(iso, progress, store)
+    unpack::run(game_image, progress, store)
 }
 
 /// Rebuilds every disc file [`Job::changes`] touches and hands them to

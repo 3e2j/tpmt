@@ -76,11 +76,11 @@ pub fn finish(
 ) -> Project {
     // Nothing in these tests opens the disc; the store only wants a path it
     // can canonicalize.
-    let iso = scratch.path().join("source.iso");
-    std::fs::write(&iso, b"").unwrap();
+    let game_image = scratch.path().join("source.iso");
+    std::fs::write(&game_image, b"").unwrap();
     let disc_metadata = metadata();
     let record = Record {
-        disc: &iso,
+        game_image: &game_image,
         id: &disc_metadata.boot.id,
         revision: disc_metadata.boot.revision,
         disc_metadata: &disc_metadata,

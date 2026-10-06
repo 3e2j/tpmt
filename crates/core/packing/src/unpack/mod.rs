@@ -43,7 +43,7 @@ pub struct Unpacked<T> {
 /// Reads the disc once, in on-disc order, so a hard drive never seeks back.
 /// Nothing relies on the page cache holding the disc for a second pass.
 pub fn run<T, E>(
-    iso: &Path,
+    game_image: &Path,
     progress: &Progress,
     store: impl Fn(File<'_>) -> Result<T, E> + Sync,
 ) -> Result<Unpacked<T>, E>
@@ -51,7 +51,7 @@ where
     T: Send,
     E: From<Error> + Send,
 {
-    let disc = Disc::open(iso).map_err(Error::from)?;
+    let disc = Disc::open(game_image).map_err(Error::from)?;
     let entries = disc.entries().map_err(Error::from)?;
 
     let mut directories = Vec::new();

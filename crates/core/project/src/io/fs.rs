@@ -92,7 +92,7 @@ pub fn remove_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
-/// Reads a whole file. The workspace disallows `std::fs::read` because an ISO
+/// Reads a whole file. The workspace disallows `std::fs::read` because a game image
 /// will not fit in memory. Everything this is used for is a project file,
 /// where the largest thing on the disc is a 137 MB video.
 ///

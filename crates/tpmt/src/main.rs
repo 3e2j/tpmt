@@ -30,7 +30,7 @@ enum Command {
     /// Unpack a disc into a new project
     New {
         /// Disc image to unpack
-        iso: PathBuf,
+        game_image: PathBuf,
         /// Directory to create, defaults to the image's name
         dir: Option<PathBuf>,
         /// Don't ask before overwriting an existing project
@@ -94,15 +94,19 @@ enum Outcome {
 /// Matches the command given and runs it on the project.
 fn run(command: Command) -> Result<Outcome, Error> {
     match command {
-        Command::New { iso, dir, yes } => {
+        Command::New {
+            game_image,
+            dir,
+            yes,
+        } => {
             // Defaulting to the image's stem means `tpmt new game.iso` lands in
             // ./game rather than scattering a project over the current folder.
             let project = match dir {
                 Some(dir) => dir,
-                None => iso
+                None => game_image
                     .file_stem()
                     .map(PathBuf::from)
-                    .ok_or_else(|| Error::NamelessIso(iso.clone()))?,
+                    .ok_or_else(|| Error::NamelessGameImage(game_image.clone()))?,
             };
 
             if tpmt_ops::is_project(&project) {
@@ -116,8 +120,8 @@ fn run(command: Command) -> Result<Outcome, Error> {
                 }
             }
 
-            progress::show(|progress| tpmt_ops::unpack(&iso, &project, progress))?;
-            print::unpacked(&iso, &project);
+            progress::show(|progress| tpmt_ops::unpack(&game_image, &project, progress))?;
+            print::unpacked(&game_image, &project);
         }
         Command::Status { dir } => {
             let changes = tpmt_ops::status(&project(dir.as_ref())?)?;
@@ -161,7 +165,7 @@ enum Error {
 
     // PathBuf has no Display, and lossy is the right call in an error message.
     #[error("`{}` has no filename to borrow, so name the project directory yourself", .0.display())]
-    NamelessIso(PathBuf),
+    NamelessGameImage(PathBuf),
 
     #[error("could not read the answer to a prompt: {0}")]
     Io(#[from] io::Error),

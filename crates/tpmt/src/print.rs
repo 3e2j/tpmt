@@ -7,8 +7,12 @@ use tpmt_ops::report::{Counts, Report, Severity};
 use tpmt_ops::{Built, Change, ChangeKind};
 
 /// Prints where an unpack went.
-pub fn unpacked(iso: &Path, project: &Path) {
-    println!("unpacked {} into {}", iso.display(), project.display());
+pub fn unpacked(game_image: &Path, project: &Path) {
+    println!(
+        "unpacked {} into {}",
+        game_image.display(),
+        project.display()
+    );
 }
 
 /// Prints each report to standard error with its severity, colored for

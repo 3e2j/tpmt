@@ -10,9 +10,9 @@
 //! A [`Check::Disc`] sees the whole disc at once, as a project unpacked from
 //! it, for what spans files.
 //!
-//! Each check gets one trial per `.iso` and `.ciso`, because each region
-//! ships different files. With no discs, one ignored trial per check stands
-//! in and a note says why, so a run without discs never looks like a pass.
+//! Each check gets one trial per game image, because each region ships
+//! different files. With no discs, one ignored trial per check stands in
+//! and a note says why, so a run without discs never looks like a pass.
 //!
 //! Checks read an unpack of each disc, cached in the OS temp directory and
 //! kept between runs for faster test results. A check on a kind that isn't a
@@ -35,6 +35,9 @@ use tpmt_tables::Version;
 
 /// Reports past this many are counted but not printed.
 const REPORT_LIMIT: usize = 50;
+
+/// Supported file extensions of the game images read from `discs/`.
+const GAME_IMAGE_EXTENSIONS: [&str; 2] = ["iso", "ciso"];
 
 /// One layer of a disc file, as the disc holds it.
 pub struct File<'a> {
@@ -105,7 +108,7 @@ pub fn run(checks: Checks) -> ExitCode {
         Ok(discs) if discs.is_empty() => {
             if !args.list {
                 eprintln!(
-                    "note: no .iso or .ciso in `{}`, so the tests against retail data are skipped",
+                    "note: no game images in `{}`, so the tests against retail data are skipped",
                     discs_dir().display()
                 );
             }
@@ -116,7 +119,11 @@ pub fn run(checks: Checks) -> ExitCode {
         }
         Ok(discs) => discs
             .iter()
-            .flat_map(|iso| checks.iter().map(|&(name, check)| trial(name, check, iso)))
+            .flat_map(|game_image| {
+                checks
+                    .iter()
+                    .map(|&(name, check)| trial(name, check, game_image))
+            })
             .collect(),
         Err(error) => vec![Trial::test("discs", move || Err(error.into()))],
     };
@@ -127,7 +134,7 @@ fn discs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../discs")
 }
 
-/// Every disc image in `discs/`, sorted. Empty if the directory is missing.
+/// Every game image in `discs/`, sorted. Empty if the directory is missing.
 fn discs() -> io::Result<Vec<PathBuf>> {
     let entries = match fs::read_dir(discs_dir()) {
         Ok(entries) => entries,
@@ -138,8 +145,11 @@ fn discs() -> io::Result<Vec<PathBuf>> {
         .map(|entry| Ok(entry?.path()))
         .collect::<io::Result<Vec<_>>>()?;
     discs.retain(|path| {
-        path.extension()
-            .is_some_and(|extension| extension == "iso" || extension == "ciso")
+        path.extension().is_some_and(|extension| {
+            GAME_IMAGE_EXTENSIONS
+                .iter()
+                .any(|&game_image| extension == game_image)
+        })
     });
     discs.sort();
     Ok(discs)
@@ -147,30 +157,34 @@ fn discs() -> io::Result<Vec<PathBuf>> {
 
 /// One check on one disc. Named `<check>::<image>` so a filter can pick out a
 /// check, a region, or both.
-fn trial(name: &str, check: Check, iso: &Path) -> Trial {
-    let name = format!("{name}::{}", file_name(iso));
-    let iso = iso.to_path_buf();
+fn trial(name: &str, check: Check, game_image: &Path) -> Trial {
+    let name = format!("{name}::{}", file_name(game_image));
+    let game_image = game_image.to_path_buf();
     Trial::test(name, move || match check {
         Check::File(kind, check) => match kind.payload() {
-            Some(payload) => report(stored(&iso, payload, check)?),
-            None => report(walked(&iso, kind, check)?),
+            Some(payload) => report(stored(&game_image, payload, check)?),
+            None => report(walked(&game_image, kind, check)?),
         },
-        Check::Disc(check) => whole(&iso, check),
+        Check::Disc(check) => whole(&game_image, check),
     })
 }
 
-/// `check` over the unpack of `iso` as a whole.
-fn whole(iso: &Path, check: fn(Version, &Project) -> Vec<String>) -> Result<(), Failed> {
-    let project = unpacked(iso)?;
+/// `check` over the unpack of `game_image` as a whole.
+fn whole(game_image: &Path, check: fn(Version, &Project) -> Vec<String>) -> Result<(), Failed> {
+    let project = unpacked(game_image)?;
     let version = version(&project.read_disc::<Metadata>()?.boot)?;
     let mut problems = check(version, &project);
     problems.sort();
     failed(&problems, "on the disc").map_or(Ok(()), Err)
 }
 
-/// `check` over every file holding `payload` in the unpack of `iso`.
-fn stored(iso: &Path, payload: Payload, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
-    let project = unpacked(iso)?;
+/// `check` over every file holding `payload` in the unpack of `game_image`.
+fn stored(
+    game_image: &Path,
+    payload: Payload,
+    check: fn(&File) -> Vec<String>,
+) -> Result<Tally, Failed> {
+    let project = unpacked(game_image)?;
     let version = version(&project.read_disc::<Metadata>()?.boot)?;
     let vanilla = project.vanilla();
     let paths = project.payloads()?.remove(&payload).unwrap_or_default();
@@ -196,12 +210,16 @@ fn stored(iso: &Path, payload: Payload, check: fn(&File) -> Vec<String>) -> Resu
     Ok(tally)
 }
 
-/// `check` over every layer of `kind` on the image `iso`, peeled here, since
+/// `check` over every layer of `kind` on the image `game_image`, peeled here, since
 /// the unpack never stores packaging.
 ///
 /// Only one disc file's layers are held at a time.
-fn walked(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
-    let disc = Disc::open(iso)?;
+fn walked(
+    game_image: &Path,
+    kind: FileKind,
+    check: fn(&File) -> Vec<String>,
+) -> Result<Tally, Failed> {
+    let disc = Disc::open(game_image)?;
     let version = version(&disc.metadata().boot)?;
     let entries = disc.entries()?;
     let tally = entries
@@ -356,7 +374,7 @@ fn failed(problems: &[String], scope: &str) -> Option<Failed> {
     Some(report.into())
 }
 
-/// The project `iso` unpacks to, unpacking it first unless the last unpack
+/// The project `game_image` unpacks to, unpacking it first unless the last unpack
 /// was of the same image.
 ///
 /// A stamp file beside the project records the image it came from and every
@@ -369,10 +387,10 @@ fn failed(problems: &[String], scope: &str) -> Option<Failed> {
 /// kind, or when the OS clears the temp directory. Delete `<disc>.stamp` in
 /// `tpmt-retail-tests/` there to force it after changing what an unpack
 /// writes.
-fn unpacked(iso: &Path) -> Result<Project, Failed> {
+fn unpacked(game_image: &Path) -> Result<Project, Failed> {
     let root = std::env::temp_dir().join("tpmt-retail-tests");
     fs::create_dir_all(&root)?;
-    let name = file_name(iso);
+    let name = file_name(game_image);
     let project = root.join(&name);
     let mut file = OpenOptions::new()
         .read(true)
@@ -382,7 +400,7 @@ fn unpacked(iso: &Path) -> Result<Project, Failed> {
         .open(root.join(format!("{name}.stamp")))?;
     file.lock()?;
 
-    let disc = fs::metadata(iso)?;
+    let disc = fs::metadata(game_image)?;
     let mut stamp = format!("{} {:?}", disc.len(), disc.modified()?);
     for kind in FileKind::ALL {
         stamp.push(' ');
@@ -395,7 +413,7 @@ fn unpacked(iso: &Path) -> Result<Project, Failed> {
     }
 
     file.set_len(0)?;
-    let project = tpmt_ops::unpack(iso, &project, &Progress::default())?;
+    let project = tpmt_ops::unpack(game_image, &project, &Progress::default())?;
     file.rewind()?;
     file.write_all(stamp.as_bytes())?;
     Ok(project)

@@ -1,4 +1,4 @@
-//! A whole playable disc.
+//! A whole playable disc (as a .iso).
 //!
 //! Needs the whole source disc, since the image is that disc with the rebuilt
 //! files swapped in.
@@ -140,19 +140,19 @@ fn items(original: &[Entry], sources: &BTreeMap<&str, Bytes>) -> Vec<Item> {
 /// Another dump of the same revision passes, since its unchanged files are
 /// the same bytes. A disc edited in place under the same id passes too.
 fn open(source: &Source<'_>) -> Result<Disc> {
-    let disc = match Disc::open(source.iso) {
+    let disc = match Disc::open(source.game_image) {
         Ok(disc) => disc,
         Err(tpmt_disc::Error::Open { source: io, .. })
             if io.kind() == std::io::ErrorKind::NotFound =>
         {
-            return Err(Error::SourceMissing(source.iso.to_path_buf()));
+            return Err(Error::SourceMissing(source.game_image.to_path_buf()));
         }
         Err(error) => return Err(error.into()),
     };
     let boot = &disc.metadata().boot;
     if !source.matches(boot) {
         return Err(Error::SourceChanged {
-            iso: source.iso.to_path_buf(),
+            game_image: source.game_image.to_path_buf(),
             unpacked: format!("{} revision {}", source.id, source.revision),
             found: format!("{} revision {}", boot.id, boot.revision),
         });

@@ -42,7 +42,7 @@ pub trait Files<E>: Sync {
 /// The disc a project was unpacked from, which an image is laid out from.
 pub struct Source<'a> {
     /// Where it was last seen.
-    pub iso: &'a Path,
+    pub game_image: &'a Path,
     /// The game id and revision it held at the unpack.
     pub id: &'a str,
     pub revision: u8,

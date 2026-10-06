@@ -8,7 +8,7 @@
 //! A project is two directories, edited in place:
 //!
 //! ```text
-//! vanilla/             read-only unpack of the ISO, decoded index for the UI to browse
+//! vanilla/             read-only unpack of the game image, decoded index for the UI to browse
 //!   disc.toml          the preamble values a build cannot derive
 //!   compression.toml   which loose files arrived wrapped, and in what
 //!   sys/               apploader.img, main.dol

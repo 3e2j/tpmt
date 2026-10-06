@@ -2,7 +2,7 @@
 //! it, one type per file:
 //!
 //! ```text
-//! source.toml      Source    where the ISO was last seen, and which game
+//! source.toml      Source    where the game image was last seen, and which game
 //! digests.xxh128   Digests   digest of every vanilla/ file
 //! payloads         Payloads  which vanilla/ files hold each payload
 //! ```
@@ -25,14 +25,14 @@ const PAYLOADS: &str = "payloads";
 const DIGESTS: &str = "digests.xxh128";
 const SOURCE_TOML: &str = "source.toml";
 
-/// `source.toml`: where the ISO this project came from was last seen, and
+/// `source.toml`: where the game image this project came from was last seen, and
 /// the game id and revision it held, so a build can tell if it moved or now
 /// holds another version.
 ///
 /// Kept apart from `disc.toml`, which a modder may edit to rename the build.
 #[derive(Serialize, Deserialize)]
 pub struct Source {
-    pub iso: PathBuf,
+    pub game_image: PathBuf,
     pub id: String,
     pub revision: u8,
 }
@@ -47,19 +47,19 @@ pub struct Store {
 
 pub fn write(
     dir: &Path,
-    iso: &Path,
+    game_image: &Path,
     id: &str,
     revision: u8,
     digests: &Digests,
     payloads: &Payloads,
 ) -> Result<()> {
-    let iso = iso.canonicalize().map_err(Error::io(iso))?;
+    let game_image = game_image.canonicalize().map_err(Error::io(game_image))?;
     write_digests(&dir.join(DIGESTS), digests)?;
     write_payloads(&dir.join(PAYLOADS), payloads)?;
     write_toml(
         &dir.join(SOURCE_TOML),
         &Source {
-            iso,
+            game_image,
             id: id.to_string(),
             revision,
         },

@@ -37,9 +37,9 @@ pub struct Written {
 
 /// What the disc says about itself, which [`Unpacking::finish`] records.
 pub struct Record<'a, D> {
-    /// The disc unpacked. Stored canonicalized so a later build can read
+    /// The game image unpacked. Stored canonicalized so a later build can read
     /// files off it without asking where it is again.
-    pub disc: &'a Path,
+    pub game_image: &'a Path,
     /// The game id and revision it held.
     pub id: &'a str,
     pub revision: u8,
@@ -107,7 +107,7 @@ impl Unpacking {
     ///   its own
     /// - [`Error::Serialize`](crate::Error::Serialize) if a generated file
     ///   will not serialize
-    /// - [`Error::Io`](crate::Error::Io) if `iso` cannot be canonicalized, or
+    /// - [`Error::Io`](crate::Error::Io) if `game_image` cannot be canonicalized, or
     ///   on any write or the swap
     pub fn finish<D: Serialize>(
         self,
@@ -131,7 +131,7 @@ impl Unpacking {
         }
         store::write(
             &root.join(store::DIR),
-            record.disc,
+            record.game_image,
             record.id,
             record.revision,
             &digests,

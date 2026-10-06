@@ -8,7 +8,7 @@ use tpmt_report::{Progress, Step};
 
 use crate::Result;
 
-/// Unpacks the disc at `iso` into a project at `root`, and returns it.
+/// Unpacks the disc at `game_image` into a project at `root`, and returns it.
 ///
 /// Writes `vanilla/` and `.tpmt/`, and scaffolds an empty `mod/` next to them.
 /// `root` may be an existing project. In that case the unpack replaces only
@@ -21,20 +21,20 @@ use crate::Result;
 /// # Errors
 ///
 /// - [`tpmt_project::Error::ForeignDirectory`] if `root` holds something else
-/// - [`tpmt_packing::Error`] if the ISO can't be read, or a file on it isn't
+/// - [`tpmt_packing::Error`] if the game image can't be read, or a file on it isn't
 ///   what its bytes claim
 /// - [`tpmt_project::Error::Io`] on any write
-pub fn unpack(disc: &Path, root: &Path, progress: &Progress) -> Result<Project> {
+pub fn unpack(game_image: &Path, root: &Path, progress: &Progress) -> Result<Project> {
     let unpacking = Project::unpack(root)?;
     // Begins Step::Unpack in here
-    let unpacked = tpmt_packing::unpack(disc, progress, |file| -> Result<_> {
+    let unpacked = tpmt_packing::unpack(game_image, progress, |file| -> Result<_> {
         Ok(unpacking.write(file.path, file.kind, file.bytes)?)
     })?;
 
     progress.begin(Step::Save, 0);
     let boot = &unpacked.metadata.boot;
     let record = Record {
-        disc,
+        game_image,
         id: &boot.id,
         revision: boot.revision,
         disc_metadata: &unpacked.metadata,

@@ -89,7 +89,7 @@ pub fn build(
         metadata: &disc,
         compressed: &compressed,
         source: Source {
-            iso: &source.iso,
+            game_image: &source.game_image,
             id: &source.id,
             revision: source.revision,
         },
