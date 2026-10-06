@@ -16,8 +16,7 @@ use crate::Result;
 /// written, so a failure part way through leaves no half-made project.
 ///
 /// Reports [`Step::Unpack`] across the whole image, then [`Step::Save`],
-/// through `progress`. Each file's reports go to `progress` as soon as that
-/// file is unpacked.
+/// through `progress`.
 ///
 /// # Errors
 ///
@@ -27,6 +26,7 @@ use crate::Result;
 /// - [`tpmt_project::Error::Io`] on any write
 pub fn unpack(disc: &Path, root: &Path, progress: &Progress) -> Result<Project> {
     let unpacking = Project::unpack(root)?;
+    // Begins Step::Unpack in here
     let unpacked = tpmt_packing::unpack(disc, progress, |file| -> Result<_> {
         Ok(unpacking.write(file.path, file.kind, file.bytes)?)
     })?;

@@ -34,8 +34,7 @@ mod unpack;
 
 pub use build::{Built, EncodeError, Files, Job, Source, Target};
 pub use tpmt_disc::Metadata;
-pub use unpack::explode::{DecodeError, Layer, file as explode};
-pub use unpack::{File, Unpacked};
+pub use unpack::{DecodeError, File, Unpacked, explode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -91,8 +90,7 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// with every file that comes out (see [`File`]).
 ///
 /// Reads the disc once, front to back. Reports [`tpmt_report::Step::Unpack`]
-/// across the whole image through `progress`. Each file's reports go to
-/// `progress` as soon as that file is walked.
+/// across the whole image through `progress`.
 ///
 /// `store` runs on several threads at once, one disc file per thread.
 ///

@@ -8,7 +8,7 @@ The dependency/caller structure works like this:
 ## Frontend
 - `tpmt`: the CLI.
 
-## Entry point (command center)
+## Entry point (into core logic)
 - `ops`: all operations a frontend calls (unpack, status, edit, build). It joins the core crates, which don't depend on each other.
 
 ## Core (called by the entry point)
@@ -19,9 +19,9 @@ The dependency/caller structure works like this:
 ## Formats
   ### Utilities
   - `formats/binary`: big-endian reads and writes, and the `Format` trait every format implements.
-  - `formats/report`: warnings and progress reports that are sent back to the caller.
+  - `formats/report`: diagnostics (errors, warnings, info) alongside results, plus progress for long commands.
 
-  ### Format interpretation (the good stuff)
+  ### Format interpretation
   > Encoding/decoding raw bytes of formats into structs
   - `formats/packaging/*`: Things that wrap a payload (disc images, archives, compression).
   - `formats/payloads/*`: Game-asset files, such as BMG messages.

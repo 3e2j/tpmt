@@ -8,6 +8,7 @@ use std::process::ExitCode;
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
+use tpmt_ops::report::Counts;
 use tpmt_ops::{Project, Target};
 
 mod print;
@@ -42,6 +43,12 @@ enum Command {
         #[arg(short = 'C', long = "dir")]
         dir: Option<PathBuf>,
     },
+    /// Report errors and warnings in the changes, without building
+    Check {
+        /// Project to check, defaults to the current directory
+        #[arg(short = 'C', long = "dir")]
+        dir: Option<PathBuf>,
+    },
     /// Pack the changes for one target
     Build {
         /// What to build
@@ -65,16 +72,27 @@ fn target_parser() -> impl TypedValueParser<Value = Target> {
 
 fn main() -> ExitCode {
     match run(Cli::parse().command) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(Outcome::Done) => ExitCode::SUCCESS,
+        Ok(Outcome::Failed) => ExitCode::from(EXIT_FAILURE),
         Err(error) => {
-            eprintln!("tpmt: {error}");
+            if let Error::Ops(error) = &error {
+                print::reports(&error.reports());
+            }
+            eprintln!("{error}");
             ExitCode::from(EXIT_FAILURE)
         }
     }
 }
 
+/// How a command that ran to the end went.
+enum Outcome {
+    Done,
+    /// It ran, and what it found is the failure, like a check with errors.
+    Failed,
+}
+
 /// Matches the command given and runs it on the project.
-fn run(command: Command) -> Result<(), Error> {
+fn run(command: Command) -> Result<Outcome, Error> {
     match command {
         Command::New { iso, dir, yes } => {
             // Defaulting to the image's stem means `tpmt new game.iso` lands in
@@ -94,7 +112,7 @@ fn run(command: Command) -> Result<(), Error> {
                         project.display()
                     ))?;
                 if !overwrite {
-                    return Ok(());
+                    return Ok(Outcome::Done);
                 }
             }
 
@@ -105,6 +123,14 @@ fn run(command: Command) -> Result<(), Error> {
             let changes = tpmt_ops::status(&project(dir.as_ref())?)?;
             print::status(&changes);
         }
+        Command::Check { dir } => {
+            let reports = tpmt_ops::check(&project(dir.as_ref())?)?;
+            print::reports(&reports);
+            print::checked(&reports);
+            if Counts::of(&reports).errors > 0 {
+                return Ok(Outcome::Failed);
+            }
+        }
         Command::Build {
             target,
             dir,
@@ -114,10 +140,11 @@ fn run(command: Command) -> Result<(), Error> {
             let built = progress::show(|progress| {
                 tpmt_ops::build(&project, target, output.as_deref(), progress)
             })?;
+            print::reports(&built.reports);
             print::built(&built);
         }
     }
-    Ok(())
+    Ok(Outcome::Done)
 }
 
 /// The project a command works on, discovered from `dir`, or the current

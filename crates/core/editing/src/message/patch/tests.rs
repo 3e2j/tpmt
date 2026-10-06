@@ -1,6 +1,7 @@
 use tpmt_message::{
     Bmg, Encoding, Flow, Message, MessageId, Mid1Header, Node, NodeId, Root, TextSegment,
 };
+use tpmt_report::Diagnostic;
 use tpmt_tables::message::{Field, record};
 use tpmt_tables::{Edition, Version};
 
@@ -296,9 +297,10 @@ fn a_removed_message_still_shown_is_refused() {
     };
     assert_eq!(
         apply(&vanilla(), &patch, EDITION),
-        Err(PatchError::RemovedMessage {
-            node: "node:1".to_string()
-        })
+        Err(vec![Diagnostic::error(
+            PatchError::RemovedMessage,
+            Entry::Node(1)
+        )])
     );
 }
 
@@ -315,21 +317,68 @@ fn a_message_goes_by_position_too() {
 #[test]
 fn bad_references_are_refused() {
     let apply = |toml: &str| apply(&vanilla(), &BmgPatch::from_toml(toml).unwrap(), EDITION);
+    let one = |error, entry| Err(vec![Diagnostic::error(error, entry)]);
     assert_eq!(
         apply("[message.999]\ntext = \"x\"\n"),
-        Err(PatchError::UnknownMessage(MessageKey::Id(999)))
+        one(
+            PatchError::UnknownMessage(MessageKey::Id(999)),
+            Entry::Message(MessageKey::Id(999))
+        )
     );
     assert_eq!(
         apply("[node.0]\nnext = \"nowhere\"\n"),
-        Err(PatchError::UnknownName("nowhere".to_string()))
+        one(
+            PatchError::UnknownName("nowhere".to_string()),
+            Entry::Node(0)
+        )
     );
     assert_eq!(
         apply("[message.100.fields]\n\"Message id\" = 3\n"),
-        Err(PatchError::IdField("Message id"))
+        one(
+            PatchError::IdField("Message id"),
+            Entry::Message(MessageKey::Id(100))
+        )
     );
     assert_eq!(
         apply("[[new.message]]\nname = \"9lives\"\ntext = \"\"\n"),
-        Err(PatchError::BadName("9lives".to_string()))
+        one(
+            PatchError::BadName("9lives".to_string()),
+            Entry::NewMessage("9lives".to_string())
+        )
     );
     assert!(BmgPatch::from_toml("[message.100]\ntxet = \"x\"\n").is_err());
+}
+
+/// One bad entry doesn't hide the next, and a message's problems are all
+/// named, not only its first.
+#[test]
+fn every_bad_entry_is_named() {
+    let patch = BmgPatch::from_toml(
+        "[message.100]\ntext = \"{No tag}{Pause:x y}\"\n\n\
+         [message.101.fields]\nNope = 1\n\n\
+         [node.0]\nnext = \"nowhere\"\n\n\
+         [remove]\nroots = [7]\n",
+    )
+    .unwrap();
+    let found = apply(&vanilla(), &patch, EDITION).unwrap_err();
+    let at: Vec<_> = found
+        .iter()
+        .map(|found| (found.at.to_string(), found.code.to_string()))
+        .collect();
+    assert_eq!(
+        at,
+        [
+            ("[message.100]".into(), "`No tag` is not a tag".into()),
+            (
+                "[message.100]".into(),
+                "`x y` is not a valid argument for Pause".into()
+            ),
+            (
+                "[message.101]".into(),
+                "the layout has no field `Nope`".into()
+            ),
+            ("[node.0]".into(), "nothing new is named `nowhere`".into()),
+            ("[remove]".into(), "the flow has no root 7".into()),
+        ] as [(String, String); 5]
+    );
 }

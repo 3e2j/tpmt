@@ -8,14 +8,8 @@
 //!
 //! Every counter is read on its own, so a reader can catch a new step with
 //! the last one's numbers for a moment. Treat `done` past `total` as finished.
-//!
-//! Reports queue up until a frontend takes them with [`Progress::take_reports`],
-//! in the order files finish.
 
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
-
-use crate::Report;
 
 /// One stage of a command, in the order the commands reach them.
 ///
@@ -67,15 +61,13 @@ impl Step {
     }
 }
 
-/// The step a command is on, its tally, and the reports no one has taken
-/// yet. Hand one to a call and read it from another thread while the
-/// call runs.
+/// The step a command is on, and its tally. Hand one to a call and read it
+/// from another thread while the call runs.
 #[derive(Default)]
 pub struct Progress {
     step: AtomicU8,
     done: AtomicU64,
     total: AtomicU64,
-    reports: Mutex<Vec<Report>>,
 }
 
 /// The current step, as [`Progress::current`] saw it.
@@ -106,22 +98,6 @@ impl Progress {
             done: self.done.load(Ordering::Relaxed),
             total: self.total.load(Ordering::Relaxed),
         })
-    }
-
-    pub fn report(&self, reports: impl IntoIterator<Item = Report>) {
-        // A panic inside `extend` still leaves a valid list, so poison is safe
-        // to ignore.
-        self.reports
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend(reports);
-    }
-
-    /// Every report since the last call, oldest first. Take them once more
-    /// after the call returns, since it may have added some after the last
-    /// look.
-    pub fn take_reports(&self) -> Vec<Report> {
-        std::mem::take(&mut *self.reports.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
@@ -156,16 +132,5 @@ mod tests {
                 total: 10
             })
         );
-    }
-
-    #[test]
-    fn taking_reports_empties_them() {
-        let progress = Progress::default();
-        progress.report([Report::warn("a"), Report::warn("b")]);
-        assert_eq!(
-            progress.take_reports(),
-            [Report::warn("a"), Report::warn("b")]
-        );
-        assert_eq!(progress.take_reports(), []);
     }
 }

@@ -16,13 +16,22 @@
 //!
 //! [`render`] then [`parse`] gives back the same segments, so a patch never
 //! changes text nobody edited.
+//!
+//! [`parse`] reads past every problem it finds and returns them all, each
+//! with the byte range of the string it covers, so an editor can mark each
+//! one where it was typed.
 
 use std::fmt::Write;
+use std::ops::Range;
 
 use encoding_rs::{SHIFT_JIS, WINDOWS_1252};
 use tpmt_message::{Encoding, TextSegment};
+use tpmt_report::Diagnostic;
 use tpmt_tables::message::tag::{self, Args, Tag, group};
 use tpmt_tables::{Edition, entries, find};
+
+/// A problem [`parse`] found, and the bytes of the string it covers.
+pub type TextDiagnostic = Diagnostic<TextError, Range<usize>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TextError {
@@ -74,44 +83,92 @@ pub fn render(segments: &[TextSegment], encoding: Encoding, edition: Edition) ->
 ///
 /// # Errors
 ///
-/// When a token names no tag or carries an argument it can't, or the text
-/// holds a character the encoding has no bytes for.
+/// Every token that names no tag or carries an argument it can't, every
+/// character the encoding has no bytes for, and every brace that doesn't
+/// pair up. All of them are errors.
 pub fn parse(
     text: &str,
     encoding: Encoding,
     edition: Edition,
-) -> Result<Vec<TextSegment>, TextError> {
+) -> Result<Vec<TextSegment>, Vec<TextDiagnostic>> {
     let mut segments = Vec::new();
     let mut run = Vec::new();
+    let mut found = Vec::new();
     let mut rest = text;
-    while let Some(at) = rest.find(['{', '}']) {
-        let (before, from) = rest.split_at(at);
+    // Where `rest` starts in `text`.
+    let mut at = 0;
+    while let Some(brace) = rest.find(['{', '}']) {
+        let (before, from) = rest.split_at(brace);
+        encode_run(before, at, encoding, &mut run, &mut found);
+        let open = at + brace;
         if let Some(after) = from.strip_prefix("{{").or_else(|| from.strip_prefix("}}")) {
-            run.extend(encode(rest.split_at(at + 1).0, encoding)?);
-            rest = after;
+            encode_run(from.split_at(1).0, open, encoding, &mut run, &mut found);
+            (rest, at) = (after, open + 2);
             continue;
         }
-        let (token, after) = from
-            .strip_prefix('{')
-            .ok_or(TextError::StrayClose)?
-            .split_once('}')
-            .ok_or(TextError::Unclosed)?;
-        run.extend(encode(before, encoding)?);
-        rest = after;
+        let Some(opened) = from.strip_prefix('{') else {
+            found.push(Diagnostic::error(TextError::StrayClose, open..open + 1));
+            (rest, at) = (from.split_at(1).1, open + 1);
+            continue;
+        };
+        let Some((token, after)) = opened.split_once('}') else {
+            found.push(Diagnostic::error(TextError::Unclosed, open..text.len()));
+            (rest, at) = ("", text.len());
+            break;
+        };
+        let span = open..open + token.len() + 2;
+        (rest, at) = (after, span.end);
         if let Some(bytes) = token.strip_prefix("raw:") {
-            run.extend(unhex(bytes)?);
+            match unhex(bytes) {
+                Ok(bytes) => run.extend(bytes),
+                Err(error) => found.push(Diagnostic::error(error, span)),
+            }
             continue;
         }
         if !run.is_empty() {
             segments.push(TextSegment::Text(std::mem::take(&mut run).into()));
         }
-        segments.push(parse_tag(token, encoding, edition)?);
+        match parse_tag(token, encoding, edition) {
+            Ok(tag) => segments.push(tag),
+            Err(error) => found.push(Diagnostic::error(error, span)),
+        }
     }
-    run.extend(encode(rest, encoding)?);
+    encode_run(rest, at, encoding, &mut run, &mut found);
     if !run.is_empty() {
         segments.push(TextSegment::Text(run.into()));
     }
-    Ok(segments)
+    if found.is_empty() {
+        Ok(segments)
+    } else {
+        Err(found)
+    }
+}
+
+/// Appends `text` encoded to `run`, where `text` starts `at` bytes into the
+/// string being parsed. A character the encoding can't hold is left out and
+/// goes in `found`.
+fn encode_run(
+    text: &str,
+    at: usize,
+    encoding: Encoding,
+    run: &mut Vec<u8>,
+    found: &mut Vec<TextDiagnostic>,
+) {
+    if let Ok(bytes) = encode(text, encoding) {
+        run.extend(bytes);
+        return;
+    }
+    let mut buffer = [0; 4];
+    for (offset, char) in text.char_indices() {
+        let char = char.encode_utf8(&mut buffer);
+        match encode(char, encoding) {
+            Ok(bytes) => run.extend(bytes),
+            Err(error) => found.push(Diagnostic::error(
+                error,
+                at + offset..at + offset + char.len(),
+            )),
+        }
+    }
 }
 
 /// Appends `bytes` decoded, escaping braces. A character that doesn't come
@@ -442,14 +499,32 @@ mod tests {
     #[test]
     fn bad_tokens_are_refused() {
         let parse = |text| parse(text, Encoding::ShiftJis, USA);
-        assert_eq!(parse("{Nope}"), Err(TextError::UnknownTag("Nope".into())));
+        let one = |error, span| Err(vec![Diagnostic::error(error, span)]);
+        assert_eq!(
+            parse("{Nope}"),
+            one(TextError::UnknownTag("Nope".into()), 0..6)
+        );
         assert_eq!(
             parse("{Pause:x}"),
-            Err(TextError::BadArgument("x".into(), "Pause"))
+            one(TextError::BadArgument("x".into(), "Pause"), 0..9)
         );
-        assert_eq!(parse("{Pause"), Err(TextError::Unclosed));
-        assert_eq!(parse("a}b"), Err(TextError::StrayClose));
-        assert!(matches!(parse("😀"), Err(TextError::Unencodable(..))));
+        assert_eq!(parse("{Pause"), one(TextError::Unclosed, 0..6));
+        assert_eq!(parse("a}b"), one(TextError::StrayClose, 1..2));
+        assert_eq!(
+            parse("😀"),
+            one(
+                TextError::Unencodable("😀".into(), Encoding::ShiftJis),
+                0..4
+            )
+        );
+    }
+
+    /// One bad token doesn't hide the next, and each points at itself.
+    #[test]
+    fn every_problem_is_found() {
+        let errors = parse("a😀b{Nope}c}{Pause:30}{raw:G}", Encoding::ShiftJis, USA).unwrap_err();
+        let spans: Vec<_> = errors.into_iter().map(|found| found.at).collect();
+        assert_eq!(spans, [1..5, 6..12, 13..14, 24..31]);
     }
 
     /// A name picks one tag on an edition, or tokens would be ambiguous.

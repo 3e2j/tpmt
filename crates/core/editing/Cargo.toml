@@ -10,6 +10,7 @@ license.workspace = true
 tpmt-binary.workspace = true
 tpmt-tables.workspace = true
 tpmt-message.workspace = true
+tpmt-report.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 toml.workspace = true

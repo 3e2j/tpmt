@@ -12,7 +12,7 @@ use tpmt_message::{Bmg, Encoding, TEXT_OFFSET_LEN, TextSegment};
 use tpmt_tables::Edition;
 use tpmt_tables::message::{self, Field, Layout};
 
-use text::TextError;
+use text::TextDiagnostic;
 
 /// One message file as the tables read it. No edit changes the record
 /// width, the MID1 or the encoding, so these hold for the file's lifetime.
@@ -92,7 +92,7 @@ impl Tables {
     /// # Errors
     ///
     /// As [`text::parse`].
-    pub fn parse(&self, text: &str) -> Result<Vec<TextSegment>, TextError> {
+    pub fn parse(&self, text: &str) -> Result<Vec<TextSegment>, Vec<TextDiagnostic>> {
         text::parse(text, self.encoding, self.edition)
     }
 }

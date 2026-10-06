@@ -49,6 +49,9 @@
 //!
 //! [`diff`](fn@diff) is deterministic, so saving an unedited file writes
 //! the same bytes, and a change put back by hand drops out of the patch.
+//!
+//! [`apply`](fn@apply) skips past a bad entry and goes on to the next, so a
+//! patch with several mistakes names every one, each at its [`Entry`].
 
 mod apply;
 mod diff;
@@ -58,9 +61,11 @@ mod refs;
 mod tests;
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use tpmt_message::{MessageId, NodeId};
+use tpmt_report::Diagnostic;
 
 pub use apply::apply;
 pub use diff::diff;
@@ -194,6 +199,38 @@ pub struct Names {
     pub nodes: HashMap<NodeId, String>,
 }
 
+/// A problem [`apply`](fn@apply) found, and the entry it's in.
+pub type PatchDiagnostic = Diagnostic<PatchError, Entry>;
+
+/// The part of a patch a [`PatchError`] is in, as the TOML writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    Message(MessageKey),
+    NewMessage(String),
+    /// A vanilla node, by vanilla position.
+    Node(u32),
+    NewNode(String),
+    Root(u16),
+    Remove,
+    /// `new.flow` or `remove.flow`.
+    Flow,
+}
+
+impl fmt::Display for Entry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Message(MessageKey::Id(id)) => write!(f, "[message.{id}]"),
+            Self::Message(key) => write!(f, "[message.\"{key}\"]"),
+            Self::NewMessage(name) => write!(f, "new message `{name}`"),
+            Self::Node(at) => write!(f, "[node.{at}]"),
+            Self::NewNode(name) => write!(f, "new node `{name}`"),
+            Self::Root(id) => write!(f, "root {id}"),
+            Self::Remove => f.write_str("[remove]"),
+            Self::Flow => f.write_str("the flow graph"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PatchError {
     #[error("no vanilla message is `{0}`")]
@@ -216,8 +253,8 @@ pub enum PatchError {
     )]
     BadName(String),
 
-    #[error("message `{key}`: {error}")]
-    Text { key: String, error: TextError },
+    #[error(transparent)]
+    Text(TextError),
 
     #[error("the layout has no field `{0}`")]
     UnknownField(String),
@@ -234,14 +271,14 @@ pub enum PatchError {
     #[error("a file without MID1 has no public ids")]
     NoMid1,
 
-    #[error("node `{0}` mixes fields of more than one kind")]
-    MixedNode(String),
+    #[error("the node mixes fields of more than one kind")]
+    MixedNode,
 
-    #[error("node `{0}` needs a `message`, `query` or `event` to say what kind it is")]
-    NoKind(String),
+    #[error("the node needs a `message`, `query` or `event` to say what kind it is")]
+    NoKind,
 
-    #[error("node `{node}` has no `{field}`")]
-    WrongField { node: String, field: &'static str },
+    #[error("the node has no `{0}`")]
+    WrongField(&'static str),
 
     #[error("a root can't lead to `end`")]
     EndRoot,
@@ -255,11 +292,11 @@ pub enum PatchError {
     #[error("the flow graph is removed, so nothing else in it can change")]
     RemovedFlow,
 
-    #[error("node `{node}` shows a message that was removed")]
-    RemovedMessage { node: String },
+    #[error("it shows a message that was removed")]
+    RemovedMessage,
 
-    #[error("`{from}` leads to node `{to}`, which was removed")]
-    RemovedNode { from: String, to: String },
+    #[error("it leads to node `{0}`, which was removed")]
+    RemovedNode(String),
 }
 
 impl BmgPatch {

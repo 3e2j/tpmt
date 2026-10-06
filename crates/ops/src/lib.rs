@@ -3,9 +3,14 @@
 //! ```text
 //! unpack   a disc into a new project
 //! status   what mod/changes/ changes from vanilla
+//! check    what's wrong or odd in mod/changes/
 //! build    the changes, for one target
 //! edit     open a file, and save it back to mod/changes/
 //! ```
+//!
+//! On `Ok`, what a call found wrong or odd is on its result, such as
+//! [`Built::reports`]. On `Err`, [`Error::reports`] lists the problems that
+//! stopped it, if any, and the error itself says why it stopped.
 //!
 //! `tpmt-project` finds the files, and `tpmt-packing` and `tpmt-editing` work
 //! on them. None of the three depends on another, so this crate joins them.
@@ -14,8 +19,10 @@ use std::path::Path;
 
 use tpmt_editing::Version;
 use tpmt_packing::Metadata;
+use tpmt_report::{Counts, Report};
 
 mod build;
+mod check;
 mod edit;
 #[cfg(test)]
 mod fixture;
@@ -23,6 +30,7 @@ mod status;
 mod unpack;
 
 pub use build::{Built, build};
+pub use check::check;
 pub use edit::{Open, open, save};
 pub use status::status;
 pub use tpmt_editing as editing;
@@ -48,9 +56,25 @@ pub enum Error {
         path: String,
         source: tpmt_editing::Error,
     },
+
+    /// The check before a build found errors. Holds every report, warnings
+    /// too.
+    #[error("the build stopped at {}", errors(.0))]
+    Rejected(Vec<Report>),
 }
 
 impl Error {
+    /// Each problem behind this error, for one that stands for several.
+    /// Empty when the error says it all.
+    #[must_use]
+    pub fn reports(&self) -> Vec<Report> {
+        match self {
+            Self::File { path, source } => source.reports(path),
+            Self::Rejected(reports) => reports.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Wraps a failure to open, patch or save the file at `path`, for
     /// `map_err`.
     fn file(path: &str) -> impl FnOnce(tpmt_editing::Error) -> Self + '_ {
@@ -62,6 +86,14 @@ impl Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// "1 error", "3 errors".
+fn errors(reports: &[Report]) -> String {
+    match Counts::of(reports).errors {
+        1 => "1 error".to_string(),
+        count => format!("{count} errors"),
+    }
+}
 
 /// The version `disc` is, or `None` when tpmt has no tables for it.
 fn version(disc: &Metadata) -> Option<Version> {

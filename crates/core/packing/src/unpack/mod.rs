@@ -1,5 +1,7 @@
-//! Walks a disc and explodes each file (see [`explode`]).
-//! Hands every file the project keeps to the caller to store (see [`unpack()`](crate::unpack())).
+//! Walking a disc and handing every file the project keeps to the caller.
+//!
+//! The disc is read once, in order. Workers take its files off the stream
+//! one at a time and [`explode`] each into the files the project stores.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -9,9 +11,11 @@ use tpmt_binary::{Compression, FileKind};
 use tpmt_disc::{Disc, Entry, Metadata};
 use tpmt_report::{Progress, Step};
 
-use crate::Error;
+use crate::{Error, Result};
 
-pub mod explode;
+mod explode;
+
+pub use explode::{DecodeError, explode};
 
 /// One file a project stores: a plain file, an archive member, or an
 /// archive's sidecar. Archives and compression wrappers never arrive as one.
@@ -19,7 +23,7 @@ pub mod explode;
 pub struct File<'a> {
     /// Its project path.
     pub path: &'a str,
-    /// What its magic says it is, if anything.
+    /// What its magic says it is, if anything. After compression is removed.
     pub kind: Option<FileKind>,
     pub bytes: &'a [u8],
 }
@@ -61,32 +65,25 @@ where
     let unpacking = progress.begin(Step::Unpack, total);
 
     // Workers pull files off the stream one at a time, so the disc is still
-    // read in order and at most one file per worker sits in memory.
+    // read in order. Counting on the stream keeps the counter off the workers.
     let files = disc
         .stream(&entries)
+        .inspect(|file| {
+            if let Ok((_, data)) = file {
+                unpacking.add(data.len() as u64);
+            }
+        })
         .par_bridge()
         .map(|file| {
             let (path, data) = file.map_err(Error::from)?;
-            unpacking.add(data.len() as u64);
-
+            // One disc file can explode into many project files. Each goes to
+            // `store` as soon as `explode` peels it, so they never all sit in
+            // memory at once.
             let mut stored = Vec::new();
-            let mut reports = Vec::new();
-            let compression = explode::file(
-                path,
-                &data,
-                &mut |layer| -> Result<(), E> {
-                    if layer.stored {
-                        stored.push(store(File {
-                            path: layer.path,
-                            kind: layer.kind,
-                            bytes: layer.bytes,
-                        })?);
-                    }
-                    Ok(())
-                },
-                &mut reports,
-            )?;
-            progress.report(reports);
+            let compression = explode(path, &data, &mut |file| -> Result<(), E> {
+                stored.push(store(file)?);
+                Ok(())
+            })?;
             Ok((
                 compression.map(|compression| (path.to_string(), compression)),
                 stored,

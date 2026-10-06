@@ -26,6 +26,8 @@ use std::process::ExitCode;
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use rayon::prelude::*;
+use tpmt_archive::Archive;
+use tpmt_binary::{Compression, Format as _};
 use tpmt_disc::{Boot, Disc, Metadata};
 use tpmt_project::{FileKind, Payload, Project};
 use tpmt_report::Progress;
@@ -194,11 +196,10 @@ fn stored(iso: &Path, payload: Payload, check: fn(&File) -> Vec<String>) -> Resu
     Ok(tally)
 }
 
-/// `check` over every layer of `kind` on the image `iso`, walked with
-/// [`tpmt_packing::explode`], since the unpack never stores packaging.
+/// `check` over every layer of `kind` on the image `iso`, peeled here, since
+/// the unpack never stores packaging.
 ///
-/// Runs inside the walk's sink, so only one disc file's layers are held at a
-/// time.
+/// Only one disc file's layers are held at a time.
 fn walked(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result<Tally, Failed> {
     let disc = Disc::open(iso)?;
     let version = version(&disc.metadata().boot)?;
@@ -209,22 +210,18 @@ fn walked(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result
         .map(|(path, span)| {
             let data = disc.read(span)?;
             let mut tally = Tally::default();
-            let walked = tpmt_packing::explode(
-                path,
-                &data,
-                &mut |layer| -> tpmt_packing::Result<()> {
-                    if layer.kind == Some(kind) {
-                        let file = File {
+            let walked = peel(path, &data, &mut |path, bytes| {
+                if FileKind::identify(bytes) == Some(kind) {
+                    tally.check(
+                        check,
+                        &File {
                             version,
-                            path: layer.path,
-                            bytes: layer.bytes,
-                        };
-                        tally.check(check, &file);
-                    }
-                    Ok(())
-                },
-                &mut Vec::new(),
-            );
+                            path,
+                            bytes,
+                        },
+                    );
+                }
+            });
             if let Err(error) = walked {
                 tally.failures.push(format!("walk failed at {error}"));
             }
@@ -234,6 +231,25 @@ fn walked(iso: &Path, kind: FileKind, check: fn(&File) -> Vec<String>) -> Result
             Ok::<_, tpmt_disc::Error>(all.merge(one))
         })?;
     Ok(tally)
+}
+
+/// Calls `found` with `data`, then with what its compression wrapper or
+/// archive holds, however deep.
+fn peel(path: &str, data: &[u8], found: &mut impl FnMut(&str, &[u8])) -> Result<(), String> {
+    found(path, data);
+    let failed = |error: &dyn std::fmt::Display| format!("`{path}`: {error}");
+    if let Some(compression) = Compression::of(data) {
+        let bare =
+            tpmt_compression::decompress(compression, data).map_err(|error| failed(&error))?;
+        return peel(path, &bare, found);
+    }
+    if FileKind::identify(data) == Some(FileKind::Rarc) {
+        let archive = Archive::decode(data).map_err(|error| failed(&error))?;
+        for member in &archive.files {
+            peel(&format!("{path}/{}", member.path), member.data, found)?;
+        }
+    }
+    Ok(())
 }
 
 fn version(boot: &Boot) -> Result<Version, Failed> {

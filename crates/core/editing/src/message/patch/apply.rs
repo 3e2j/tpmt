@@ -3,11 +3,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use tpmt_message::{Bmg, Flow, Message, MessageId, Node, NodeId, Root};
+use tpmt_report::Diagnostic;
 use tpmt_tables::Edition;
 
 use super::ids::Ids;
 use super::{
-    BmgPatch, MessageKey, MessageRef, Names, NewNode, NodePatch, NodeRef, Number, PatchError,
+    BmgPatch, Entry, MessageKey, MessageRef, Names, NewNode, NodePatch, NodeRef, Number,
+    PatchDiagnostic, PatchError,
 };
 use crate::message::tables::text::unhex;
 use crate::message::tables::{Tables, write_field};
@@ -17,26 +19,35 @@ use crate::message::tables::{Tables, write_field};
 ///
 /// # Errors
 ///
-/// When the patch names something that isn't there, doesn't fit the file,
-/// or leaves the flow graph pointing at something removed.
+/// Every entry that names something that isn't there or doesn't fit the
+/// file. Once every entry applies, every node left pointing at something
+/// removed. A bad entry is skipped, so it can't cause errors further on.
 pub fn apply(
     vanilla: &Bmg,
     patch: &BmgPatch,
     edition: Edition,
-) -> Result<(Bmg, Names), PatchError> {
+) -> Result<(Bmg, Names), Vec<PatchDiagnostic>> {
     let tables = Tables::new(vanilla, edition);
     let ids = Ids::new(vanilla);
     let mut bmg = vanilla.clone();
     let mut names = Names::default();
+    let mut found = Vec::new();
 
     let mut new_messages = HashMap::new();
     for (id, new) in (ids.messages..).zip(&patch.new.message) {
-        claim(&new.name, &mut new_messages, MessageId(id))?;
+        if let Err(error) = claim(&new.name, &mut new_messages, MessageId(id)) {
+            found.push(Diagnostic::error(
+                error,
+                Entry::NewMessage(new.name.clone()),
+            ));
+        }
         names.messages.insert(MessageId(id), new.name.clone());
     }
     let mut new_nodes = HashMap::new();
     for (id, new) in (ids.nodes..).zip(&patch.new.node) {
-        claim(&new.name, &mut new_nodes, NodeId(id))?;
+        if let Err(error) = claim(&new.name, &mut new_nodes, NodeId(id)) {
+            found.push(Diagnostic::error(error, Entry::NewNode(new.name.clone())));
+        }
         names.nodes.insert(NodeId(id), new.name.clone());
     }
     let lookup = Lookup {
@@ -46,12 +57,15 @@ pub fn apply(
     };
 
     for (key, change) in &patch.message {
-        let id = lookup.vanilla_message(*key)?;
-        let message = bmg
-            .messages
-            .iter_mut()
-            .find(|message| message.id == id)
-            .ok_or(PatchError::UnknownMessage(*key))?;
+        let entry = Entry::Message(*key);
+        let message = lookup
+            .vanilla_message(*key)
+            .ok()
+            .and_then(|id| bmg.messages.iter_mut().find(|message| message.id == id));
+        let Some(message) = message else {
+            found.push(Diagnostic::error(PatchError::UnknownMessage(*key), entry));
+            continue;
+        };
         let edit = Values {
             public_id: change.public_id,
             fields: &change.fields,
@@ -62,10 +76,13 @@ pub fn apply(
             message,
             &edit,
             change.text.as_deref(),
-            &key.to_string(),
-        )?;
+            &mut |error| {
+                found.push(Diagnostic::error(error, entry.clone()));
+            },
+        );
     }
     for (id, new) in (ids.messages..).zip(&patch.new.message) {
+        let entry = Entry::NewMessage(new.name.clone());
         let mut message = Message {
             public_id: 0,
             id: MessageId(id),
@@ -77,68 +94,87 @@ pub fn apply(
             fields: &new.fields,
             attributes: new.attributes.as_deref(),
         };
-        set_values(&tables, &mut message, &edit, Some(&new.text), &new.name)?;
+        set_values(
+            &tables,
+            &mut message,
+            &edit,
+            Some(&new.text),
+            &mut |error| {
+                found.push(Diagnostic::error(error, entry.clone()));
+            },
+        );
         bmg.messages.push(message);
     }
     for key in &patch.remove.messages {
-        let id = lookup.vanilla_message(*key)?;
-        bmg.messages.retain(|message| message.id != id);
+        match lookup.vanilla_message(*key) {
+            Ok(id) => bmg.messages.retain(|message| message.id != id),
+            Err(error) => found.push(Diagnostic::error(error, Entry::Remove)),
+        }
     }
 
-    apply_flow(&mut bmg, patch, &lookup)?;
-    check_graph(&bmg, &names)?;
-    Ok((bmg, names))
+    apply_flow(&mut bmg, patch, &lookup, &mut found);
+    // A skipped entry leaves the graph short of whatever it added, so
+    // checking it then would only blame the entries that point there.
+    if found.is_empty() {
+        check_graph(&bmg, &names, &mut found);
+    }
+    if found.is_empty() {
+        Ok((bmg, names))
+    } else {
+        Err(found)
+    }
 }
 
-/// Sets what `edit` and `text` give on `message`. `name` is what errors call
-/// it.
+/// Sets what `edit` and `text` give on `message`, handing each problem to
+/// `found` and going on with the rest.
 fn set_values(
     tables: &Tables,
     message: &mut Message,
     edit: &Values<'_>,
     text: Option<&str>,
-    name: &str,
-) -> Result<(), PatchError> {
+    found: &mut impl FnMut(PatchError),
+) {
     if let Some(attributes) = edit.attributes {
-        let bytes = unhex(attributes).map_err(|error| PatchError::Text {
-            key: name.to_string(),
-            error,
-        })?;
         let expected = tables.attributes_len;
-        if bytes.len() != expected {
-            return Err(PatchError::AttributeWidth {
+        match unhex(attributes) {
+            Err(error) => found(PatchError::Text(error)),
+            Ok(bytes) if bytes.len() != expected => found(PatchError::AttributeWidth {
                 expected,
                 actual: bytes.len(),
-            });
+            }),
+            Ok(bytes) => message.attributes = bytes.into(),
         }
-        message.attributes = bytes.into();
     }
     for (name, value) in edit.fields {
-        let field = tables
-            .field(name)
-            .ok_or_else(|| PatchError::UnknownField(name.clone()))?;
+        let Some(field) = tables.field(name) else {
+            found(PatchError::UnknownField(name.clone()));
+            continue;
+        };
         if tables.is_id(field) {
-            return Err(PatchError::IdField(field.name));
+            found(PatchError::IdField(field.name));
+        } else if write_field(&mut message.attributes, field, *value).is_none() {
+            found(PatchError::ValueTooWide {
+                field: field.name,
+                value: *value,
+            });
         }
-        write_field(&mut message.attributes, field, *value).ok_or(PatchError::ValueTooWide {
-            field: field.name,
-            value: *value,
-        })?;
     }
     if let Some(text) = text {
-        message.text = tables.parse(text).map_err(|error| PatchError::Text {
-            key: name.to_string(),
-            error,
-        })?;
+        match tables.parse(text) {
+            Ok(text) => message.text = text,
+            Err(errors) => errors
+                .into_iter()
+                .for_each(|error| found(PatchError::Text(error.code))),
+        }
     }
     if let Some(public_id) = edit.public_id {
-        if !tables.has_mid1 {
-            return Err(PatchError::NoMid1);
+        if tables.has_mid1 {
+            message.public_id = public_id;
+        } else {
+            found(PatchError::NoMid1);
         }
-        message.public_id = public_id;
     }
     tables.set_id(&mut message.attributes, message.public_id);
-    Ok(())
 }
 
 /// What a patch sets in a message's attributes.
@@ -188,13 +224,6 @@ impl Lookup<'_> {
                 .ok_or_else(|| PatchError::UnknownName(name.clone())),
         }
     }
-
-    fn nodes(&self, references: &[NodeRef]) -> Result<Vec<Option<NodeId>>, PatchError> {
-        references
-            .iter()
-            .map(|reference| self.node(reference))
-            .collect()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,9 +241,20 @@ const fn kind_of(node: &Node) -> Kind {
     }
 }
 
+/// What a node patch's references name, every one found.
+struct Resolved {
+    message: Option<MessageId>,
+    next: Option<Edge>,
+    answers: Option<Vec<Option<NodeId>>>,
+}
+
+/// Where an edge leads: a node, or `None` for the end of the conversation.
+#[derive(Clone, Copy)]
+struct Edge(Option<NodeId>);
+
 impl NodePatch {
-    /// The kind the fields imply, or `None` when they fit more than one.
-    fn kind(&self, name: &str) -> Result<Option<Kind>, PatchError> {
+    /// The kind the fields imply, or `None` when they imply none.
+    const fn kind(&self) -> Result<Option<Kind>, PatchError> {
         let text = self.message.is_some();
         let branch = self.query.is_some() || self.param.is_some() || self.answers.is_some();
         let event = self.event.is_some() || self.params.is_some();
@@ -223,72 +263,86 @@ impl NodePatch {
             (true, false, false) => Ok(Some(Kind::Text)),
             (false, true, false) => Ok(Some(Kind::Branch)),
             (false, false, true) => Ok(Some(Kind::Event)),
-            _ => Err(PatchError::MixedNode(name.to_string())),
+            _ => Err(PatchError::MixedNode),
         }
     }
 
-    /// A node of `kind` with id `id` from these fields alone.
-    fn build(
-        &self,
-        id: NodeId,
-        kind: Kind,
-        name: &str,
-        lookup: &Lookup<'_>,
-    ) -> Result<Node, PatchError> {
-        let missing = |field| PatchError::WrongField {
-            node: name.to_string(),
-            field,
+    /// Looks up every reference, handing each that names nothing to `found`.
+    /// `None` when any did.
+    fn resolve(&self, lookup: &Lookup<'_>, found: &mut impl FnMut(PatchError)) -> Option<Resolved> {
+        let mut failed = false;
+        let mut keep = |error| {
+            failed = true;
+            found(error);
         };
+        let message = self
+            .message
+            .as_ref()
+            .and_then(|shown| lookup.message(shown).map_err(&mut keep).ok());
         let next = self
             .next
             .as_ref()
-            .map_or(Ok(None), |next| lookup.node(next))?;
+            .and_then(|to| lookup.node(to).map(Edge).map_err(&mut keep).ok());
+        let answers = self.answers.as_ref().map(|answers| {
+            answers
+                .iter()
+                .filter_map(|to| lookup.node(to).map_err(&mut keep).ok())
+                .collect()
+        });
+        (!failed).then_some(Resolved {
+            message,
+            next,
+            answers,
+        })
+    }
+
+    /// A node of `kind` with id `id` from these fields alone.
+    fn build(&self, id: NodeId, kind: Kind, refs: Resolved) -> Result<Node, PatchError> {
         Ok(match kind {
             Kind::Text => Node::Text {
                 id,
-                message: lookup
-                    .message(self.message.as_ref().ok_or_else(|| missing("message"))?)?,
-                next,
+                message: refs.message.ok_or(PatchError::WrongField("message"))?,
+                next: refs.next.and_then(|Edge(to)| to),
             },
-            Kind::Branch => {
-                if self.next.is_some() {
-                    return Err(missing("next"));
-                }
-                Node::Branch {
-                    id,
-                    query: self.query.ok_or_else(|| missing("query"))?,
-                    param: self.param.unwrap_or(0),
-                    children: lookup.nodes(self.answers.as_deref().unwrap_or_default())?,
-                }
-            }
+            Kind::Branch => Node::Branch {
+                id,
+                query: self.query.ok_or(PatchError::WrongField("query"))?,
+                param: self.param.unwrap_or(0),
+                children: refs.answers.unwrap_or_default(),
+            },
             Kind::Event => Node::Event {
                 id,
-                event: self.event.ok_or_else(|| missing("event"))?,
+                event: self.event.ok_or(PatchError::WrongField("event"))?,
                 params: self.params.unwrap_or_default(),
-                next,
+                next: refs.next.and_then(|Edge(to)| to),
             },
         })
     }
 
     /// Sets these fields on `node`, or replaces it when they imply another
-    /// kind.
-    fn patch(&self, node: &mut Node, name: &str, lookup: &Lookup<'_>) -> Result<(), PatchError> {
-        let kind = self.kind(name)?.unwrap_or_else(|| kind_of(node));
+    /// kind. Leaves `node` alone when any reference names nothing.
+    fn patch(
+        &self,
+        node: &mut Node,
+        lookup: &Lookup<'_>,
+        found: &mut impl FnMut(PatchError),
+    ) -> Result<(), PatchError> {
+        let kind = self.kind()?.unwrap_or_else(|| kind_of(node));
+        if kind == Kind::Branch && self.next.is_some() {
+            return Err(PatchError::WrongField("next"));
+        }
+        let Some(refs) = self.resolve(lookup, found) else {
+            return Ok(());
+        };
         if kind != kind_of(node) {
-            *node = self.build(node.id(), kind, name, lookup)?;
+            *node = self.build(node.id(), kind, refs)?;
             return Ok(());
         }
-        let wrong = |field| PatchError::WrongField {
-            node: name.to_string(),
-            field,
-        };
         match node {
             Node::Text { message, next, .. } => {
-                if let Some(shown) = &self.message {
-                    *message = lookup.message(shown)?;
-                }
-                if let Some(to) = &self.next {
-                    *next = lookup.node(to)?;
+                *message = refs.message.unwrap_or(*message);
+                if let Some(Edge(to)) = refs.next {
+                    *next = to;
                 }
             }
             Node::Branch {
@@ -297,13 +351,10 @@ impl NodePatch {
                 children,
                 ..
             } => {
-                if self.next.is_some() {
-                    return Err(wrong("next"));
-                }
                 *query = self.query.unwrap_or(*query);
                 *param = self.param.unwrap_or(*param);
-                if let Some(answers) = &self.answers {
-                    *children = lookup.nodes(answers)?;
+                if let Some(answers) = refs.answers {
+                    *children = answers;
                 }
             }
             Node::Event {
@@ -314,12 +365,29 @@ impl NodePatch {
             } => {
                 *event = self.event.unwrap_or(*event);
                 *params = self.params.unwrap_or(*params);
-                if let Some(to) = &self.next {
-                    *next = lookup.node(to)?;
+                if let Some(Edge(to)) = refs.next {
+                    *next = to;
                 }
             }
         }
         Ok(())
+    }
+
+    /// A new node with id `id` from these fields, or `None` when any
+    /// reference names nothing.
+    fn create(
+        &self,
+        id: NodeId,
+        lookup: &Lookup<'_>,
+        found: &mut impl FnMut(PatchError),
+    ) -> Result<Option<Node>, PatchError> {
+        let kind = self.kind()?.ok_or(PatchError::NoKind)?;
+        if kind == Kind::Branch && self.next.is_some() {
+            return Err(PatchError::WrongField("next"));
+        }
+        self.resolve(lookup, found)
+            .map(|refs| self.build(id, kind, refs))
+            .transpose()
     }
 }
 
@@ -337,7 +405,12 @@ impl From<&NewNode> for NodePatch {
     }
 }
 
-fn apply_flow(bmg: &mut Bmg, patch: &BmgPatch, lookup: &Lookup<'_>) -> Result<(), PatchError> {
+fn apply_flow(
+    bmg: &mut Bmg,
+    patch: &BmgPatch,
+    lookup: &Lookup<'_>,
+    found: &mut Vec<PatchDiagnostic>,
+) {
     let touches = !patch.node.is_empty()
         || !patch.root.is_empty()
         || !patch.new.node.is_empty()
@@ -346,48 +419,84 @@ fn apply_flow(bmg: &mut Bmg, patch: &BmgPatch, lookup: &Lookup<'_>) -> Result<()
         || !patch.remove.roots.is_empty();
     if patch.remove.flow {
         if touches {
-            return Err(PatchError::RemovedFlow);
+            found.push(Diagnostic::error(PatchError::RemovedFlow, Entry::Flow));
+        } else if bmg.flow.take().is_none() {
+            found.push(Diagnostic::error(PatchError::NoFlow, Entry::Flow));
         }
-        bmg.flow.take().ok_or(PatchError::NoFlow)?;
-        return Ok(());
+        return;
     }
     if patch.new.flow {
         if bmg.flow.is_some() {
-            return Err(PatchError::HasFlow);
+            found.push(Diagnostic::error(PatchError::HasFlow, Entry::Flow));
+        } else {
+            bmg.flow = Some(Flow::default());
         }
-        bmg.flow = Some(Flow::default());
     }
     if !touches {
-        return Ok(());
+        return;
     }
-    let flow = bmg.flow.as_mut().ok_or(PatchError::NoFlow)?;
+    let Some(flow) = bmg.flow.as_mut() else {
+        found.push(Diagnostic::error(PatchError::NoFlow, Entry::Flow));
+        return;
+    };
 
     for (Number(at), change) in &patch.node {
-        let node = flow
+        let entry = Entry::Node(*at);
+        let mut keep = |error| found.push(Diagnostic::error(error, entry.clone()));
+        let patched = flow
             .nodes
             .iter_mut()
             .find(|node| node.id() == NodeId(*at))
-            .ok_or(PatchError::UnknownNode(*at))?;
-        change.patch(node, &NodeRef::Vanilla(*at).to_string(), lookup)?;
+            .ok_or(PatchError::UnknownNode(*at))
+            .and_then(|node| change.patch(node, lookup, &mut keep));
+        if let Err(error) = patched {
+            keep(error);
+        }
     }
     for (id, new) in (lookup.ids.nodes..).zip(&patch.new.node) {
-        let fields = NodePatch::from(new);
-        let kind = fields
-            .kind(&new.name)?
-            .ok_or_else(|| PatchError::NoKind(new.name.clone()))?;
-        flow.nodes
-            .push(fields.build(NodeId(id), kind, &new.name, lookup)?);
+        let entry = Entry::NewNode(new.name.clone());
+        let mut keep = |error| found.push(Diagnostic::error(error, entry.clone()));
+        match NodePatch::from(new).create(NodeId(id), lookup, &mut keep) {
+            Ok(node) => flow.nodes.extend(node),
+            Err(error) => keep(error),
+        }
     }
     for at in &patch.remove.nodes {
         let before = flow.nodes.len();
         flow.nodes.retain(|node| node.id() != NodeId(*at));
         if flow.nodes.len() == before {
-            return Err(PatchError::UnknownNode(*at));
+            found.push(Diagnostic::error(
+                PatchError::UnknownNode(*at),
+                Entry::Remove,
+            ));
         }
     }
 
+    apply_roots(flow, patch, lookup, found);
+}
+
+/// Sets and removes the roots `patch` names.
+fn apply_roots(
+    flow: &mut Flow,
+    patch: &BmgPatch,
+    lookup: &Lookup<'_>,
+    found: &mut Vec<PatchDiagnostic>,
+) {
     for (Number(public_id), to) in &patch.root {
-        let node = lookup.node(to)?.ok_or(PatchError::EndRoot)?;
+        let node = match lookup.node(to) {
+            Ok(Some(node)) => node,
+            Ok(None) => {
+                found.push(Diagnostic::error(
+                    PatchError::EndRoot,
+                    Entry::Root(*public_id),
+                ));
+                continue;
+            }
+            Err(error) => {
+                found.push(Diagnostic::error(error, Entry::Root(*public_id)));
+                continue;
+            }
+        };
         match flow
             .roots
             .iter_mut()
@@ -401,21 +510,33 @@ fn apply_flow(bmg: &mut Bmg, patch: &BmgPatch, lookup: &Lookup<'_>) -> Result<()
         }
     }
     for public_id in &patch.remove.roots {
-        let at = flow
+        match flow
             .roots
             .iter()
             .position(|root| root.public_id == *public_id)
-            .ok_or(PatchError::UnknownRoot(*public_id))?;
-        flow.roots.remove(at);
+        {
+            Some(at) => {
+                flow.roots.remove(at);
+            }
+            None => found.push(Diagnostic::error(
+                PatchError::UnknownRoot(*public_id),
+                Entry::Remove,
+            )),
+        }
     }
-    Ok(())
 }
 
 /// Every message a node shows and every node an edge or root reaches must
 /// still be there.
-fn check_graph(bmg: &Bmg, names: &Names) -> Result<(), PatchError> {
+fn check_graph(bmg: &Bmg, names: &Names, found: &mut Vec<PatchDiagnostic>) {
     let Some(flow) = &bmg.flow else {
-        return Ok(());
+        return;
+    };
+    let entry = |id: NodeId| {
+        names
+            .nodes
+            .get(&id)
+            .map_or(Entry::Node(id.0), |name| Entry::NewNode(name.clone()))
     };
     let describe = |id: NodeId| {
         names
@@ -425,16 +546,6 @@ fn check_graph(bmg: &Bmg, names: &Names) -> Result<(), PatchError> {
     };
     let messages: HashSet<MessageId> = bmg.messages.iter().map(|message| message.id).collect();
     let nodes: HashSet<NodeId> = flow.nodes.iter().map(Node::id).collect();
-    let reach = |from: String, to: NodeId| {
-        if nodes.contains(&to) {
-            Ok(())
-        } else {
-            Err(PatchError::RemovedNode {
-                from,
-                to: describe(to),
-            })
-        }
-    };
     for node in &flow.nodes {
         let (shown, next, children) = match node {
             Node::Text { message, next, .. } => (Some(*message), *next, &[][..]),
@@ -442,18 +553,28 @@ fn check_graph(bmg: &Bmg, names: &Names) -> Result<(), PatchError> {
             Node::Event { next, .. } => (None, *next, &[][..]),
         };
         if shown.is_some_and(|message| !messages.contains(&message)) {
-            return Err(PatchError::RemovedMessage {
-                node: describe(node.id()),
-            });
+            found.push(Diagnostic::error(
+                PatchError::RemovedMessage,
+                entry(node.id()),
+            ));
         }
         for to in next.iter().chain(children.iter().flatten()) {
-            reach(describe(node.id()), *to)?;
+            if !nodes.contains(to) {
+                found.push(Diagnostic::error(
+                    PatchError::RemovedNode(describe(*to)),
+                    entry(node.id()),
+                ));
+            }
         }
     }
     for root in &flow.roots {
-        reach(format!("root {}", root.public_id), root.node)?;
+        if !nodes.contains(&root.node) {
+            found.push(Diagnostic::error(
+                PatchError::RemovedNode(describe(root.node)),
+                Entry::Root(root.public_id),
+            ));
+        }
     }
-    Ok(())
 }
 
 /// Takes `name` for `id`, refusing a bad or repeated one.

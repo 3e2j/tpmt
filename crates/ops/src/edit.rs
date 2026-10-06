@@ -6,6 +6,7 @@
 use tpmt_editing::{Saved, Session, Source};
 use tpmt_packing::Metadata;
 use tpmt_project::{Project, Stored};
+use tpmt_report::Report;
 
 use crate::{Error, Result, version};
 
@@ -31,6 +32,14 @@ impl Open {
 
     pub const fn session_mut(&mut self) -> &mut Session {
         &mut self.session
+    }
+
+    /// What the format's checks find odd in the file as it stands.
+    // TODO: For an editor's problems panel, refreshed after each edit. Nothing
+    // calls it until the app exists.
+    #[must_use]
+    pub fn reports(&self) -> Vec<Report> {
+        self.session.reports(&self.path)
     }
 }
 

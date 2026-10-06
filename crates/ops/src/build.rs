@@ -5,13 +5,15 @@
 // `mod/textures/`, and `dusk` needs `mod/res/` and `mod.json`, none of which
 // `Job` has a way to carry yet.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tpmt_editing::Version;
 use tpmt_packing::{Files, Job, Metadata, Source, Target};
-use tpmt_project::{Comparison, Digests, Overlay, Project, Store, Stored, Vanilla};
-use tpmt_report::Progress;
+use tpmt_project::{Digests, Overlay, Project, Store, Stored, Vanilla};
+use tpmt_report::{Counts, Progress, Report};
 
+use crate::check::Checked;
 use crate::{Error, Result, version};
 
 /// What a build produced.
@@ -21,15 +23,16 @@ pub struct Built {
     pub path: PathBuf,
     /// The disc files that were written again, at their disc paths.
     pub rebuilt: Vec<String>,
-    /// Files in `changes/` identical to vanilla, left out of the build.
-    pub unchanged: Vec<String>,
+    /// What the check before the build found odd, none of it an error.
+    pub reports: Vec<Report>,
 }
 
 /// Re-encodes whatever `mod/changes/` changed and hands it to `target`, which
 /// decides what to do with it: a tree of the changed disc files, a whole disc
 /// image, or a mod bundle.
 ///
-/// Writes into the target's own directory under `build/targets/`, or
+/// Runs [`check`](crate::check) first, and writes nothing if it finds an
+/// error. Writes into the target's own directory under `build/targets/`, or
 /// `output` if given (see [`Project::stage_output`]).
 ///
 /// Reports [`tpmt_report::Step::Rebuild`] through `progress`, and for an
@@ -37,13 +40,15 @@ pub struct Built {
 ///
 /// # Errors
 ///
+/// - [`Error::Rejected`] if the check finds any error, such as a patch in
+///   `changes/` that won't go over its vanilla file
 /// - [`tpmt_project::Error::ForeignDirectory`] if `output` is not empty
 /// - [`tpmt_project::Error::Io`] or [`tpmt_project::Error::Parse`] if the
 ///   project's own files cannot be read
 /// - [`tpmt_project::Error::VanillaModified`] if `vanilla/` no longer matches the
 ///   disc it came from
-/// - [`Error::UnknownVersion`] or [`Error::File`] if a patch in `changes/`
-///   can't be put back over its vanilla file
+/// - [`Error::UnknownVersion`] if `changes/` holds a patch and tpmt has no
+///   tables for the disc
 /// - [`tpmt_packing::Error`] if a rebuilt file does not fit its format, or
 ///   whatever else the target needs, which for an image is the source disc
 pub fn build(
@@ -52,13 +57,21 @@ pub fn build(
     output: Option<&Path>,
     progress: &Progress,
 ) -> Result<Built> {
-    let staging = project.stage_output(target.name(), output)?;
-
     let Store { source, digests } = project.read_store()?;
     let Vanilla { disc, compressed } = project.read_vanilla::<Metadata>()?;
     let overlay = project.overlay();
-    let Comparison { changes, identical } = overlay.compare(&digests)?;
-    let changes: Vec<String> = changes.into_iter().map(|change| change.path).collect();
+    let comparison = overlay.compare(&digests)?;
+    let checked = Checked::run(&overlay, &digests, version(&disc), &comparison)?;
+    if Counts::of(&checked.reports).errors > 0 {
+        return Err(Error::Rejected(checked.reports));
+    }
+
+    let staging = project.stage_output(target.name(), output)?;
+    let changes: Vec<String> = comparison
+        .changes
+        .into_iter()
+        .map(|change| change.path)
+        .collect();
 
     let name = project
         .root()
@@ -70,6 +83,7 @@ pub fn build(
             overlay: &overlay,
             digests: &digests,
             version: version(&disc),
+            patched: &checked.patched,
         },
         changes: &changes,
         metadata: &disc,
@@ -90,7 +104,7 @@ pub fn build(
     Ok(Built {
         path,
         rebuilt: built.rebuilt,
-        unchanged: identical,
+        reports: checked.reports,
     })
 }
 
@@ -101,10 +115,15 @@ struct Packed<'a> {
     digests: &'a Digests,
     /// `None` when the disc isn't a known release, which only a patch needs.
     version: Option<Version>,
+    /// What the check already made of each patched file in `changes/`.
+    patched: &'a HashMap<String, Box<[u8]>>,
 }
 
 impl Files<Error> for Packed<'_> {
     fn read(&self, path: &str) -> Result<Box<[u8]>> {
+        if let Some(bytes) = self.patched.get(path) {
+            return Ok(bytes.clone());
+        }
         match self.overlay.read_checked(path, self.digests)? {
             Stored::Whole(data)
             | Stored::Vanilla {
@@ -240,17 +259,10 @@ mod tests {
             .expect("the disc held this one wrapped");
 
         let mut outputs = BTreeMap::new();
-        tpmt_packing::explode(
-            path,
-            &data,
-            &mut |layer| -> tpmt_packing::Result<()> {
-                if layer.stored {
-                    outputs.insert(layer.path.to_string(), layer.bytes.to_vec());
-                }
-                Ok(())
-            },
-            &mut Vec::new(),
-        )
+        tpmt_packing::explode(path, &data, &mut |file| -> tpmt_packing::Result<()> {
+            outputs.insert(file.path.to_string(), file.bytes.to_vec());
+            Ok(())
+        })
         .unwrap();
         outputs
     }
@@ -264,7 +276,7 @@ mod tests {
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
         assert_eq!(built.rebuilt, ["files/outer.arc"]);
-        assert_eq!(built.unchanged, Vec::<String>::new());
+        assert_eq!(built.reports, []);
 
         let outputs = exploded(&built.path, "files/outer.arc");
         assert_eq!(outputs["files/outer.arc/plain.bin"], b"edited");
@@ -353,8 +365,35 @@ mod tests {
         change(scratch.path(), "files/loose.bin", b"loose");
 
         let built = run(scratch.path(), Target::Patch, None).unwrap();
-        assert_eq!(built.unchanged, ["files/loose.bin"]);
+        assert_eq!(
+            built.reports,
+            [Report::file(
+                tpmt_report::Severity::Warning,
+                "files/loose.bin",
+                "it's identical to vanilla, so it changes nothing"
+            )]
+        );
         assert_eq!(built.rebuilt, Vec::<String>::new());
+    }
+
+    /// A patch with errors stops the build before anything is written, and
+    /// the error holds every one.
+    #[test]
+    fn a_bad_patch_stops_the_build() {
+        let path = "files/message.bmg";
+        let (scratch, project) = fixture::project(&[(path, &fixture::message_file(b"Hello"))]);
+        project
+            .overlay()
+            .write_patch(path, b"[message.\"@0\"]\ntext = \"{No tag}}\"\n")
+            .unwrap();
+
+        let error = run(scratch.path(), Target::Patch, None).unwrap_err();
+        assert!(
+            matches!(&error, Error::Rejected(reports) if reports.len() == 2),
+            "{error}"
+        );
+        assert_eq!(error.to_string(), "the build stopped at 2 errors");
+        assert!(!project.root().join("build").exists());
     }
 
     /// `vanilla/` is the disc. A build that read somebody's edit out of it would

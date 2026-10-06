@@ -1,16 +1,15 @@
 //! Showing a call's [`Progress`] while a command runs.
 //!
 //! One line on standard error for the current step, redrawn in place ten
-//! times a second, with each report printed above it as it arrives. The line
-//! is only drawn when standard error is a terminal, so piped output holds
-//! the reports alone.
+//! times a second. The line is only drawn when standard error is a terminal,
+//! so piped output never holds it.
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-use tpmt_ops::report::{Level, Progress, Report, Snapshot, Unit};
+use tpmt_ops::report::{Progress, Snapshot, Unit};
 
 const FRAME: Duration = Duration::from_millis(100);
 const BAR_CELLS: u64 = 20;
@@ -20,7 +19,7 @@ const CLEAR: &str = "\r\x1b[K";
 
 /// Runs `work` with a fresh [`Progress`], drawing it until `work` returns and
 /// then erasing it, so whatever the command prints next starts on a clean
-/// line. Every report `work` made is printed by the time this returns.
+/// line.
 pub fn show<T>(work: impl FnOnce(&Progress) -> T) -> T {
     let progress = &Progress::default();
     let terminal = io::stderr().is_terminal();
@@ -37,11 +36,6 @@ pub fn show<T>(work: impl FnOnce(&Progress) -> T) -> T {
 
 fn draw_until(progress: &Progress, terminal: bool, stopped: &Receiver<()>) {
     for spin in SPINNER.into_iter().cycle() {
-        let reports = progress.take_reports();
-        if terminal && !reports.is_empty() {
-            write(CLEAR);
-        }
-        reports.iter().for_each(print_report);
         if terminal && let Some(step) = progress.current() {
             write(&format!("{CLEAR}{}", line(step, spin)));
         }
@@ -51,16 +45,6 @@ fn draw_until(progress: &Progress, terminal: bool, stopped: &Receiver<()>) {
     }
     if terminal {
         write(CLEAR);
-    }
-    progress.take_reports().iter().for_each(print_report);
-}
-
-/// Prints a report to standard output, or to standard error with its level if
-/// something went wrong.
-fn print_report(report: &Report) {
-    match report.level {
-        Level::Info | Level::Ok => println!("{report}"),
-        Level::Warn | Level::Error => eprintln!("tpmt: {}: {report}", report.level.name()),
     }
 }
 

@@ -1,13 +1,17 @@
 //! A message file open for editing, from what the project stores to what it
 //! saves back.
 
+use std::collections::HashSet;
+
 use tpmt_binary::Format;
 use tpmt_message::Bmg;
+use tpmt_report::Report;
 use tpmt_tables::Edition;
 
-use super::patch::{self, BmgPatch, Names, PatchError};
+use super::check::{At, BmgDiagnostic, Item, Property};
+use super::patch::{self, BmgPatch, Names, PatchDiagnostic};
 use super::{BmgChanges, BmgEdit, EditError, EditableBmg, OpenError};
-use crate::{History, Saved};
+use crate::{History, Saved, Status};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -26,8 +30,9 @@ pub enum SessionError {
     #[error("the patch doesn't read: {0}")]
     Read(#[from] toml::de::Error),
 
-    #[error(transparent)]
-    Patch(#[from] PatchError),
+    /// Every problem the patch has. It won't open until all are fixed.
+    #[error("the patch has {} {}", .0.len(), if .0.len() == 1 { "error" } else { "errors" })]
+    Patch(Vec<PatchDiagnostic>),
 
     #[error("the patch won't serialize: {0}")]
     Write(#[from] toml::ser::Error),
@@ -46,6 +51,9 @@ pub struct BmgSession {
     /// for a file stored whole, which saves whole.
     vanilla: Option<Bmg>,
     changes: BmgChanges,
+    /// What the tables find odd in whatever differs from vanilla, as of the
+    /// last edit.
+    issues: Vec<BmgDiagnostic>,
 }
 
 impl BmgSession {
@@ -70,7 +78,8 @@ impl BmgSession {
             return Ok(Self::new(file, Names::default(), Some(vanilla)));
         };
         let vanilla = Bmg::decode(vanilla)?;
-        let (bmg, names) = patch::apply(&vanilla, &read(patch)?, edition)?;
+        let (bmg, names) =
+            patch::apply(&vanilla, &read(patch)?, edition).map_err(SessionError::Patch)?;
         Ok(Self::new(
             EditableBmg::new(bmg, edition),
             names,
@@ -79,14 +88,16 @@ impl BmgSession {
     }
 
     fn new(file: EditableBmg, names: Names, vanilla: Option<Bmg>) -> Self {
-        let changes = BmgChanges::new(vanilla.as_ref(), file.bmg());
-        Self {
+        let mut session = Self {
             file,
             history: History::default(),
             names,
             vanilla,
-            changes,
-        }
+            changes: BmgChanges::default(),
+            issues: Vec::new(),
+        };
+        session.refresh();
+        session
     }
 
     #[must_use]
@@ -100,6 +111,37 @@ impl BmgSession {
         &self.changes
     }
 
+    /// What the tables find odd in whatever differs from vanilla, or in the
+    /// whole file when it has no vanilla copy, as of the last edit.
+    #[must_use]
+    pub fn issues(&self) -> &[BmgDiagnostic] {
+        &self.issues
+    }
+
+    /// [`issues`](Self::issues) as reports on the file at `path`, each item
+    /// named the way its patch names it.
+    #[must_use]
+    pub fn reports(&self, path: &str) -> Vec<Report> {
+        self.issues
+            .iter()
+            .map(|found| Report {
+                severity: found.severity,
+                path: path.to_string(),
+                at: self.describe(found.at),
+                text: found.code.to_string(),
+            })
+            .collect()
+    }
+
+    /// The file encoded, as a build writes it.
+    ///
+    /// # Errors
+    ///
+    /// When the file won't encode.
+    pub fn encode(&self) -> Result<Vec<u8>, SessionError> {
+        Ok(self.file.save()?)
+    }
+
     /// Performs `edit` and records how to undo it.
     ///
     /// # Errors
@@ -107,7 +149,7 @@ impl BmgSession {
     /// When the file refuses the edit. Nothing changes then.
     pub fn apply(&mut self, edit: impl Into<BmgEdit>) -> Result<(), EditError> {
         self.history.apply(&mut self.file, edit.into())?;
-        self.compare();
+        self.refresh();
         Ok(())
     }
 
@@ -119,7 +161,7 @@ impl BmgSession {
     pub fn undo(&mut self) -> Result<bool, EditError> {
         let undone = self.history.undo(&mut self.file)?;
         if undone {
-            self.compare();
+            self.refresh();
         }
         Ok(undone)
     }
@@ -133,7 +175,7 @@ impl BmgSession {
     pub fn redo(&mut self) -> Result<bool, EditError> {
         let redone = self.history.redo(&mut self.file)?;
         if redone {
-            self.compare();
+            self.refresh();
         }
         Ok(redone)
     }
@@ -168,15 +210,57 @@ impl BmgSession {
         Ok(Saved::Patch(edits.to_toml()?))
     }
 
-    fn compare(&mut self) {
+    fn refresh(&mut self) {
         self.changes = BmgChanges::new(self.vanilla.as_ref(), self.file.bmg());
+        self.issues = if self.vanilla.is_some() {
+            let edited = |status| matches!(status, Status::Changed | Status::Added);
+            let messages = self.changes.messages.iter();
+            let nodes = self.changes.nodes.iter();
+            let wanted: HashSet<Item> = messages
+                .filter(|(_, status)| edited(*status))
+                .map(|(id, _)| Item::Message(*id))
+                .chain(
+                    nodes
+                        .filter(|(_, status)| edited(*status))
+                        .map(|(id, _)| Item::Node(*id)),
+                )
+                .collect();
+            self.file.check(|item| wanted.contains(&item))
+        } else {
+            self.file.check(|_| true)
+        };
+    }
+
+    /// What a report calls `at`: a new item by its patch name, a vanilla
+    /// message by its MID1 id or `@position`, a vanilla node by position.
+    fn describe(&self, at: At) -> Option<String> {
+        match at {
+            At::File => None,
+            At::Message { id, property } => {
+                let message = match (self.names.messages.get(&id), self.file.message(id)) {
+                    (Some(name), _) => format!("new message `{name}`"),
+                    (None, Some(message)) if self.file.tables().has_mid1 => {
+                        format!("message {}", message.public_id)
+                    }
+                    (None, _) => format!("message @{}", id.0),
+                };
+                Some(match property {
+                    Property::Text => format!("{message} text"),
+                    Property::Field(field) => format!("{message} `{field}`"),
+                })
+            }
+            At::Node(id) => Some(self.names.nodes.get(&id).map_or_else(
+                || format!("node {}", id.0),
+                |name| format!("new node `{name}`"),
+            )),
+        }
     }
 }
 
 /// The vanilla file `vanilla` with `patch` put over it, for a build.
 pub fn apply(vanilla: &[u8], patch: &[u8], edition: Edition) -> Result<Vec<u8>, SessionError> {
     let vanilla = Bmg::decode(vanilla)?;
-    let (bmg, _) = patch::apply(&vanilla, &read(patch)?, edition)?;
+    let (bmg, _) = patch::apply(&vanilla, &read(patch)?, edition).map_err(SessionError::Patch)?;
     Ok(bmg.encode()?)
 }
 

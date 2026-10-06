@@ -13,7 +13,6 @@ tpmt-binary.workspace = true
 tpmt-compression.workspace = true
 tpmt-disc.workspace = true
 tpmt-tables.workspace = true
-tpmt-packing.workspace = true
 tpmt-ops.workspace = true
 tpmt-project.workspace = true
 tpmt-report.workspace = true

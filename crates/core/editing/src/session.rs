@@ -2,6 +2,7 @@
 //! bytes between disk and here never names one.
 
 use tpmt_binary::FileKind;
+use tpmt_report::Report;
 use tpmt_tables::{Edition, Version};
 
 use crate::message::session;
@@ -17,6 +18,27 @@ pub enum Error {
 
     #[error(transparent)]
     Bmg(#[from] SessionError),
+}
+
+impl Error {
+    /// Each problem behind this error, on the file at `path`, for an error
+    /// that stands for several. Empty when the error says it all.
+    #[must_use]
+    pub fn reports(&self, path: &str) -> Vec<Report> {
+        match self {
+            Self::Bmg(SessionError::Patch(found)) => {
+                found.iter().map(|found| found.report(path)).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether this is only that tpmt has no editor for the file, which a
+    /// check can pass over.
+    #[must_use]
+    pub const fn is_not_editable(&self) -> bool {
+        matches!(self, Self::NotEditable)
+    }
 }
 
 /// What the project holds for a file. The same two shapes `tpmt-project`
@@ -84,6 +106,26 @@ impl Session {
     pub fn save(&mut self) -> Result<Saved, Error> {
         match self {
             Self::Bmg(session) => Ok(session.save()?),
+        }
+    }
+
+    /// What the format's checks find odd in the file, as reports on the file
+    /// at `path`.
+    #[must_use]
+    pub fn reports(&self, path: &str) -> Vec<Report> {
+        match self {
+            Self::Bmg(session) => session.reports(path),
+        }
+    }
+
+    /// The file encoded, as a build writes it.
+    ///
+    /// # Errors
+    ///
+    /// When the file won't encode.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Bmg(session) => Ok(session.encode()?),
         }
     }
 
