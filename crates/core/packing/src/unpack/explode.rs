@@ -49,10 +49,10 @@ pub enum DecodeError {
     Compress(#[from] tpmt_compression::Error),
 }
 
-/// Peels `data`'s compression wrapper, if any, and sinks what's left.
+/// Explodes `data`, peeling off any compression wrapper, and sinks what's left.
 ///
-/// An archive is exploded member by member, then its sidecar is sunk.
-/// Returns the wrapper that came off, for whatever holds `data` to record.
+/// An archive is recursively exploded member by member, then its sidecar is sunk.
+/// The sidecar records the wrapper that came off.
 ///
 /// # Errors
 ///
@@ -64,7 +64,22 @@ pub fn explode<E: From<Error>>(
     data: &[u8],
     sink: &mut impl FnMut(File<'_>) -> Result<(), E>,
 ) -> Result<Option<Compression>, E> {
-    // Peel off compression
+    let (compression, bare) = peel(path, data)?;
+
+    match FileKind::identify(&bare) {
+        Some(FileKind::Rarc) => unarchive(path, &bare, sink)?,
+        kind => sink(File {
+            path,
+            kind,
+            bytes: &bare,
+        })?,
+    }
+
+    Ok(compression)
+}
+
+/// Removes `data`'s compression wrapper, if any, and says which one it was.
+fn peel<'a>(path: &str, data: &'a [u8]) -> Result<(Option<Compression>, Cow<'a, [u8]>)> {
     let compression = FileKind::identify(data).and_then(FileKind::compression);
     let bare = match compression {
         Some(compression) => {
@@ -73,27 +88,25 @@ pub fn explode<E: From<Error>>(
         None => Cow::Borrowed(data),
     };
 
-    // Sink non-archives
-    let kind = FileKind::identify(&bare);
-    if kind != Some(FileKind::Rarc) {
-        sink(File {
-            path,
-            kind,
-            bytes: &bare,
-        })?;
-        return Ok(compression);
-    }
+    Ok((compression, bare))
+}
 
-    // Decode archives (and explode members)
-    let archive = Archive::decode(&bare).map_err(at(path))?;
+/// Explodes each member of the archive in `bytes`, then sinks the archive's sidecar.
+fn unarchive<E: From<Error>>(
+    path: &str,
+    bytes: &[u8],
+    sink: &mut impl FnMut(File<'_>) -> Result<(), E>,
+) -> Result<(), E> {
+    let archive = Archive::decode(bytes).map_err(at(path))?;
     let mut members = Vec::with_capacity(archive.files.len());
+
     for member in &archive.files {
-        // The sidecar records the compression the member's own bytes have,
-        // not what the archive's entry claims, so it keeps what the file
-        // really is.
+        // Explode each member (recursive)
         let compression = explode(&format!("{path}/{}", member.path), member.data, sink)?;
-        // TODO: warn when the entry's claim (`member.compression`) disagrees.
-        // Doesn't affect the output, just a warn.
+
+        // TODO: warn when the archive's entry's claim (`member.compression`) disagrees
+        // with the actual wrapper. We don't base our recordings off the entry's claim, but it
+        // should still be warned as something wrong with the game image.
         members.push(Member {
             path: member.path.clone(),
             preload: member.preload,
@@ -102,16 +115,17 @@ pub fn explode<E: From<Error>>(
         });
     }
 
-    // Write sidecar
     let toml = Sidecar::new(archive.root, members)
         .to_toml()
         .map_err(at(path))?;
+
     sink(File {
         path: &format!("{path}/{SIDECAR}"),
         kind: None,
         bytes: toml.as_bytes(),
     })?;
-    Ok(compression)
+
+    Ok(())
 }
 
 fn at<E: Into<DecodeError>>(path: &str) -> impl FnOnce(E) -> Error + '_ {
